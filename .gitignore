@@ -204,3 +204,8 @@ pyrightconfig.json
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/python,jupyternotebooks,visualstudiocode
+
+# MyLLM specific exclusions
+# MSAL token cache contains sensitive authentication tokens
+.msal_token_cache
+llms/.msal_token_cache

@@ -1,0 +1,8 @@
+requests>=2.25.0
+pystache>=0.5.4
+msal>=1.20,<2
+pymsalruntime>=0.18.0
+tqdm>=4.0.0
+python-dotenv>=0.19.0
+pydantic>=2.0.0
+fire>=0.4.0
