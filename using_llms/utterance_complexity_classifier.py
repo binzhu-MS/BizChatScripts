@@ -44,9 +44,11 @@ class UtteranceComplexityClassifier(ChatCompletionLLMApplier):
         incremental_save=True,
         output_file_path=None,
         total_utterances=0,
+        model_config=None,
+        llmapi_config=None,
         **kwargs,
     ):
-        """Initialize with optional custom thread count and incremental saving."""
+        """Initialize with optional custom thread count, incremental saving, model configuration, and API configuration."""
         if threads is not None:
             self.DEFAULT_THREADS = threads
         self.save_batch_size = save_batch_size
@@ -57,6 +59,21 @@ class UtteranceComplexityClassifier(ChatCompletionLLMApplier):
         self.processed_by_thread = {}  # Track processed count per thread
         self.file_lock = threading.Lock()
         self.all_results = {}  # Store all results for incremental saving
+
+        # Handle custom model configuration
+        if model_config:
+            # Merge custom config with defaults
+            custom_model_config = self.DEFAULT_MODEL_CONFIG.copy()
+            custom_model_config.update(model_config)
+            kwargs["model_config"] = custom_model_config
+
+        # Handle custom API configuration by creating custom LLMAPI instance
+        if llmapi_config:
+            from llms.llm_api import LLMAPI
+
+            custom_llmapi = LLMAPI(**llmapi_config)
+            kwargs["llmapi"] = custom_llmapi
+
         super().__init__(**kwargs)
 
     def process_item(self, item, i):
@@ -291,27 +308,16 @@ def load_utterance_data(json_file_path, max_utterances=20):
                     )
                     total_utterances += len(limited_utterances)
 
-        if max_utterances == -1:
-            logger.info(
-                f"Loaded ALL {total_utterances} utterances from {len(processed_items)} categories"
-            )
-        else:
-            logger.info(
-                f"Loaded {total_utterances} utterances from {len(processed_items)} categories (limited for testing)"
-            )
         return processed_items
     except Exception as e:
         logger.error(f"Error loading JSON file {json_file_path}: {e}")
         return []
 
 
-def save_results_with_original_data(results, input_file_path, output_suffix="_labeled"):
-    """Save classification results merged with original data in the same folder as input."""
+def save_results_with_original_data(results, input_file_path, output_file_path):
+    """Save classification results merged with original data to the specified output file."""
     try:
-        input_path = Path(input_file_path)
-        output_file_path = (
-            input_path.parent / f"{input_path.stem}{output_suffix}{input_path.suffix}"
-        )
+        output_path = Path(output_file_path)
 
         # Prepare output data in the original format but with added classification columns
         output_data = {}
@@ -335,14 +341,14 @@ def save_results_with_original_data(results, input_file_path, output_suffix="_la
 
             output_data[category] = enhanced_utterances
 
-        # Save to file in same directory as input
-        with open(output_file_path, "w", encoding="utf-8") as f:
+        # Save to file
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"Labeled results saved to {output_file_path}")
-        return str(output_file_path)
+        logger.info(f"Labeled results saved to {output_path}")
+        return str(output_path)
     except Exception as e:
-        logger.error(f"Error saving results to {output_file_path}: {e}")
+        logger.error(f"Error saving results to {output_path}: {e}")
         return None
 
 
@@ -450,61 +456,79 @@ def print_summary(results):
 
 
 def classify_utterances(
-    input_file=None,
+    input_file,
     max_utterances=20,
-    output_suffix="_labeled",
+    output_file=None,
     threads=3,
     save_batch_size=100,
     incremental_save=True,
+    model=None,
+    temperature=None,
+    max_tokens=None,
+    endpoint=None,
+    api_mode=None,
 ):
     """
     Run the utterance complexity classifier with customizable parameters.
 
     Args:
-        input_file: Path to input JSON file (default: uses the GPT5 dataset)
+        input_file: Path to input JSON file (required)
         max_utterances: Maximum number of utterances to process (default: 20 for testing)
                        Set to -1 or a very large number to process ALL utterances in the file
-        output_suffix: Suffix for output file (default: "_labeled")
+        output_file: Output file path (default: input file name with "_labeled" suffix)
         threads: Number of worker threads to use for processing (default: 3)
         save_batch_size: Number of utterances to process before saving incrementally (default: 100)
         incremental_save: Whether to save results incrementally during processing (default: True)
                          Set to False to save only at the end (faster for small datasets)
+        model: Model name to use (default: "dev-gpt-41-longco-2025-04-14")
+        temperature: Temperature setting for the model (default: 0.1)
+        max_tokens: Maximum tokens for model response (default: 1000)
+        endpoint: Custom API endpoint URL (optional)
+        api_mode: API mode - 'chat/completions' or 'text/completions' (default: "chat/completions")
 
     Examples:
         # Process only first 20 utterances (default for testing)
-        classify_utterances()
+        classify_utterances("path/to/input.json")
 
         # Process ALL utterances in the file with incremental saving every 50 utterances
-        classify_utterances(max_utterances=-1, save_batch_size=50)
+        classify_utterances("path/to/input.json", max_utterances=-1, save_batch_size=50)
 
         # Process first 1000 utterances with 8 threads, save at end only
-        classify_utterances(max_utterances=1000, threads=8, incremental_save=False)
+        classify_utterances("path/to/input.json", max_utterances=1000, threads=8, incremental_save=False)
 
-        # Process all utterances with custom output suffix and save every 200 utterances
-        classify_utterances(max_utterances=-1, output_suffix="_complete", save_batch_size=200)
+        # Process all utterances with custom model settings and output file
+        classify_utterances("path/to/input.json", model="gpt-4", temperature=0.3, max_tokens=1500, output_file="custom_output.json")
+
+        # Process all utterances with custom endpoint and API configuration
+        classify_utterances("path/to/input.json", model="custom-model", endpoint="https://custom-api.com/", api_mode="chat/completions")
+
+        # Process all utterances with custom output file and save every 200 utterances
+        classify_utterances("path/to/input.json", max_utterances=-1, output_file="results.json", save_batch_size=200)
     """
 
-    # Use default input file if not provided
-    if input_file is None:
-        input_file = os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "GPT5_Complex_Utterances",
-            "multiple_tool_call_utterance_for_all_segments.json",
-        )
+    # Check if input file exists
+    if not os.path.exists(input_file):
+        logger.error(f"Input file does not exist: {input_file}")
+        raise FileNotFoundError(f"Input file not found: {input_file}")
 
     logger.info(f"Input file: {input_file}")
     logger.info(f"Max utterances: {max_utterances}")
-    logger.info(f"Output suffix: {output_suffix}")
     logger.info(f"Worker threads: {threads}")
     logger.info(f"Save batch size: {save_batch_size}")
     logger.info(f"Incremental save: {incremental_save}")
 
     # Prepare output file path
-    input_path = Path(input_file)
-    output_file_path = (
-        input_path.parent / f"{input_path.stem}{output_suffix}{input_path.suffix}"
-    )
+    if output_file is None:
+        # Default: input file name with "_labeled" suffix
+        input_path = Path(input_file)
+        output_file_path = (
+            input_path.parent / f"{input_path.stem}_labeled{input_path.suffix}"
+        )
+    else:
+        # Use provided output file path
+        output_file_path = Path(output_file)
+
+    logger.info(f"Output file: {output_file_path}")
 
     # Load utterance data
     if max_utterances == -1:
@@ -522,14 +546,51 @@ def classify_utterances(
         f"Loaded {len(utterance_data)} categories with {total_utterances} utterances total"
     )
 
+    # Build custom model configuration if provided
+    model_config = {}
+    if model is not None:
+        model_config["model"] = model
+        logger.info(f"Using custom model: {model}")
+    if temperature is not None:
+        model_config["temperature"] = temperature
+        logger.info(f"Using custom temperature: {temperature}")
+    if max_tokens is not None:
+        model_config["max_tokens"] = max_tokens
+        logger.info(f"Using custom max_tokens: {max_tokens}")
+
+    # Build API configuration if provided
+    api_config = {}
+    if endpoint is not None:
+        api_config["endpoint"] = endpoint
+        logger.info(f"Using custom endpoint: {endpoint}")
+    if api_mode is not None:
+        api_config["api_mode"] = api_mode
+        logger.info(f"Using custom API mode: {api_mode}")
+
     # Create and run the classifier
-    classifier = UtteranceComplexityClassifier(
-        threads=threads,
-        save_batch_size=save_batch_size,
-        incremental_save=incremental_save,
-        output_file_path=str(output_file_path),
-        total_utterances=total_utterances,
+    classifier_kwargs = {
+        "threads": threads,
+        "save_batch_size": save_batch_size,
+        "incremental_save": incremental_save,
+        "output_file_path": str(output_file_path),
+        "total_utterances": total_utterances,
+    }
+
+    # Add model configuration if any custom settings were provided
+    if model_config:
+        classifier_kwargs["model_config"] = model_config
+
+    # Add API configuration if any custom settings were provided
+    if api_config:
+        classifier_kwargs["llmapi_config"] = api_config
+
+    classifier = UtteranceComplexityClassifier(**classifier_kwargs)
+
+    # Log the model configuration being used
+    final_model_config = getattr(
+        classifier, "model_config", classifier.DEFAULT_MODEL_CONFIG
     )
+    logger.info(f"Model configuration: {final_model_config}")
 
     logger.info("Running Utterance Complexity Classifier...")
     if incremental_save:
@@ -551,9 +612,7 @@ def classify_utterances(
 
     # Save results (final save for non-incremental, or final cleanup for incremental)
     if not incremental_save:
-        output_file_path = save_results_with_original_data(
-            results, input_file, output_suffix
-        )
+        save_results_with_original_data(results, input_file, output_file_path)
     else:
         logger.info(f"Final results are in: {output_file_path}")
 
