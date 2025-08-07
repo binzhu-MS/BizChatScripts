@@ -15,7 +15,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 # Import LLM utilities
-from llms import ChatCompletionLLMApplier, prompts, with_retries
+from llms import ChatCompletionLLMApplier, ApplicationModes, prompts, with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
     DEFAULT_MODEL_CONFIG = {
         "model": "dev-gpt-41-longco-2025-04-14",
         "temperature": 0.1,  # Low temperature for consistency
-        "max_tokens": 4000,  # Sufficient for selection analysis
+        "max_tokens": 2000,  # Sufficient for selection analysis
     }
 
     # Load prompt that includes enterprise search context
@@ -38,7 +38,7 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
     # Required parent class attributes
     DEFAULT_THREADS = 1  # Single-threaded for simplicity
     DEFAULT_RETRIES = 3  # Retry failed LLM calls
-    APPLICATION_MODE = None  # Not used in our case
+    APPLICATION_MODE = ApplicationModes.PerItem  # Process items individually
 
     # Selection Configuration
     DEFAULT_INCREMENT_PER_CATEGORY = 2  # Select 2 utterances per category per round
@@ -197,16 +197,86 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
 
                 # Select utterances using LLM guidance or simple selection
                 if use_llm_analysis and len(selected_utterances) > 0:
-                    category_selections = self._llm_guided_selection(
-                        category_key,
-                        category_utterances[
-                            already_selected : already_selected + min(10, available)
-                        ],
-                        selected_utterances,
-                        to_select,
-                    )
+                    try:
+                        category_selections = self._llm_guided_selection(
+                            category_key,
+                            category_utterances[
+                                already_selected : already_selected + min(10, available)
+                            ],
+                            selected_utterances,
+                            to_select,
+                        )
+                    except Exception as e:
+                        # LLM failed after all retries - save progress and exit gracefully
+                        logger.error(f"❌ LLM FAILURE: {e}")
+                        logger.error(f"❌ Category: {category_key}")
+                        logger.error(f"❌ Failed after {self.retries} retry attempts")
+
+                        # Save current progress to output file
+                        if output_file:
+                            self._save_results_to_file(
+                                output_file,
+                                selected_utterances,
+                                category_selected_counts,
+                                round_selections,
+                                target_count,
+                                round_num,
+                            )
+                            logger.info(f"💾 Progress saved to {output_file}")
+                            logger.info(
+                                f"📊 Current progress: {len(selected_utterances)}/{target_count} utterances selected"
+                            )
+
+                        # Create results for partial completion
+                        results = {
+                            "selected_utterances": selected_utterances,
+                            "total_selected": len(selected_utterances),
+                            "target_count": target_count,
+                            "rounds_completed": len(round_selections),
+                            "status": "llm_failure",
+                            "failure_info": {
+                                "failed_category": category_key,
+                                "error": str(e),
+                                "retries_attempted": self.retries,
+                            },
+                        }
+
+                        # Exit with detailed information
+                        logger.error("\n" + "=" * 60)
+                        logger.error("🚨 LLM QUALITY SELECTION FAILED")
+                        logger.error("=" * 60)
+                        logger.error(
+                            f"Reason: LLM failed after {self.retries} retries for category '{category_key}'"
+                        )
+                        logger.error(f"Error: {str(e)}")
+                        logger.error(f"\n📈 PROGRESS SUMMARY:")
+                        logger.error(
+                            f"   • Selected: {len(selected_utterances)}/{target_count} utterances"
+                        )
+                        logger.error(f"   • Completed rounds: {round_num}")
+                        logger.error(f"   • Progress saved to: {output_file}")
+                        logger.error(f"\n🔧 RECOMMENDED ACTIONS:")
+                        logger.error(
+                            f"   1. Check LLM API authentication and connectivity"
+                        )
+                        logger.error(
+                            f"   2. Verify prompt template exists: prompts/utterance_selector/0.1.0/"
+                        )
+                        logger.error(
+                            f"   3. Review LLM model configuration: {self.model_config}"
+                        )
+                        logger.error(
+                            f"   4. Re-run with same parameters to resume from saved progress"
+                        )
+                        logger.error(f"\n🔄 RESUME COMMAND:")
+                        logger.error(
+                            f"   Use the same command - the system will automatically resume from {output_file}"
+                        )
+                        logger.error("=" * 60)
+
+                        return results
                 else:
-                    # Simple selection - take next utterances
+                    # First selections: take first utterances sequentially (no LLM context available yet)
                     category_selections = category_utterances[
                         already_selected : already_selected + to_select
                     ]
@@ -385,70 +455,70 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
 
         Returns:
             List of selected utterances
+
+        Raises:
+            Exception: When LLM fails after all retries (no fallback to simple selection)
         """
         if not candidates:
             return []
 
-        try:
-            # Get reference examples (limited to prevent token overflow)
-            reference_examples = self._get_reference_examples(selected_utterances)
+        # Get reference examples (limited to prevent token overflow)
+        reference_examples = self._get_reference_examples(selected_utterances)
 
-            # Format candidates for LLM
-            candidates_text = []
-            for i, candidate in enumerate(candidates):
-                text = candidate.get("utterance", candidate.get("text", ""))
-                candidates_text.append(f"{i+1}. {text}")
+        # Format candidates for LLM
+        candidates_text = []
+        for i, candidate in enumerate(candidates):
+            text = candidate.get("utterance", candidate.get("text", ""))
+            candidates_text.append(f"{i+1}. {text}")
 
-            # Create prompt
-            prompt_data = {
-                "category": category_key,
-                "to_select": to_select,
-                "candidates": "\n".join(candidates_text),
-                "reference_examples": (
-                    "\n".join(reference_examples)
-                    if reference_examples
-                    else "None selected yet"
-                ),
-            }
+        # Validate candidates
+        if not candidates_text or not any(candidates_text):
+            logger.error(f"No valid candidates found for category {category_key}")
+            raise Exception("No valid candidate utterances found")
 
-            # Format the prompt with variables
-            formatted_messages = prompts.formatting.render_messages(
-                self.prompt, prompt_data
+        # Create prompt
+        prompt_data = {
+            "category_name": category_key,  # Fixed: template expects category_name
+            "target_count": to_select,  # Fixed: template expects target_count
+            "candidates_list": "\n".join(
+                candidates_text
+            ),  # Fixed: template expects candidates_list
+            "selected_examples": (  # Fixed: template expects selected_examples
+                "\n".join(reference_examples)
+                if reference_examples
+                else "None selected yet"
+            ),
+        }
+
+        # Format the prompt with variables
+        formatted_messages = prompts.formatting.render_messages(
+            self.prompt, prompt_data
+        )
+
+        # Get LLM response
+        completion = self.llmapi.chat_completion(self.model_config, formatted_messages)
+
+        # Extract response
+        response = completion["choices"][0]["message"]["content"].strip()
+
+        # Parse response to get selected indices
+        selected_indices = self._parse_llm_response(response)
+
+        # Return selected utterances
+        selected = []
+        for idx in selected_indices:
+            if 0 <= idx < len(candidates):
+                selected.append(candidates[idx])
+            if len(selected) >= to_select:
+                break
+
+        # If LLM response parsing failed, raise an exception (no fallback)
+        if not selected:
+            raise Exception(
+                f"LLM response parsing failed - no valid selections found in response: {response[:200]}..."
             )
 
-            # Get LLM response
-            completion = self.llmapi.chat_completion(
-                self.model_config, formatted_messages
-            )
-
-            # Extract response
-            response = completion["choices"][0]["message"]["content"].strip()
-
-            # Parse response to get selected indices
-            selected_indices = self._parse_llm_response(response)
-
-            # Return selected utterances
-            selected = []
-            for idx in selected_indices:
-                if 0 <= idx < len(candidates):
-                    selected.append(candidates[idx])
-                if len(selected) >= to_select:
-                    break
-
-            # If LLM selection failed, fall back to simple selection
-            if not selected:
-                logger.warning(
-                    f"LLM selection failed for {category_key}, using simple selection"
-                )
-                selected = candidates[:to_select]
-
-            return selected
-
-        except Exception as e:
-            logger.warning(
-                f"LLM guidance failed for {category_key}: {e}, using simple selection"
-            )
-            return candidates[:to_select]
+        return selected
 
     def _get_reference_examples(
         self, selected_utterances: List[Dict], max_examples: int = 5
@@ -499,17 +569,21 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
         target_count: int,
         rounds_completed: int,
     ):
-        """Save results to output file with metadata for resume capability."""
+        """Save results to output file with minimal info for resume capability."""
         try:
-            # Minimal output format - only essential resuming info
+            # Minimal output format - only essential data for resuming
             results = {
                 "selected_utterances": selected_utterances,
-                # Only store timestamp for basic tracking
                 "timestamp": str(__import__("datetime").datetime.now()),
             }
 
             with open(output_file, "w", encoding="utf-8") as f:
                 json.dump(results, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"Saved to {output_file} ({len(selected_utterances)} selected)")
+
+        except Exception as e:
+            logger.error(f"Failed to save results: {e}")
 
             logger.info(f"Saved to {output_file} ({len(selected_utterances)} selected)")
 
@@ -595,10 +669,8 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
                 )
 
                 if to_select > 0:
-                    # Use LLM-guided selection like main method
-                    if (
-                        len(selected_utterances) > 0
-                    ):  # We have existing utterances for context
+                    # Use LLM-guided selection (we always have existing utterances during resume)
+                    try:
                         category_selections = self._llm_guided_selection(
                             category_key,
                             category_utterances[
@@ -607,11 +679,71 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
                             selected_utterances,
                             to_select,
                         )
-                    else:
-                        # Simple selection for first selections
-                        category_selections = category_utterances[
-                            already_selected : already_selected + to_select
-                        ]
+                    except Exception as e:
+                        # LLM failed during resume - save progress and exit gracefully
+                        logger.error(f"❌ LLM FAILURE DURING RESUME: {e}")
+                        logger.error(f"❌ Category: {category_key}")
+                        logger.error(f"❌ Failed after {self.retries} retry attempts")
+
+                        # Save current progress to output file
+                        if output_file:
+                            self._save_results_to_file(
+                                output_file,
+                                selected_utterances,
+                                category_selected_counts,
+                                round_selections,
+                                target_count,
+                                round_num,
+                            )
+                            logger.info(f"💾 Resume progress saved to {output_file}")
+                            logger.info(
+                                f"📊 Current progress: {len(selected_utterances)}/{target_count} utterances selected"
+                            )
+
+                        # Create results for partial completion during resume
+                        results = {
+                            "selected_utterances": selected_utterances,
+                            "total_selected": len(selected_utterances),
+                            "target_count": target_count,
+                            "rounds_completed": len(round_selections),
+                            "status": "llm_failure_during_resume",
+                            "failure_info": {
+                                "failed_category": category_key,
+                                "error": str(e),
+                                "retries_attempted": self.retries,
+                            },
+                        }
+
+                        # Exit with detailed information
+                        logger.error("\n" + "=" * 60)
+                        logger.error("🚨 LLM QUALITY SELECTION FAILED DURING RESUME")
+                        logger.error("=" * 60)
+                        logger.error(
+                            f"Reason: LLM failed after {self.retries} retries for category '{category_key}'"
+                        )
+                        logger.error(f"Error: {str(e)}")
+                        logger.error(f"\n📈 PROGRESS SUMMARY:")
+                        logger.error(
+                            f"   • Selected: {len(selected_utterances)}/{target_count} utterances"
+                        )
+                        logger.error(f"   • Completed rounds: {round_num}")
+                        logger.error(f"   • Progress saved to: {output_file}")
+                        logger.error(f"\n🔧 RECOMMENDED ACTIONS:")
+                        logger.error(
+                            f"   1. Check LLM API authentication and connectivity"
+                        )
+                        logger.error(
+                            f"   2. Verify prompt template exists: prompts/utterance_selector/0.1.0/"
+                        )
+                        logger.error(
+                            f"   3. Review LLM model configuration: {self.model_config}"
+                        )
+                        logger.error(
+                            f"   4. Re-run with same parameters to resume from saved progress"
+                        )
+                        logger.error("=" * 60)
+
+                        return results
 
                     # Add selection metadata
                     for utterance in category_selections:

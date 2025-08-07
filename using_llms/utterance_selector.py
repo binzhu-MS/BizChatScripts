@@ -1,6 +1,8 @@
 """
-Utterance selector using iterative approach for balanced category selection.
-This replaces the complex analysis system with a simple, fast iterative selection.
+Utterance selector using LLM-based iterative approach for balanced category selection.
+In each round, a small number of utterances are selected from each category based on complexity,
+diversity, enterprise relevance, and personalization possibilities. This process is repeated
+until a target number of utterances is reached or all categories are exhausted.
 """
 
 import json
@@ -139,9 +141,22 @@ class UtteranceSelector:
 
             for segment_name, utterances in data.items():
                 for utterance in utterances:
-                    switching_class = utterance.get("switching_class", "unknown")
-                    category_key = f"{segment_name}|{switching_class}"
-                    category_data[category_key].append(utterance)
+                    # Handle both string utterances and dictionary utterances
+                    if isinstance(utterance, str):
+                        # For string utterances, use segment as category
+                        switching_class = "default"
+                        category_key = f"{segment_name}|{switching_class}"
+                        # Convert string to dictionary format
+                        utterance_dict = {
+                            "utterance": utterance,
+                            "switching_class": switching_class,
+                        }
+                        category_data[category_key].append(utterance_dict)
+                    else:
+                        # For dictionary utterances, use existing logic
+                        switching_class = utterance.get("switching_class", "unknown")
+                        category_key = f"{segment_name}|{switching_class}"
+                        category_data[category_key].append(utterance)
 
             # Count utterances by actual category
             category_counts = []
@@ -163,12 +178,28 @@ class UtteranceSelector:
 
             for segment_name, utterances in data.items():
                 for utterance in utterances:
-                    switching_class = utterance.get("switching_class", "unknown")
-                    category_key = f"{segment_name}|{switching_class}"
-                    if category_key in top_category_names:
-                        if category_key not in filtered_data:
-                            filtered_data[category_key] = []
-                        filtered_data[category_key].append(utterance)
+                    # Handle both string utterances and dictionary utterances
+                    if isinstance(utterance, str):
+                        # For string utterances, use segment as category
+                        switching_class = "default"
+                        category_key = f"{segment_name}|{switching_class}"
+                        # Convert string to dictionary format
+                        utterance_dict = {
+                            "utterance": utterance,
+                            "switching_class": switching_class,
+                        }
+                        if category_key in top_category_names:
+                            if category_key not in filtered_data:
+                                filtered_data[category_key] = []
+                            filtered_data[category_key].append(utterance_dict)
+                    else:
+                        # For dictionary utterances, use existing logic
+                        switching_class = utterance.get("switching_class", "unknown")
+                        category_key = f"{segment_name}|{switching_class}"
+                        if category_key in top_category_names:
+                            if category_key not in filtered_data:
+                                filtered_data[category_key] = []
+                            filtered_data[category_key].append(utterance)
 
             return filtered_data
 
@@ -281,9 +312,21 @@ def main(
             resume=resume,
         )
 
-        # Check completion status
+        # Check completion status and handle LLM failures
         target = target_utterances if not test else test_utterances
-        if results["total_selected"] >= target:
+
+        # Handle LLM failure status
+        if results.get("status") in ["llm_failure", "llm_failure_during_resume"]:
+            logger.error(f"\n🚨 SELECTION TERMINATED DUE TO LLM FAILURE")
+            failure_info = results.get("failure_info", {})
+            logger.error(
+                f"🎯 Partial progress: {results['total_selected']}/{target} utterances selected"
+            )
+            logger.error(f"📁 Progress saved to: {output_file}")
+            logger.error(f"🔄 Resume by running the same command again")
+            sys.exit(1)  # Exit with error code
+
+        elif results["total_selected"] >= target:
             logger.info(f"\n✅ Selection completed successfully!")
             logger.info(
                 f"🎯 Target reached: {results['total_selected']}/{target} utterances"
