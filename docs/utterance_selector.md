@@ -182,25 +182,20 @@ python using_llms/utterance_selector.py input_data.json \
     --test=True \
     --test_utterances 50 \
     --test_categories 5
-
-# Disable incremental saving (only final save)
-python using_llms/utterance_selector.py input_data.json \
-    --incremental_saving False
 ```
 
 #### Parameter Reference
 
-| Parameter                | Default                    | Description                                           |
-| ------------------------ | -------------------------- | ----------------------------------------------------- |
-| `input_file`             | Required                   | Path to JSON file with utterance data                 |
-| `output_file`            | `selected_utterances.json` | Path for complete results file (includes resume info) |
-| `test`                   | `False`                    | Whether to run in test mode                           |
-| `test_utterances`        | `12`                       | Number of utterances to select in test mode           |
-| `test_categories`        | `3`                        | Number of top categories to use in test mode          |
-| `target_utterances`      | `2000`                     | Number of utterances to select in production mode     |
-| `increment_per_category` | `2`                        | Utterances per category per round                     |
-| `resume`                 | `True`                     | Whether to attempt resuming from existing output      |
-| `incremental_saving`     | `True`                     | Save results after each round                         |
+| Parameter                | Default                    | Description                                                           |
+| ------------------------ | -------------------------- | --------------------------------------------------------------------- |
+| `input_file`             | Required                   | Path to JSON file with utterance data                                 |
+| `output_file`            | `selected_utterances.json` | Path for complete results file (includes resume info)                 |
+| `test`                   | `False`                    | Whether to run in test mode                                           |
+| `test_utterances`        | `12`                       | Number of utterances to select in test mode                           |
+| `test_categories`        | `3`                        | Number of top categories to use in test mode                          |
+| `target_utterances`      | `2000`                     | Number of utterances to select in production mode                     |
+| `increment_per_category` | `2`                        | Utterances per category per round (keep small 1-3 for better balance) |
+| `resume`                 | `True`                     | Whether to resume from existing output (False overwrites file)        |
 
 ### Python API
 
@@ -555,7 +550,13 @@ Starting fresh selection (parameters changed)
 ```
 **Solution**: Resume info is tied to specific parameters. Use same `target_utterances` and other settings, or delete the output file to start completely fresh.
 
-#### 2. **Authentication Failures**
+#### 2. **Accidentally Overwriting Results**
+```
+WARNING: Existing output file will be overwritten
+```
+**Understanding**: When `resume=False`, the system will **overwrite** any existing output file. Always use `resume=True` (default) unless you specifically want to start fresh.
+
+#### 3. **Authentication Failures**
 ```
 ERROR: Failed to authenticate with LLM API
 ```
@@ -579,11 +580,10 @@ WARNING: Token limit management: Using X examples from Y,ZZZ selected utterances
 ```
 ERROR: Out of memory during processing
 ```
-**Solution**: Use smaller `increment_per_category` and enable `incremental_saving`:
+**Solution**: Use smaller `increment_per_category` (results are automatically saved after each round):
 ```bash
 python using_llms/utterance_selector.py large_data.json \
-    --increment_per_category 1 \
-    --incremental_saving True
+    --increment_per_category 1
 ```
 
 #### 5. **No Categories Found**
@@ -725,15 +725,16 @@ results = batch_select_utterances(
 
 ### 1. **Production Deployment**
 - Resume capability is automatic - no separate checkpoint files needed
-- Use appropriate `increment_per_category` based on dataset size
+- **Keep `increment_per_category` small (1-3)** for better category balance
 - Monitor log output for selection quality
 - Output files contain all necessary resume information
+- **Set `resume=False`** only when you want to completely overwrite existing results
 
 ### 2. **Quality Optimization with Comprehensive Strategy**
 - **Enable LLM analysis** for quality-critical selections to leverage comprehensive reference strategy
 - **Trust the adaptive standards**: System automatically adjusts quality thresholds for smaller categories
 - **Monitor token efficiency logs**: Review efficiency summaries to understand comprehensive strategy benefits
-- **Use lower `increment_per_category`** for more careful selection with maximum context utilization
+- **Use `increment_per_category=1`** for maximum balance and careful selection with full context utilization
 - **Validate category balance** in results - comprehensive strategy maintains better consistency
 
 ### 3. **Large Dataset Best Practices**

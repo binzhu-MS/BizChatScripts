@@ -32,7 +32,8 @@ class UtteranceSelector:
         Initialize the utterance selector.
 
         Args:
-            increment_per_category: Number of utterances to select per category per round (default: 2)
+            increment_per_category: Number of utterances to select per category per round (default: 2).
+                                  Keep this small (1-3) for better balance across categories.
         """
         self.increment_per_category = increment_per_category
 
@@ -45,7 +46,6 @@ class UtteranceSelector:
         test_categories: int = 3,
         target_utterances: int = 2000,
         resume: bool = True,
-        incremental_saving: bool = True,
     ) -> Dict[str, Any]:
         """
         Select utterances from input file and save to output file.
@@ -56,8 +56,8 @@ class UtteranceSelector:
             test: Whether to run in test mode (selects from top N categories)
             test_utterances: Number of utterances to select in test mode (default: 12)
             test_categories: Number of top categories to use in test mode (default: 3)
-            resume: Whether to attempt resuming from existing output
-            incremental_saving: Whether to save results after each round (default: True)
+            resume: Whether to attempt resuming from existing output (default: True).
+                   If False, will overwrite any existing output file.
 
         Returns:
             Selection results dictionary
@@ -98,6 +98,7 @@ class UtteranceSelector:
             )
 
         # Run iterative selection with LLM analysis enabled
+        # Note: Results are automatically saved after each round for safety (LLM selection is slow)
         results = iterative_selector.select_utterances_iteratively(
             data=data,
             target_count=target_count,
@@ -227,7 +228,6 @@ def main(
     target_utterances: int = 2000,
     increment_per_category: int = 2,
     resume: bool = True,
-    incremental_saving: bool = True,
 ):
     """
     Main function for utterance selection.
@@ -239,9 +239,10 @@ def main(
         test_utterances: Number of utterances to select in test mode (default: 12)
         test_categories: Number of top categories to use in test mode (default: 3)
         target_utterances: Target number of utterances for production mode (default: 2000)
-        increment_per_category: Utterances to select per category per round (default: 2)
-        resume: Whether to attempt resuming from existing output (default: True)
-        incremental_saving: Whether to save results after each round (default: True)
+        increment_per_category: Utterances to select per category per round (default: 2).
+                               Keep small (1-3) for better category balance.
+        resume: Whether to attempt resuming from existing output (default: True).
+               If False, will overwrite any existing output file.
 
     Example usage:
         # Test mode
@@ -278,7 +279,6 @@ def main(
             test_categories=test_categories,
             target_utterances=target_utterances,
             resume=resume,
-            incremental_saving=incremental_saving,
         )
 
         # Check completion status
