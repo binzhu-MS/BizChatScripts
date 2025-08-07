@@ -15,7 +15,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 # Import LLM utilities
-from llms import ChatCompletionLLMApplier, prompts
+from llms import ChatCompletionLLMApplier, prompts, with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,11 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
     # Load prompt that includes enterprise search context
     DEFAULT_PROMPT = prompts.get("utterance_selector", "0.1.0")
 
+    # Required parent class attributes
+    DEFAULT_THREADS = 1  # Single-threaded for simplicity
+    DEFAULT_RETRIES = 3  # Retry failed LLM calls
+    APPLICATION_MODE = None  # Not used in our case
+
     # Selection Configuration
     DEFAULT_INCREMENT_PER_CATEGORY = 2  # Select 2 utterances per category per round
 
@@ -45,16 +50,13 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
         increment_per_category=None,
     ):
         """Initialize the iterative selector with configurable parameters."""
-        # Initialize parent ChatCompletionLLMApplier
-        super().__init__()
-
-        # Set up model configuration
-        self.model_config = (
-            model_config if model_config is not None else self.DEFAULT_MODEL_CONFIG
+        # Initialize parent ChatCompletionLLMApplier with all required parameters
+        super().__init__(
+            model_config=model_config or self.DEFAULT_MODEL_CONFIG,
+            prompt=prompt or self.DEFAULT_PROMPT,
+            threads=self.DEFAULT_THREADS,
+            retries=self.DEFAULT_RETRIES,
         )
-
-        # Set up prompt
-        self.prompt = prompt if prompt is not None else self.DEFAULT_PROMPT
 
         # Set up selection parameters
         self.increment_per_category = (
@@ -364,6 +366,7 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
 
         return dict(category_data)
 
+    @with_retries
     def _llm_guided_selection(
         self,
         category_key: str,
