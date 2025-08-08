@@ -1,5 +1,5 @@
 """
-Simplified Iterative Utterance Selector with LLM analysis and simple resume functionality.
+Iterative Utterance Selector with LLM analysis and simple resume functionality.
 Only uses two files: utterance_selector.py and utterance_selector_core.py
 """
 
@@ -108,17 +108,11 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
                         "selected_utterances": existing_utterances[:target_count],
                         "total_selected": min(existing_selected, target_count),
                         "target_count": target_count,
-                        "rounds_completed": max(
-                            1, existing_selected // 628
-                        ),  # Estimate rounds from utterance count
+                        "rounds_completed": 0,  # No new rounds were completed in this run
                     }
 
                 # Case 2: Partial completion - resume with existing data
                 elif existing_selected > 0:
-                    logger.info(
-                        f"📂 Found {existing_selected} existing selections, "
-                        f"need {target_count - existing_selected} more"
-                    )
                     # Resume with existing data
                     return self._resume_from_existing(
                         existing_data, data, target_count, output_file, verbose
@@ -163,6 +157,7 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
         selected_utterances = []
         category_selected_counts = defaultdict(int)
         round_selections = []
+        selected_utterance_texts = set()  # Track utterance texts to avoid duplicates
 
         # Iterative selection
         for round_num in range(1, estimated_rounds + 1):
@@ -195,14 +190,39 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
                 if to_select <= 0:
                     continue
 
+                # Get candidates for this category
+                candidate_start_idx = already_selected
+                candidate_end_idx = (
+                    candidate_start_idx + min(10, available)
+                    if use_llm_analysis
+                    else candidate_start_idx + to_select
+                )
+                candidates = category_utterances[candidate_start_idx:candidate_end_idx]
+
+                # Filter out any candidates that have already been selected (avoid duplicates)
+                filtered_candidates = []
+                for candidate in candidates:
+                    candidate_text = candidate.get(
+                        "utterance", candidate.get("text", "")
+                    )
+                    if (
+                        candidate_text
+                        and candidate_text not in selected_utterance_texts
+                    ):
+                        filtered_candidates.append(candidate)
+
+                if not filtered_candidates:
+                    logger.info(
+                        f"  {category_key}: No new candidates available (all may be duplicates)"
+                    )
+                    continue
+
                 # Select utterances using LLM guidance or simple selection
                 if use_llm_analysis and len(selected_utterances) > 0:
                     try:
                         category_selections = self._llm_guided_selection(
                             category_key,
-                            category_utterances[
-                                already_selected : already_selected + min(10, available)
-                            ],
+                            filtered_candidates,
                             selected_utterances,
                             to_select,
                         )
@@ -277,9 +297,7 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
                         return results
                 else:
                     # First selections: take first utterances sequentially (no LLM context available yet)
-                    category_selections = category_utterances[
-                        already_selected : already_selected + to_select
-                    ]
+                    category_selections = filtered_candidates[:to_select]
 
                 # Add to selections
                 for utterance in category_selections:
@@ -288,6 +306,13 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
                     selected_utterances.append(utterance)
                     round_selected.append(utterance)
                     category_selected_counts[category_key] += 1
+
+                    # Add to duplicate avoidance set
+                    utterance_text = utterance.get(
+                        "utterance", utterance.get("text", "")
+                    )
+                    if utterance_text:
+                        selected_utterance_texts.add(utterance_text)
 
                 logger.info(
                     f"  {category_key}: selected {len(category_selections)}, total from category: {category_selected_counts[category_key]}"
@@ -383,17 +408,6 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
                 f"🎯 TARGET REACHED: {results['total_selected']}/{target_count}"
             )
 
-        # Save final results
-        if output_file:
-            self._save_results_to_file(
-                output_file,
-                selected_utterances,
-                category_selected_counts,
-                round_selections,
-                target_count,
-                len(round_selections),
-            )
-
         return results
 
     def _organize_by_categories(self, data: Union[List, Dict]) -> Dict[str, List[Dict]]:
@@ -405,9 +419,6 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
             sample_key = next(iter(data.keys()))
             if "|" in sample_key:
                 # Direct dictionary format - each key is already a category
-                logger.info(
-                    f"Using direct dictionary format with {len(data)} categories"
-                )
                 return dict(data)
             else:
                 # Original format - data is dict with segments, need to organize by segment|switching_class
@@ -585,11 +596,6 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
         except Exception as e:
             logger.error(f"Failed to save results: {e}")
 
-            logger.info(f"Saved to {output_file} ({len(selected_utterances)} selected)")
-
-        except Exception as e:
-            logger.error(f"Failed to save results: {e}")
-
     def _resume_from_existing(
         self,
         existing_data: Dict,
@@ -608,7 +614,16 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
 
         existing_selected = len(existing_utterances)
         remaining_needed = target_count - existing_selected
-        completed_rounds = len(existing_rounds)
+
+        # Calculate completed rounds from the highest selected_round in existing utterances
+        completed_rounds = 0
+        if existing_utterances:
+            max_round = max(
+                utterance.get("selected_round", 1) for utterance in existing_utterances
+            )
+            completed_rounds = max_round
+        else:
+            logger.info("No existing utterances found")
 
         # Organize input data by categories
         category_data = self._organize_by_categories(input_data)
@@ -616,13 +631,18 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
             category_data.items(), key=lambda x: len(x[1]), reverse=True
         )
 
+        # Consolidated status message
+        if existing_utterances:
+            logger.info(
+                f"📂 Found {existing_selected} utterances already selected in {completed_rounds} rounds with {len(category_data)} categories"
+            )
+
         # Calculate remaining rounds needed
         utterances_per_round = len(category_data) * self.increment_per_category
         remaining_rounds = (
             remaining_needed + utterances_per_round - 1
         ) // utterances_per_round
 
-        logger.info(f"Found {len(sorted_categories)} categories")
         logger.info(f"Target: {target_count}, Remaining needed: {remaining_needed}")
         logger.info(
             f"Categories: {len(category_data)}, Max per round: {utterances_per_round}"
@@ -635,10 +655,17 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
         selected_utterances = existing_utterances.copy()
         category_selected_counts = defaultdict(int)
 
-        # Rebuild category counts from existing data
+        # Rebuild category counts from existing data using the correct selected_category field
         for utterance in existing_utterances:
-            category_key = f"{utterance.get('category', 'unknown')}|{utterance.get('segment', 'unknown')}"
+            category_key = utterance.get("selected_category", "unknown")
             category_selected_counts[category_key] += 1
+
+        # Build set of already selected utterance texts to avoid duplicates
+        selected_utterance_texts = set()
+        for utterance in existing_utterances:
+            utterance_text = utterance.get("utterance", utterance.get("text", ""))
+            if utterance_text:
+                selected_utterance_texts.add(utterance_text)
 
         # Continue selection from next round
         round_selections = existing_rounds.copy()
@@ -669,13 +696,36 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
                 )
 
                 if to_select > 0:
+                    # Get candidates starting from where we left off for this category
+                    candidate_start_idx = already_selected
+                    candidate_end_idx = candidate_start_idx + min(10, available)
+                    candidates = category_utterances[
+                        candidate_start_idx:candidate_end_idx
+                    ]
+
+                    # Filter out any candidates that have already been selected (avoid duplicates)
+                    filtered_candidates = []
+                    for candidate in candidates:
+                        candidate_text = candidate.get(
+                            "utterance", candidate.get("text", "")
+                        )
+                        if (
+                            candidate_text
+                            and candidate_text not in selected_utterance_texts
+                        ):
+                            filtered_candidates.append(candidate)
+
+                    if not filtered_candidates:
+                        logger.info(
+                            f"  {category_key}: No new candidates available (all may be duplicates)"
+                        )
+                        continue
+
                     # Use LLM-guided selection (we always have existing utterances during resume)
                     try:
                         category_selections = self._llm_guided_selection(
                             category_key,
-                            category_utterances[
-                                already_selected : already_selected + min(10, available)
-                            ],
+                            filtered_candidates,
                             selected_utterances,
                             to_select,
                         )
@@ -753,6 +803,13 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
                         round_selected.append(utterance)
                         category_selected_counts[category_key] += 1
 
+                        # Add to duplicate avoidance set
+                        utterance_text = utterance.get(
+                            "utterance", utterance.get("text", "")
+                        )
+                        if utterance_text:
+                            selected_utterance_texts.add(utterance_text)
+
                     logger.info(
                         f"  {category_key}: selected {len(category_selections)}, total from category: {category_selected_counts[category_key]}"
                     )
@@ -797,16 +854,6 @@ class IterativeUtteranceSelector(ChatCompletionLLMApplier):
             "target_count": target_count,
             "rounds_completed": total_rounds_completed,  # Total rounds including previous + new
         }
-
-        # Save results
-        self._save_results_to_file(
-            output_file,
-            selected_utterances,
-            category_selected_counts,
-            round_selections,
-            target_count,
-            len(round_selections),
-        )
 
         if len(selected_utterances) >= target_count:
             logger.info(f"🎯 TARGET REACHED: {len(selected_utterances)}/{target_count}")
