@@ -44,13 +44,10 @@ class UtteranceComplexityClassifier(ChatCompletionLLMApplier):
         incremental_save=True,
         output_file_path=None,
         total_utterances=0,
-        model_config=None,
-        llmapi_config=None,
+        retries=None,
         **kwargs,
     ):
-        """Initialize with optional custom thread count, incremental saving, model configuration, and API configuration."""
-        if threads is not None:
-            self.DEFAULT_THREADS = threads
+        """Initialize with optional custom thread count, incremental saving, and retries."""
         self.save_batch_size = save_batch_size
         self.incremental_save = incremental_save
         self.output_file_path = output_file_path
@@ -60,19 +57,9 @@ class UtteranceComplexityClassifier(ChatCompletionLLMApplier):
         self.file_lock = threading.Lock()
         self.all_results = {}  # Store all results for incremental saving
 
-        # Handle custom model configuration
-        if model_config:
-            # Merge custom config with defaults
-            custom_model_config = self.DEFAULT_MODEL_CONFIG.copy()
-            custom_model_config.update(model_config)
-            kwargs["model_config"] = custom_model_config
-
-        # Handle custom API configuration by creating custom LLMAPI instance
-        if llmapi_config:
-            from llms.llm_api import LLMAPI
-
-            custom_llmapi = LLMAPI(**llmapi_config)
-            kwargs["llmapi"] = custom_llmapi
+        # Pass threads and retries to parent constructor
+        kwargs["threads"] = threads
+        kwargs["retries"] = retries
 
         super().__init__(**kwargs)
 
@@ -460,13 +447,9 @@ def classify_utterances(
     max_utterances=20,
     output_file=None,
     threads=3,
+    retries=3,
     save_batch_size=100,
     incremental_save=True,
-    model=None,
-    temperature=None,
-    max_tokens=None,
-    endpoint=None,
-    api_mode=None,
 ):
     """
     Run the utterance complexity classifier with customizable parameters.
@@ -477,14 +460,10 @@ def classify_utterances(
                        Set to -1 or a very large number to process ALL utterances in the file
         output_file: Output file path (default: input file name with "_labeled" suffix)
         threads: Number of worker threads to use for processing (default: 3)
+        retries: Number of retries for each LLM API call in case of failure (default: 3)
         save_batch_size: Number of utterances to process before saving incrementally (default: 100)
         incremental_save: Whether to save results incrementally during processing (default: True)
                          Set to False to save only at the end (faster for small datasets)
-        model: Model name to use (default: "dev-gpt-41-longco-2025-04-14")
-        temperature: Temperature setting for the model (default: 0.1)
-        max_tokens: Maximum tokens for model response (default: 1000)
-        endpoint: Custom API endpoint URL (optional)
-        api_mode: API mode - 'chat/completions' or 'text/completions' (default: "chat/completions")
 
     Examples:
         # Process only first 20 utterances (default for testing)
@@ -496,11 +475,8 @@ def classify_utterances(
         # Process first 1000 utterances with 8 threads, save at end only
         classify_utterances("path/to/input.json", max_utterances=1000, threads=8, incremental_save=False)
 
-        # Process all utterances with custom model settings and output file
-        classify_utterances("path/to/input.json", model="gpt-4", temperature=0.3, max_tokens=1500, output_file="custom_output.json")
-
-        # Process all utterances with custom endpoint and API configuration
-        classify_utterances("path/to/input.json", model="custom-model", endpoint="https://custom-api.com/", api_mode="chat/completions")
+        # Process all utterances with 5 retries per API call
+        classify_utterances("path/to/input.json", max_utterances=-1, retries=5)
 
         # Process all utterances with custom output file and save every 200 utterances
         classify_utterances("path/to/input.json", max_utterances=-1, output_file="results.json", save_batch_size=200)
@@ -514,6 +490,7 @@ def classify_utterances(
     logger.info(f"Input file: {input_file}")
     logger.info(f"Max utterances: {max_utterances}")
     logger.info(f"Worker threads: {threads}")
+    logger.info(f"Retries per API call: {retries}")
     logger.info(f"Save batch size: {save_batch_size}")
     logger.info(f"Incremental save: {incremental_save}")
 
@@ -546,43 +523,15 @@ def classify_utterances(
         f"Loaded {len(utterance_data)} categories with {total_utterances} utterances total"
     )
 
-    # Build custom model configuration if provided
-    model_config = {}
-    if model is not None:
-        model_config["model"] = model
-        logger.info(f"Using custom model: {model}")
-    if temperature is not None:
-        model_config["temperature"] = temperature
-        logger.info(f"Using custom temperature: {temperature}")
-    if max_tokens is not None:
-        model_config["max_tokens"] = max_tokens
-        logger.info(f"Using custom max_tokens: {max_tokens}")
-
-    # Build API configuration if provided
-    api_config = {}
-    if endpoint is not None:
-        api_config["endpoint"] = endpoint
-        logger.info(f"Using custom endpoint: {endpoint}")
-    if api_mode is not None:
-        api_config["api_mode"] = api_mode
-        logger.info(f"Using custom API mode: {api_mode}")
-
     # Create and run the classifier
     classifier_kwargs = {
         "threads": threads,
+        "retries": retries,
         "save_batch_size": save_batch_size,
         "incremental_save": incremental_save,
         "output_file_path": str(output_file_path),
         "total_utterances": total_utterances,
     }
-
-    # Add model configuration if any custom settings were provided
-    if model_config:
-        classifier_kwargs["model_config"] = model_config
-
-    # Add API configuration if any custom settings were provided
-    if api_config:
-        classifier_kwargs["llmapi_config"] = api_config
 
     classifier = UtteranceComplexityClassifier(**classifier_kwargs)
 

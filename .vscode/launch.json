@@ -1,0 +1,344 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Utterance Complexity Classifier",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/utterance_complexity_classifier.py",
+            "args": [
+                "--input_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/multiple_tool_call_utterance_for_all_segments.json",
+                "--max_utterances=10",
+                "--threads=3",
+                "--retries=3",
+                "--save_batch_size=3",
+                "--incremental_save=True",
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Extract Templates",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/personalization/extract_templates.py",
+            "args": [
+                "--input_file",
+                "${workspaceFolder}/projects/personalization/data/binzhu-personalized-1k_golden_query-set-20250729163610.tsv",
+                "--output_file",
+                "${workspaceFolder}/projects/personalization/data/results/extracted_templates.tsv",
+                "--column",
+                "1"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Utterance Personalizer (Test)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/utterance_personalizer.py",
+            "args": [
+                "${workspaceFolder}/projects/personalization/data/2276_test.tsv",
+                "${workspaceFolder}/projects/personalization/data/results/2276_test_templated.tsv",
+                "--threads=3",
+                "--retries=3"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Utterance Personalizer (Full)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/utterance_personalizer.py",
+            "args": [
+                "${workspaceFolder}/projects/personalization/data/2276.tsv",
+                "${workspaceFolder}/projects/personalization/data/results/2276_templated.tsv",
+                "--threads=3",
+                "--retries=3"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Run Example Text Summarizer",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_text_summarizer.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Run Custom Applier",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/custom_applier.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Run Auth Setup",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/auth_setup.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Analyze Complexity Statistics",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/complexity_statistics.py",
+            "args": [
+                "--input_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/multiple_tool_call_utterance_for_all_segments_labeled_gpt4_1.json",
+                "--output_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/statistics_report.json",
+                "--show_detailed_stats=False",
+                "--create_plots=True",
+                "--plot_output_dir=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/plots"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Extract CoT Data to Playground Format",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/extract_data_to_playground_format.py",
+            "args": [
+                "--input_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/multiple_tool_call_utterance_for_all_segments_labeled_gpt4_1.json",
+                "--output_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/playground_cot_data.json",
+                "--classification=cot",
+                "--source=gpt4-classification",
+                "--show_stats=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Extract Chat Data to Playground Format",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/extract_data_to_playground_format.py",
+            "args": [
+                "--input_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/multiple_tool_call_utterance_for_all_segments_labeled_gpt4_1.json",
+                "--output_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/playground_chat_data.json",
+                "--classification=chat",
+                "--source=gpt4-classification",
+                "--show_stats=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Extract All Data to Playground Format",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/extract_data_to_playground_format.py",
+            "args": [
+                "--input_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/multiple_tool_call_utterance_for_all_segments_labeled_gpt4_1.json",
+                "--output_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/playground_all_data.json",
+                "--classification=all",
+                "--source=gpt4-classification",
+                "--show_stats=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Parse Playground Results",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/parse_playground_results.py",
+            "args": [
+                "--input_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/cot_playground_output_4313.json",
+                "--output_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/parsed_cot_playground_output_4313.json",
+                "--show_stats=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Analyze Playground Results Statistics",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/playground_results_statistics.py",
+            "args": [
+                "--input_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/filtered_optimal_switching_results.json",
+                "--output_prefix=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/playground_statistics_report",
+                "--show_detailed_stats=True",
+                "--create_plots=True",
+                "--plot_output_dir=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/plots"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Filter Optimal Switching Utterances",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/filter_optimal_switching.py",
+            "args": [
+                "--input_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/parsed_cot_playground_output_4313.json",
+                "--optimal_switching_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/Merged_Optimal_Switching.json",
+                "--output_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/filtered_optimal_switching_results.json",
+                "--show_summary=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Create Test Data for Utterance Selector",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/testdata_for_utterance_selector.py",
+            "args": [
+                "--input_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/filtered_optimal_switching_results.json",
+                "--output_file=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/test_data_top3_categories.json",
+                "--top_categories=3"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Utterance Selector (Test Data)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/utterance_selector.py",
+            "args": [
+                "${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/test_data_top3_categories.json",
+                "${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/test_selected_utterances.json",
+                "19",
+                "--increment_per_category=1"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Utterance Selector (Full Production)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/utterance_selector.py",
+            "args": [
+                "${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/filtered_optimal_switching_results.json",
+                "${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/selected_utterances.json",
+                "2300",
+                "--increment_per_category=2"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Analyze Statistics of Selected Utterances",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/selected_utterance_statistics.py",
+            "args": [
+                "${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/selected_utterances.json",
+                "--output_path=${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/selected_utterance_statistics_report.md"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Remove Duplicates from Selected Utterances",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/deduplicate_selected_utterances.py",
+            "args": [
+                "${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/selected_utterances.json",
+                "${workspaceFolder}/projects/gpt5_select_complex_utterances/data/results/selected_utterances_cleaned.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Excel to TSV File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/excel_to_tsv.py",
+            "args": [
+                "${workspaceFolder}/projects/gpt5_gen_complex_utterances/data/test.xlsx",
+                "--all_sheets=True",
+                "--na_rep=-",
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}
