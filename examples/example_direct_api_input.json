@@ -1,0 +1,22 @@
+[
+    {
+        "id": "prompt_1",
+        "prompt": "Explain quantum computing in simple terms for a high school student."
+    },
+    {
+        "id": "prompt_2",
+        "prompt": "What are the main benefits of renewable energy sources?"
+    },
+    {
+        "id": "prompt_3",
+        "prompt": "Write a short Python function to calculate the factorial of a number."
+    },
+    {
+        "id": "prompt_4",
+        "prompt": "Describe the water cycle in 3 steps."
+    },
+    {
+        "id": "prompt_5",
+        "prompt": "What are the key principles of effective communication?"
+    }
+]

@@ -1,0 +1,22 @@
+[
+    {
+        "user_request": "Explain how photosynthesis works",
+        "text_to_evaluate": "Photosynthesis is the process by which plants convert sunlight, carbon dioxide, and water into glucose and oxygen. This process occurs in chloroplasts and is essential for plant survival."
+    },
+    {
+        "user_request": "Tell me about the weather today",
+        "text_to_evaluate": "The capital of France is Paris, which is known for the Eiffel Tower and many museums."
+    },
+    {
+        "user_request": "How do I bake a chocolate cake?",
+        "text_to_evaluate": "To bake a chocolate cake, mix flour, sugar, cocoa powder, eggs, butter, and milk. Bake at 350°F for 30-35 minutes until a toothpick comes out clean."
+    },
+    {
+        "user_request": "What are the benefits of regular exercise?",
+        "text_to_evaluate": "Regular exercise improves cardiovascular health, strengthens muscles and bones, boosts mental health, helps maintain a healthy weight, and increases life expectancy. It also reduces the risk of chronic diseases like diabetes and heart disease."
+    },
+    {
+        "user_request": "How do I fix a leaky faucet?",
+        "text_to_evaluate": "Shakespeare wrote many famous plays including Romeo and Juliet, Hamlet, and Macbeth. He is considered one of the greatest writers in the English language."
+    }
+]

@@ -1,7 +1,7 @@
 """
-Text summarization example using the BizChatScripts framework.
-This demonstrates how to create a text summarizer that can generate summaries of various lengths
-using the framework's prompt management and base applier classes.
+RSP-style scoring example using the BizChatScripts framework.
+This demonstrates how to build RSP-compatible applications using the framework's
+prompt management and base classes.
 """
 
 import json
@@ -10,7 +10,7 @@ import sys
 import os
 import fire
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 # Add parent directory to path to import llms
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -21,17 +21,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class TextSummarizer(ChatCompletionLLMApplier):
+class RSPStyleScorer(ChatCompletionLLMApplier):
     """
-    Example text summarizer demonstrating the BizChatScripts framework.
-    Shows how to use prompt templates, variable substitution, and error handling.
+    Example RSP-compatible scorer that evaluates text quality on multiple dimensions.
+    This demonstrates the RSP pattern used in Microsoft's internal scoring systems.
     """
 
-    DEFAULT_PROMPT = prompts.get("example_text_summarizer", "0.1.0")
+    DEFAULT_PROMPT = prompts.get("example_rsp_scorer", "0.1.0")
     DEFAULT_MODEL_CONFIG = {
         "model": "dev-gpt-41-longco-2025-04-14",
         "temperature": 0.1,
-        "max_tokens": 1000,
+        "max_tokens": 2000,
     }
     DEFAULT_THREADS = 3
     DEFAULT_RETRIES = 3
@@ -55,43 +55,52 @@ class TextSummarizer(ChatCompletionLLMApplier):
         super().__init__(**kwargs)
 
     def process_item(self, item, i):
-        """Process a single item for summarization."""
-        input_text = item.get("input_text", "")
-        max_length = item.get("max_length", "3 sentences")
+        """Process a single item for RSP-style scoring."""
+        text_to_score = item.get("text", "")
+        scoring_criteria = item.get("criteria", ["clarity", "helpfulness", "accuracy"])
 
         # Validate input
-        if not input_text.strip():
-            logger.warning(f"Empty input text for item {i}")
-            item["error"] = "No input text provided"
+        if not text_to_score.strip():
+            logger.warning(f"Empty text for item {i}")
+            item["error"] = "No text provided for scoring"
             return item
 
-        # Summarize the text
+        # Score the text
         try:
-            summary_result = self.summarize_text(input_text, max_length)
-            if summary_result:
-                item["summary"] = summary_result
-                logger.info(f"Summarized item {i}: {len(summary_result)} characters")
+            scores = self.score_text(text_to_score, scoring_criteria)
+            if scores:
+                item.update(scores)
+                logger.info(f"Scored item {i} on {len(scoring_criteria)} criteria")
+            else:
+                item["error"] = "Failed to generate scores"
         except Exception as e:
-            logger.error(f"Error summarizing item {i}: {e}")
+            logger.error(f"Error scoring item {i}: {e}")
             item["error"] = str(e)
 
         return item
 
     @with_retries
-    def summarize_text(self, input_text, max_length="3 sentences"):
+    def score_text(self, text, criteria=None):
         """
-        Summarize the given text to the specified length.
+        Score text using RSP-compatible multi-dimensional evaluation.
 
         Args:
-            input_text (str): The text to summarize
-            max_length (str): Length specification (e.g., "3 sentences", "100 words", "2 paragraphs")
+            text (str): The text to score
+            criteria (list): List of scoring criteria (e.g., ["clarity", "helpfulness"])
 
         Returns:
-            str: The generated summary
+            dict: Dictionary with scores and explanations for each criterion
         """
-        prompt_context = {"input_text": input_text, "max_length": max_length}
+        if criteria is None:
+            criteria = ["clarity", "helpfulness", "accuracy"]
 
-        # Format the prompt with variables
+        prompt_context = {
+            "text_to_score": text,
+            "criteria": ", ".join(criteria),
+            "criteria_count": len(criteria),
+        }
+
+        # Format the RSP-style prompt
         formatted_prompt = prompts.formatting.render_messages(
             self.prompt, prompt_context
         )
@@ -99,21 +108,96 @@ class TextSummarizer(ChatCompletionLLMApplier):
         # Call the LLM
         completion = self.llmapi.chat_completion(self.model_config, formatted_prompt)
 
-        # Extract response
+        # Extract and parse response
         response_text = completion["choices"][0]["message"]["content"].strip()
 
         if response_text:
-            # Clean up the response - remove any extra formatting
-            summary = response_text
-
-            # Remove any markdown formatting that might be present
-            if summary.startswith("```") and summary.endswith("```"):
-                lines = summary.split("\n")
-                summary = "\n".join(lines[1:-1])
-
-            return summary
+            return self._parse_rsp_scores(response_text, criteria)
 
         return None
+
+    def _parse_rsp_scores(self, response_text, criteria):
+        """
+        Parse the LLM response into structured scores following RSP format.
+
+        Args:
+            response_text (str): Raw response from LLM
+            criteria (list): Expected scoring criteria
+
+        Returns:
+            dict: Parsed scores and explanations
+        """
+        scores = {}
+
+        try:
+            # Split response into lines for parsing
+            lines = response_text.split("\n")
+            current_criterion = None
+            current_explanation = []
+
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Check if line contains a criterion and score
+                for criterion in criteria:
+                    if line.lower().startswith(criterion.lower()):
+                        # Save previous criterion if exists
+                        if current_criterion:
+                            scores[f"{current_criterion}_explanation"] = " ".join(
+                                current_explanation
+                            )
+
+                        # Extract score (look for pattern like "Clarity: 4/5" or "Clarity: 4")
+                        if ":" in line:
+                            score_part = line.split(":", 1)[1].strip()
+                            # Extract numeric score
+                            import re
+
+                            score_match = re.search(r"(\d+(?:\.\d+)?)", score_part)
+                            if score_match:
+                                scores[f"{criterion}_score"] = float(
+                                    score_match.group(1)
+                                )
+
+                        current_criterion = criterion
+                        current_explanation = []
+                        break
+                else:
+                    # This line is part of explanation
+                    if current_criterion:
+                        current_explanation.append(line)
+
+            # Save the last criterion
+            if current_criterion:
+                scores[f"{current_criterion}_explanation"] = " ".join(
+                    current_explanation
+                )
+
+            # Calculate overall score if multiple criteria
+            if len(criteria) > 1:
+                individual_scores = [
+                    scores.get(f"{c}_score", 0)
+                    for c in criteria
+                    if f"{c}_score" in scores
+                ]
+                if individual_scores:
+                    scores["overall_score"] = sum(individual_scores) / len(
+                        individual_scores
+                    )
+
+        except Exception as e:
+            logger.warning(f"Error parsing RSP scores: {e}, using fallback parsing")
+            # Fallback: just extract any numbers found
+            import re
+
+            numbers = re.findall(r"(\d+(?:\.\d+)?)", response_text)
+            if numbers:
+                scores["overall_score"] = float(numbers[0])
+                scores["raw_response"] = response_text
+
+        return scores
 
 
 def process_texts(
@@ -125,10 +209,10 @@ def process_texts(
     client_type: Optional[str] = None,
 ):
     """
-    Process a JSON file with text summarization requests.
+    Process a JSON file with RSP-style scoring requests.
 
     Args:
-        input_file: Path to input JSON file with text to summarize
+        input_file: Path to input JSON file with text to score
         output_file: Path to output JSON file (default: input file with _output suffix)
         threads: Number of worker threads to use for processing (default: 3)
         retries: Number of retries for failed LLM calls (default: 3)
@@ -136,7 +220,7 @@ def process_texts(
 
     Examples:
         # Basic usage with defaults
-        process_texts("examples/example_summarization_data.json")
+        process_texts("examples/example_scoring_data.json")
 
         # With custom parameters
         process_texts("data.json", "results.json", threads=5, retries=2, max_items=100)
@@ -174,16 +258,14 @@ def process_texts(
         data = data[:max_items]
         logger.info(f"Limited to {max_items} items for processing")
 
-    # Initialize summarizer with configuration
-    summarizer = TextSummarizer(
-        threads=threads, retries=retries, client_type=client_type
-    )
+    # Initialize scorer with configuration
+    scorer = RSPStyleScorer(threads=threads, retries=retries, client_type=client_type)
 
     # Log the model configuration and client information being used
-    logger.info(f"Model configuration: {summarizer.model_config}")
+    logger.info(f"Model configuration: {scorer.model_config}")
 
     # Determine and log the functional capabilities being used
-    client_name = type(summarizer.llmapi).__name__
+    client_name = type(scorer.llmapi).__name__
     if "RSP" in client_name or "LLMAPI" == client_name:
         logger.info(f"LLM Service: RSP endpoint (limited models, dedicated processing)")
     elif "MSLLMAPIClientAdapter" in client_name:
@@ -197,15 +279,15 @@ def process_texts(
         logger.info(f"Client implementation: {client_name}")
         logger.info(f"LLM Service: Custom implementation")
 
-    logger.info(
-        f"Processing configuration: threads={threads}, retries={retries}"
-    )  # Process the data
+    logger.info(f"Processing configuration: threads={threads}, retries={retries}")
+
+    # Process the data
     logger.info("Processing texts...")
     try:
-        results = list(summarizer.apply(data, show_progress=True))
+        results = list(scorer.apply(data, show_progress=True))
 
         # Count successful and failed items
-        successful = sum(1 for item in results if "summary" in item)
+        successful = sum(1 for item in results if "error" not in item)
         failed = len(results) - successful
 
         if failed > 0:
@@ -232,7 +314,7 @@ def process_texts(
 
 
 def main(
-    input_file: str = "examples/example_summarization_input.json",
+    input_file: str = "examples/example_rsp_scoring_input.json",
     output_file: Optional[str] = None,
     threads: int = 3,
     retries: int = 3,
@@ -243,7 +325,7 @@ def main(
     Main function for command line usage.
 
     Args:
-        input_file: Path to input JSON file with text to summarize (default: examples/example_summarization_input.json)
+        input_file: Path to input JSON file with text to score (default: examples/example_rsp_scoring_input.json)
         output_file: Path to output JSON file (default: input file with _output suffix)
         threads: Number of worker threads (default: 3)
         retries: Number of retries for failed calls (default: 3)

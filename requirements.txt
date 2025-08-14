@@ -1,19 +1,41 @@
-# Core dependencies
-requests>=2.25.0
-pystache>=0.5.4
-msal>=1.20,<2
-pymsalruntime>=0.18.0
-tqdm>=4.0.0
-python-dotenv>=0.19.0
-pydantic>=2.0.0
-fire>=0.4.0
+# =============================================================================
+# CORE BIZCHATSCRIPTS FRAMEWORK DEPENDENCIES
+# Required for basic LLM application framework and RSP client functionality
+# =============================================================================
+requests>=2.25.0          # HTTP client for API calls
+pystache>=0.5.4           # Template engine for prompt rendering
+msal>=1.20,<2             # Microsoft Authentication Library for RSP client auth
+pymsalruntime>=0.18.0     # MSAL runtime support for authentication flows
+tqdm>=4.0.0               # Progress bars for batch processing
+python-dotenv>=0.19.0     # Environment variable management
+pydantic>=2.0.0           # Data validation and serialization
+fire>=0.4.0               # Command-line interface generation
 
-# Excel processing dependencies (for tools/excel_to_tsv.py)
-pandas>=1.3.0              # Core data manipulation and Excel reading
-openpyxl>=3.0.0            # For reading/writing .xlsx files
+# =============================================================================
+# MICROSOFT LLM API CLIENT DEPENDENCIES (OPTIONAL)
+# Required for enhanced model support and Microsoft LLM API Client integration
+# Provides access to broader range of internal Microsoft models
+# NOTE: Only available to Microsoft internal users with proper access
+# =============================================================================
+# INSTALLATION INSTRUCTIONS:
+# For Microsoft internal users only:
+# pip install llm-api-client --index-url https://o365exchange.pkgs.visualstudio.com/_packaging/O365PythonPackagesV2/pypi/simple/
+# 
+# External users: Skip this package - the framework will fall back to standard OpenAI/Azure APIs
+# llm-api-client            # Official Microsoft LLM API Client library (Microsoft internal only)
+
+# =============================================================================
+# DATA PROCESSING DEPENDENCIES
+# Required for Excel/TSV processing tools and data manipulation
+# =============================================================================
+pandas>=1.3.0             # Core data manipulation and Excel reading
+openpyxl>=3.0.0           # For reading/writing .xlsx files
 xlrd>=2.0.0               # For reading .xls files (legacy format)
 pyxlsb>=1.0.0             # For reading Excel Binary Workbook (.xlsb) files
 pywin32>=227              # For Windows COM Excel automation (fallback method)
 
-# Testing dependencies
-pytest>=6.0.0            # For running tests (used in tasks.json)
+# =============================================================================
+# DEVELOPMENT AND TESTING DEPENDENCIES
+# Required for running tests and development workflows
+# =============================================================================
+pytest>=6.0.0            # Unit testing framework (used in tasks.json)

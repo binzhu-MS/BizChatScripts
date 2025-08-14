@@ -1,72 +1,191 @@
-# MyLLM Usage and Authentication Guide
+# BizChatScripts LLM Usage and Authentication Guide
 
-This comprehensive guide explains how to use the MyLLM framework to create LLM-powered applications and how authentication works with internal Microsoft LLM services.
+This comprehensive guide explains how to use the BizChatScripts framework to create LLM-powered applications with support for both RSP and Microsoft LLM API Client approaches.
 
 ## Overview
 
-The MyLLM framework provides a structured approach to building applications that leverage Large Language Models (LLMs). It uses Microsoft Authentication Library (MSAL) to authenticate with internal Microsoft LLM services and automatically manages access tokens in `MyLLM/llms/.msal_token_cache`.
+The BizChatScripts framework provides a structured approach to building applications that leverage Large Language Models (LLMs). It now supports two approaches for accessing internal Microsoft LLM services:
+
+1. **RSP Approach**: Custom implementation with MSAL authentication - tested with `dev-gpt-41-longco-2025-04-14`
+2. **Microsoft LLM API Client Approach**: Official Microsoft library with broader internal model support
+
+Both approaches authenticate with internal Microsoft LLM services and provide seamless integration.
 
 ## Prerequisites
 
 1. **Microsoft Corporate Account**: You must have a valid Microsoft corporate account with access to internal LLM services.
 
-2. **Required Dependencies**: Install the required Python packages:
+2. **Required Dependencies**: 
    ```bash
-   pip install msal pymsalruntime
+   # Core dependencies (always required)
+   pip install msal pymsalruntime requests pystache tqdm
+   
+   # Optional: Microsoft LLM API Client for broader model support
+   pip install llm-api-client --index-url https://o365exchange.pkgs.visualstudio.com/_packaging/O365PythonPackagesV2/pypi/simple/
    ```
 
-3. **Windows Environment**: While the framework supports Linux through device code flow, Windows provides the best experience with integrated authentication.
+3. **Environment Support**: 
+   - **Windows**: Best experience with integrated authentication
+   - **Linux/WSL**: Supported via device code flow (may require `LLM_API_USE_DEVICE_FLOW_AUTH=True`)
+
+## Client Types and Model Support
+
+### RSP Client (Original)
+- **Models**: `dev-gpt-41-longco-2025-04-14` (tested)
+- **Authentication**: Direct MSAL integration with custom retry logic
+- **Use Case**: Maximum control over retry behavior and error handling
+
+### Microsoft LLM API Client 
+- **Models**: Broader support including `dev-o4-mini-2025-04-16`, `dev-gpt-4o-2024-05-13`, and others
+- **Authentication**: Library-managed authentication 
+- **Use Case**: Simplified usage with automatic retry policies
+
+### Unified Client (Recommended)
+- **Models**: Automatically routes to the best client for each model
+- **Authentication**: Manages both authentication types
+- **Use Case**: Maximum flexibility with automatic fallback
 
 ## Creating LLM Applications
 
 ### Basic Application Structure
 
-The MyLLM framework follows a structured pattern for creating LLM applications. Here's how to build your own:
+The BizChatScripts framework follows a structured pattern. Here are examples for different approaches:
 
-#### 1. Create an LLM Applier Class
+#### 1. RSP Approach (Original - Maximum Control)
 
 ```python
 from llms import ChatCompletionLLMApplier, ApplicationModes, with_retries, prompts
 
-class MyLLMApp(ChatCompletionLLMApplier):
-    """Your custom LLM application."""
+class MyRSPApp(ChatCompletionLLMApplier):
+    """LLM application using RSP approach for maximum control."""
     
     DEFAULT_PROMPT = prompts.get("my_app", "0.1.0")
     DEFAULT_MODEL_CONFIG = {
-        'model': "dev-gpt-41-longco-2025-04-14",
+        'model': "dev-gpt-41-longco-2025-04-14",  # RSP-tested model
+        'temperature': 0.1,
+        'max_tokens': 32000
+    }
+    DEFAULT_THREADS = 2
+    DEFAULT_RETRIES = 3  # Custom retry logic
+    APPLICATION_MODE = ApplicationModes.PerItem
+    
+    # Uses RSP client by default (no additional parameters needed)
+
+    def process_item(self, item, i):
+        """Process a single item."""
+        input_text = item.get('text', '')
+        result = self.analyze(input_text)
+        if result:
+            item['result'] = result
+        return item
+
+    @with_retries  
+    def analyze(self, input_text):
+        """Custom LLM processing with RSP."""
+        variables = {'input_text': input_text}
+        formatted_prompt = prompts.formatting.render_messages(self.prompt, variables)
+        completion = self.llmapi.chat_completion(self.model_config, formatted_prompt)
+        return completion['choices'][0]['message']['content'].strip()
+```
+
+#### 2. Microsoft LLM API Client Approach (Broader Model Support)
+
+```python
+from llms import ChatCompletionLLMApplier, ApplicationModes, with_retries, prompts
+
+class MyMSLLMApp(ChatCompletionLLMApplier):
+    """LLM application using Microsoft LLM API Client for broader model support."""
+    
+    DEFAULT_PROMPT = prompts.get("my_app", "0.1.0")
+    DEFAULT_MODEL_CONFIG = {
+        'model': "dev-o4-mini-2025-04-16",  # Broader model support
+        'temperature': 0.1,
+        'max_tokens': 32000
+    }
+    DEFAULT_THREADS = 2
+    DEFAULT_RETRIES = 3  # Converted to library tolerance
+    APPLICATION_MODE = ApplicationModes.PerItem
+    
+    def __init__(self, **kwargs):
+        # Explicitly use Microsoft LLM API Client
+        super().__init__(
+            client_type="ms_llm_client",
+            ms_scenario_guid="your-scenario-guid-here",
+            **kwargs
+        )
+
+    def process_item(self, item, i):
+        """Process a single item."""
+        input_text = item.get('text', '')
+        result = self.analyze(input_text)
+        if result:
+            item['result'] = result
+        return item
+
+    @with_retries  
+    def analyze(self, input_text):
+        """Custom LLM processing with Microsoft LLM API Client."""
+        variables = {'input_text': input_text}
+        formatted_prompt = prompts.formatting.render_messages(self.prompt, variables)
+        completion = self.llmapi.chat_completion(self.model_config, formatted_prompt)
+        return completion['choices'][0]['message']['content'].strip()
+```
+
+#### 3. Unified Approach (Recommended - Automatic Routing)
+
+```python
+from llms import ChatCompletionLLMApplier, ApplicationModes, with_retries, prompts
+
+class MyUnifiedApp(ChatCompletionLLMApplier):
+    """LLM application using unified client with automatic routing."""
+    
+    DEFAULT_PROMPT = prompts.get("my_app", "0.1.0")
+    DEFAULT_MODEL_CONFIG = {
+        'model': "dev-o4-mini-2025-04-16",  # Any internal model
         'temperature': 0.1,
         'max_tokens': 32000
     }
     DEFAULT_THREADS = 2
     DEFAULT_RETRIES = 3
     APPLICATION_MODE = ApplicationModes.PerItem
+    
+    def __init__(self, **kwargs):
+        # Use unified client with automatic routing
+        super().__init__(
+            client_type="unified",
+            ms_scenario_guid="your-scenario-guid-here",
+            **kwargs
+        )
 
     def process_item(self, item, i):
         """Process a single item."""
-        # Extract input from item
         input_text = item.get('text', '')
-        
-        # Call your LLM method
         result = self.analyze(input_text)
-        
-        # Add result to item
         if result:
             item['result'] = result
-            
         return item
 
     @with_retries  
     def analyze(self, input_text):
-        """Your custom LLM processing method."""
+        """Custom LLM processing with automatic client routing."""
         variables = {'input_text': input_text}
-        
-        # Format the prompt with variables
         formatted_prompt = prompts.formatting.render_messages(self.prompt, variables)
         
-        # Call the LLM
+        # The unified client automatically selects RSP or Microsoft LLM API Client
         completion = self.llmapi.chat_completion(self.model_config, formatted_prompt)
+        return completion['choices'][0]['message']['content'].strip()
+    
+    def analyze_with_explicit_client(self, input_text, use_client="auto"):
+        """Example of explicit client selection."""
+        variables = {'input_text': input_text}
+        formatted_prompt = prompts.formatting.render_messages(self.prompt, variables)
         
-        # Extract and return response
+        # Explicitly choose client: "rsp", "ms_llm_client", or "auto"
+        completion = self.llmapi.chat_completion(
+            self.model_config, 
+            formatted_prompt, 
+            preferred_client=use_client
+        )
         return completion['choices'][0]['message']['content'].strip()
 ```
 
@@ -238,25 +357,202 @@ Summary (145 chars): AI has transformed industries through improved efficiency a
 3. **Browser Authentication**: Complete authentication in your browser
 4. **Token Cache**: Token is saved for future use
 
-## Model Configuration
+## Direct Client Usage
 
-The framework is configured to use internal Microsoft models:
+For applications that need more control, you can use the clients directly:
+
+### RSP Client (Direct)
 
 ```python
-DEFAULT_MODEL_CONFIG = {
-    'model': "dev-gpt-41-longco-2025-04-14",  # Internal Microsoft model
+from llms import LLMAPI
+import prompts
+
+# Create RSP client
+client = LLMAPI()
+
+# Model configuration
+model_config = {
+    'model': "dev-gpt-41-longco-2025-04-14",
     'temperature': 0.1,
-    'max_tokens': 32000
+    'max_tokens': 1000
+}
+
+# Load and format prompt
+prompt = prompts.get("my_app", "0.1.0")
+variables = {'input_text': 'Your text here'}
+formatted_prompt = prompts.formatting.render_messages(prompt, variables)
+
+# Make request
+response = client.chat_completion(model_config, formatted_prompt)
+result = response['choices'][0]['message']['content'].strip()
+```
+
+### Microsoft LLM API Client (Direct)
+
+```python
+from llms import MSLLMAPIClientAdapter
+
+# Create Microsoft LLM API Client
+client = MSLLMAPIClientAdapter(
+    scenario_guid="your-scenario-guid",
+    retries=3,
+    enable_async=False
+)
+
+# Model configuration  
+model_config = {
+    'model': "dev-o4-mini-2025-04-16",
+    'temperature': 0.1,
+    'max_tokens': 1000
+}
+
+# Messages format
+messages = [
+    {'role': 'system', 'content': 'You are a helpful assistant.'},
+    {'role': 'user', 'content': 'Your prompt here'}
+]
+
+# Make request
+response = client.chat_completion(model_config, messages)
+result = response['choices'][0]['message']['content'].strip()
+```
+
+### Unified Client (Direct)
+
+```python
+from llms import UnifiedLLMAPI, ClientType
+
+# Create unified client
+client = UnifiedLLMAPI(
+    ms_scenario_guid="your-scenario-guid",
+    default_client=ClientType.AUTO  # or ClientType.RSP, ClientType.MS_LLM_CLIENT
+)
+
+# Model configuration
+model_config = {
+    'model': "dev-o4-mini-2025-04-16",  # Any internal model
+    'temperature': 0.1,
+    'max_tokens': 1000
+}
+
+# Make request with automatic routing
+response = client.chat_completion(model_config, messages)
+
+# Or with explicit client selection
+response = client.chat_completion(model_config, messages, preferred_client="ms_llm_client")
+```
+
+## Migration Guide
+
+### From Existing BizChatScripts Code (Zero Breaking Changes)
+
+**Existing code continues to work unchanged:**
+
+```python
+# This code works exactly as before
+from llms import ChatCompletionLLMApplier, prompts
+
+class ExistingApp(ChatCompletionLLMApplier):
+    DEFAULT_MODEL_CONFIG = {
+        'model': "dev-gpt-41-longco-2025-04-14"
+    }
+    # ... rest of your existing code unchanged
+```
+
+### Adding Microsoft LLM API Client Support
+
+**Option 1: Explicit Client Type**
+
+```python
+class EnhancedApp(ChatCompletionLLMApplier):
+    def __init__(self, **kwargs):
+        super().__init__(
+            client_type="ms_llm_client",  # Use Microsoft LLM API Client
+            ms_scenario_guid="your-guid",
+            **kwargs
+        )
+```
+
+**Option 2: Unified Client**
+
+```python
+class FlexibleApp(ChatCompletionLLMApplier):
+    def __init__(self, **kwargs):
+        super().__init__(
+            client_type="unified",  # Automatic routing
+            ms_scenario_guid="your-guid", 
+            **kwargs
+        )
+```
+
+**Option 3: Runtime Model Switching**
+
+```python
+# Same application, different models
+app = FlexibleApp(client_type="unified")
+
+# Use RSP model
+app.model_config = {'model': 'dev-gpt-41-longco-2025-04-14'}
+
+# Use Microsoft LLM API Client model  
+app.model_config = {'model': 'dev-o4-mini-2025-04-16'}
+```
+
+## Model Configuration and Compatibility
+
+### Supported Models
+
+#### RSP Client
+- ✅ `dev-gpt-41-longco-2025-04-14` (tested)
+- ⚠️  Limited to specifically tested models
+
+#### Microsoft LLM API Client  
+- ✅ `dev-gpt-41-longco-2025-04-14` (also supported)
+- ✅ `dev-o4-mini-2025-04-16`
+- ✅ `dev-gpt-4o-2024-05-13`
+- ✅ `dev-gpt-4o-mini`
+- ✅ Other internal Microsoft models (check latest library documentation)
+
+### Model Configuration Format
+
+Both approaches support the same configuration format:
+
+```python
+model_config = {
+    'model': "model-name",           # Both 'model' and 'model_name' supported
+    'temperature': 0.1,              # Controls randomness (0.0-2.0)
+    'max_tokens': 1000,              # Maximum response length
+    'top_p': 1.0,                   # Nucleus sampling parameter
+    'presence_penalty': 0.0,         # Penalty for new topics
+    'frequency_penalty': 0.0         # Penalty for repetition
 }
 ```
 
-Required headers are automatically added:
+**Required headers are automatically added:**
 - `X-ModelType`: Specifies the internal model type
 - `X-ScenarioGUID`: Unique identifier for the scenario
+
+## Authentication Details
+
+### RSP Authentication (MSAL)
+
+1. **Windows Integrated**: Seamless authentication on Windows
+2. **Device Code Flow**: For Linux/WSL environments  
+3. **Token Caching**: Stored in `BizChatScripts/llms/.msal_token_cache`
+4. **Automatic Refresh**: Handles token expiration automatically
+
+### Microsoft LLM API Client Authentication
+
+1. **Library Managed**: Authentication handled by Microsoft library
+2. **Environment Detection**: Auto-detects AML vs local development
+3. **WSL Support**: Set `LLM_API_USE_DEVICE_FLOW_AUTH=True` if needed
+4. **Credential Integration**: Works with Microsoft development tooling
 
 ## Troubleshooting
 
 ### Common Issues
+
+#### RSP Client Issues
 
 1. **"Missing required dependency: pymsalruntime"**
    ```bash
@@ -276,6 +572,44 @@ Required headers are automatically added:
 4. **Cached token expires**
    - The system automatically refreshes expired tokens
    - If refresh fails, delete `.msal_token_cache` to force re-authentication
+
+#### Microsoft LLM API Client Issues
+
+1. **"Microsoft llm-api-client not available" error**
+   ```bash
+   pip install llm-api-client --index-url https://o365exchange.pkgs.visualstudio.com/_packaging/O365PythonPackagesV2/pypi/simple/
+   ```
+
+2. **Authentication in WSL/Linux**
+   ```bash
+   export LLM_API_USE_DEVICE_FLOW_AUTH=True
+   ```
+
+3. **"Model not supported" errors**
+   - Check the model name spelling
+   - Verify the model is available in your environment
+   - Try a different model or switch to RSP client
+
+4. **Scenario GUID issues**
+   - Ensure you have the correct scenario GUID for your project
+   - Verify your account has access to the specified scenario
+
+#### Unified Client Issues
+
+1. **Fallback not working**
+   - Check that both clients are properly configured
+   - Verify authentication for both approaches
+   - Check logs for specific error details
+
+2. **Unexpected client routing**
+   ```python
+   # Force specific client
+   response = client.chat_completion(model_config, messages, preferred_client="rsp")
+   ```
+
+3. **Import errors for new clients**
+   - The framework gracefully falls back to RSP if new clients aren't available
+   - Check that optional dependencies are installed
 
 ### Manual Token Cache Reset
 

@@ -1,0 +1,48 @@
+[
+    {
+        "id": "response_1",
+        "text": "The weather today is sunny with temperatures reaching 75°F. It's a perfect day for outdoor activities like hiking or having a picnic in the park. Make sure to wear sunscreen and stay hydrated!",
+        "criteria": [
+            "clarity",
+            "helpfulness",
+            "informativeness"
+        ]
+    },
+    {
+        "id": "response_2",
+        "text": "To solve this math problem, first you need to... um... well, it's complicated and involves some stuff with numbers and things. I think you might need to use a calculator or something.",
+        "criteria": [
+            "clarity",
+            "helpfulness",
+            "completeness"
+        ]
+    },
+    {
+        "id": "response_3",
+        "text": "Machine learning algorithms can be broadly categorized into supervised, unsupervised, and reinforcement learning approaches. Supervised learning uses labeled training data to learn patterns and make predictions on new data. Unsupervised learning finds hidden structures in unlabeled data through techniques like clustering and dimensionality reduction. Reinforcement learning trains agents to make decisions through trial and error interactions with an environment.",
+        "criteria": [
+            "accuracy",
+            "clarity",
+            "educational_value"
+        ]
+    },
+    {
+        "id": "response_4",
+        "text": "Python is a programming language. It's used for many things. People like it because it's easy. You can write programs with it. It has lots of libraries. Many companies use Python for their software projects.",
+        "criteria": [
+            "informativeness",
+            "clarity",
+            "completeness"
+        ]
+    },
+    {
+        "id": "response_5",
+        "text": "Effective time management involves several key strategies: prioritizing tasks based on importance and urgency, breaking large projects into smaller manageable steps, eliminating distractions during focused work periods, and regularly reviewing and adjusting your schedule. Tools like calendars, task lists, and time-blocking can help organize your day more efficiently.",
+        "criteria": [
+            "helpfulness",
+            "clarity",
+            "completeness",
+            "actionability"
+        ]
+    }
+]

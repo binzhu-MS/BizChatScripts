@@ -1,6 +1,259 @@
 {
     "version": "0.2.0",
     "configurations": [
+        // ============================================
+        // EXAMPLES - Framework Demonstrations
+        // ============================================
+        {
+            "name": "📚 Example: Text Summarizer",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_text_summarizer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_summarization_input.json",
+                "--output_file=${workspaceFolder}/examples/example_summarization_output.json",
+                "--threads=2",
+                "--retries=3",
+                "--max_items=3"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📚 Example: RSP Scorer",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_rsp_scorer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_rsp_scoring_input.json",
+                "--output_file=${workspaceFolder}/examples/example_rsp_scoring_output.json",
+                "--threads=3",
+                "--retries=2",
+                "--max_items=3"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "� Example: Simple Scorer (RSP)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_simple_scorer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_simple_scorer_input.json",
+                "--output_file=${workspaceFolder}/examples/example_simple_scorer_rsp_output.json",
+                "--threads=2",
+                "--retries=3",
+                "--client_type=rsp"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Example: Simple Scorer (Microsoft LLM API Client)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_simple_scorer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_simple_scorer_input.json",
+                "--output_file=${workspaceFolder}/examples/example_simple_scorer_ms_api_output.json",
+                "--threads=2",
+                "--retries=3",
+                "--client_type=ms_llm_client"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Example: Simple Scorer (Unified Client)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_simple_scorer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_simple_scorer_input.json",
+                "--output_file=${workspaceFolder}/examples/example_simple_scorer_unified_output.json",
+                "--threads=2",
+                "--retries=3",
+                "--client_type=unified"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "�📚 Example: Direct API Usage",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_direct_api.py",
+            "args": [
+                "${workspaceFolder}/examples/example_direct_api_input.json",
+                "--output_file=${workspaceFolder}/examples/example_direct_api_output.json",
+                "--temperature=0.3",
+                "--max_tokens=1000"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📚 Example: Direct API Usage (Custom Model)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_direct_api.py",
+            "args": [
+                "${workspaceFolder}/examples/example_direct_api_input.json",
+                "--output_file=${workspaceFolder}/examples/example_direct_api_custom_output.json",
+                "--model=dev-gpt-41-longco-2025-04-14",
+                "--temperature=0.7",
+                "--max_tokens=2000"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📚 Example: Text Summarizer (Microsoft LLM API Client)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_text_summarizer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_summarization_input.json",
+                "--output_file=${workspaceFolder}/examples/example_summarization_ms_api_output.json",
+                "--threads=2",
+                "--retries=3",
+                "--max_items=3",
+                "--client_type=ms_llm_client"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📚 Example: Text Summarizer (Unified Client)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_text_summarizer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_summarization_input.json",
+                "--output_file=${workspaceFolder}/examples/example_summarization_unified_output.json",
+                "--threads=2",
+                "--retries=3",
+                "--max_items=3",
+                "--client_type=unified"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📚 Example: RSP Scorer (Unified Client)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_rsp_scorer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_rsp_scoring_input.json",
+                "--output_file=${workspaceFolder}/examples/example_rsp_scoring_unified_output.json",
+                "--threads=3",
+                "--retries=2",
+                "--max_items=3",
+                "--client_type=unified"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Example: Simple Scorer (RSP)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_simple_scorer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_simple_scorer_input.json",
+                "--output_file=${workspaceFolder}/examples/example_simple_scorer_rsp_output.json",
+                "--threads=2",
+                "--retries=3",
+                "--client_type=rsp"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Example: Simple Scorer (Microsoft LLM API Client)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/example_simple_scorer.py",
+            "args": [
+                "${workspaceFolder}/examples/example_simple_scorer_input.json",
+                "--output_file=${workspaceFolder}/examples/example_simple_scorer_ms_api_output.json",
+                "--threads=2",
+                "--retries=3",
+                "--client_type=ms_llm_client"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Example: Simple Scorer (Unified Client)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/using_llms/simple_scorer.py",
+            "args": [
+                "--threads=2",
+                "--retries=3",
+                "--client_type=unified"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // PRODUCTION APPLICATIONS
+        // ============================================
         {
             "name": "Utterance Complexity Classifier",
             "type": "debugpy",
@@ -88,19 +341,7 @@
             "name": "Run Custom Applier",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/using_llms/custom_applier.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        {
-            "name": "Run Auth Setup",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/using_llms/auth_setup.py",
+            "program": "${workspaceFolder}/using_llms/example_custom_applier.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "justMyCode": true,

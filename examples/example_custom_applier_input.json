@@ -1,0 +1,24 @@
+[
+    {
+        "type": "sentiment",
+        "text": "I absolutely love this new feature! It's amazing and works perfectly."
+    },
+    {
+        "type": "sentiment",
+        "text": "This is the worst experience I've ever had. Nothing works as expected."
+    },
+    {
+        "type": "sentiment",
+        "text": "The weather today is partly cloudy with a chance of rain."
+    },
+    {
+        "type": "code_review",
+        "code": "def calculate_average(numbers):\n    total = 0\n    for num in numbers:\n        total += num\n    return total / len(numbers)",
+        "language": "python"
+    },
+    {
+        "type": "code_review",
+        "code": "function getUserById(id) {\n    var users = getAllUsers();\n    for (var i = 0; i < users.length; i++) {\n        if (users[i].id == id) {\n            return users[i];\n        }\n    }\n}",
+        "language": "javascript"
+    }
+]

@@ -1,0 +1,27 @@
+[
+    {
+        "id": "text_1",
+        "input_text": "The field of artificial intelligence has undergone remarkable transformations over the past decade. Machine learning algorithms, particularly deep neural networks, have achieved unprecedented success in tasks ranging from image recognition to natural language processing. Large language models like GPT and BERT have revolutionized how we approach text generation and understanding. Meanwhile, computer vision systems can now accurately identify objects, faces, and scenes in real-time. These advances have led to practical applications in healthcare, autonomous vehicles, finance, and countless other domains.",
+        "max_length": "2 sentences"
+    },
+    {
+        "id": "text_2",
+        "input_text": "Climate change represents one of the most pressing challenges of our time. Rising global temperatures, caused primarily by human activities such as burning fossil fuels and deforestation, are leading to widespread environmental impacts. These include melting ice caps, rising sea levels, more frequent extreme weather events, and disruptions to ecosystems and biodiversity. The economic costs are substantial, affecting agriculture, infrastructure, and human health.",
+        "max_length": "50 words"
+    },
+    {
+        "id": "text_3",
+        "input_text": "The Renaissance was a period of cultural, artistic, and intellectual rebirth in Europe that began in Italy during the 14th century and spread throughout Europe over the following centuries. This era marked a transition from medieval to modern thinking and was characterized by renewed interest in classical Greek and Roman knowledge, humanism, and scientific inquiry. Key figures included Leonardo da Vinci, Michelangelo, and Galileo Galilei.",
+        "max_length": "1 sentence"
+    },
+    {
+        "id": "text_4",
+        "input_text": "Quantum computing harnesses the principles of quantum mechanics to process information in fundamentally different ways than classical computers. While classical computers use bits that are either 0 or 1, quantum computers use quantum bits (qubits) that can exist in superposition states, allowing them to perform many calculations simultaneously. This quantum parallelism, combined with phenomena like entanglement, gives quantum computers the potential to solve certain problems exponentially faster than classical computers.",
+        "max_length": "3 sentences"
+    },
+    {
+        "id": "text_5",
+        "input_text": "Photosynthesis is the process by which plants convert sunlight, carbon dioxide, and water into glucose and oxygen. This process occurs in the chloroplasts of plant cells and involves two main stages: the light-dependent reactions and the Calvin cycle. During the light-dependent reactions, chlorophyll absorbs light energy and splits water molecules, releasing oxygen as a byproduct. The Calvin cycle then uses this energy to convert carbon dioxide into glucose.",
+        "max_length": "100 words"
+    }
+]
