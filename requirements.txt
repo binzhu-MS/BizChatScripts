@@ -35,6 +35,39 @@ pyxlsb>=1.0.0             # For reading Excel Binary Workbook (.xlsb) files
 pywin32>=227              # For Windows COM Excel automation (fallback method)
 
 # =============================================================================
+# DOCUMENT PROCESSING DEPENDENCIES
+# Required for PDF and Word document reading capabilities
+# =============================================================================
+PyPDF2>=3.0.0             # PDF document reading and text extraction
+python-docx>=0.8.11       # Word document (.docx) reading and manipulation
+docx2txt>=0.8              # Legacy Word document (.doc) text extraction
+
+# =============================================================================
+# UNIVERSAL FILE READER DEPENDENCIES
+# Required for comprehensive file format support (PDF, Word, Excel, PowerPoint)
+# =============================================================================
+PyPDF2>=3.0.0             # PDF document reading and text extraction
+python-docx>=0.8.11       # Word document (.docx) reading and manipulation
+docx2txt>=0.8              # Legacy Word document (.doc) text extraction
+python-pptx>=0.6.21        # PowerPoint (.pptx) reading and manipulation
+chardet>=5.0.0             # Character encoding detection for text files
+PyMuPDF>=1.20.0            # Alternative PDF reader (optional, high quality)
+pywin32>=227               # Windows COM automation for Office files (Windows only)
+
+# Excel reading dependencies (already included above but listed for clarity)
+# pandas>=1.3.0            # Already included above
+# openpyxl>=3.0.0          # Already included above  
+# xlrd>=2.0.0              # Already included above
+# pyxlsb>=1.0.0            # Already included above
+
+# =============================================================================
+# STATISTICAL ANALYSIS DEPENDENCIES
+# Required for statistical functions and analysis in statistics_utils.py
+# =============================================================================
+scipy>=1.7.0              # Scientific computing library for statistical tests
+statsmodels>=0.12.0       # Statistical modeling and econometrics library
+
+# =============================================================================
 # DEVELOPMENT AND TESTING DEPENDENCIES
 # Required for running tests and development workflows
 # =============================================================================

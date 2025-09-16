@@ -1,8 +1,8 @@
-# Example Data Files
+# Example Data Files and Demonstrations
 
-This folder contains sample input data for demonstrating the BizChatScripts framework.
+This folder contains sample input data and demonstration scripts for the BizChatScripts framework.
 
-## Files
+## Data Files
 
 ### `example_simple_scorer_input.json`
 Sample texts for the simple scoring example.
@@ -34,6 +34,18 @@ Simple prompts for direct API usage demonstrations.
 - **Format**: Array of objects with `id` and `prompt` fields
 - **Content**: Educational prompts about quantum computing, renewable energy, programming, etc.
 
+## Demonstration Scripts
+
+### `file_reader_example.py`
+Comprehensive demonstration of the UniversalFileReader capabilities.
+- **Usage**: `python examples/file_reader_example.py`
+- **Features**: 
+  - Reading individual files (PDF, DOCX, XLSX, PPTX, TXT)
+  - Batch processing directories
+  - Integration with LLM processing workflows
+  - Error handling and fallback methods
+- **Output**: Demonstrates file content extraction with detailed logging
+
 ## VS Code Launch Configurations
 
 The `.vscode/launch.json` file contains pre-configured debug sessions for all examples:
@@ -49,6 +61,18 @@ The `.vscode/launch.json` file contains pre-configured debug sessions for all ex
 - **📚 Example: Direct API Usage** - Low-level API interactions
 - **📚 Example: Direct API Usage (Patterns)** - Show common patterns
 
+## Related Tools and Utilities
+
+The BizChatScripts framework includes additional tools and utilities in the `tools/` directory:
+
+- **UniversalFileReader** - Multi-format file content extraction (PDF, DOCX, XLSX, PPTX)
+- **Data Conversion Tools** - JSON/TSV/Excel format converters
+- **Statistics and Metrics** - Analysis tools for generated data
+- **Template Processing** - Jinja2 template utilities
+- **Data Validation** - JSON validation and processing tools
+
+For detailed information about these tools, see `tools/README_UniversalFileReader.md`.
+
 ## Quick Start
 
 *Important: Run all commands from the BizChatScripts root directory*
@@ -63,6 +87,9 @@ The `.vscode/launch.json` file contains pre-configured debug sessions for all ex
    
    # Custom applier with mixed sentiment/code review
    python -m using_llms.example_custom_applier process
+   
+   # File reading demonstration
+   python examples/file_reader_example.py
    ```
 
 2. **Run demo modes with hardcoded data:**
@@ -82,6 +109,16 @@ The `.vscode/launch.json` file contains pre-configured debug sessions for all ex
    - Press `F5` and select an example configuration
    - Set breakpoints to inspect the framework behavior
 
+5. **Explore file processing capabilities:**
+   ```bash
+   # Run universal file reader examples
+   python examples/file_reader_example.py
+   
+   # Use tools for data conversion and analysis
+   python tools/universal_file_reader_example.py
+   python tools/get_json_statistics.py input_file.json
+   ```
+
 ## Output Files
 
 Example applications will create output files in this directory:
@@ -92,3 +129,16 @@ Example applications will create output files in this directory:
 - `example_direct_api_output.json` - Direct API call results
 
 These output files show the structure of processed data and can be used as templates for your own applications.
+
+## Integration Examples
+
+The examples demonstrate key integration patterns:
+
+1. **File I/O Processing**: Read input data, process with LLMs, save structured output
+2. **Batch Processing**: Handle multiple items with threading and error recovery
+3. **Multi-format File Reading**: Extract content from various document formats
+4. **Custom Prompt Engineering**: Apply different LLM techniques for specific tasks
+5. **Error Handling**: Robust processing with retries and fallback strategies
+6. **Configuration Management**: Flexible parameter handling for different use cases
+
+For production implementations, refer to the `projects/` directory which contains real-world applications using these patterns.

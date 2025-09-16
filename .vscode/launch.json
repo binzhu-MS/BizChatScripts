@@ -1,5 +1,25 @@
 {
     "version": "0.2.0",
+    "inputs": [
+        {
+            "id": "emailAccount",
+            "description": "Enter the email account to extract emails for",
+            "default": "johndoe",
+            "type": "promptString"
+        },
+        {
+            "id": "inputFile",
+            "description": "Input TSV file to process",
+            "default": "results/utterances_curr.tsv",
+            "type": "promptString"
+        },
+        {
+            "id": "outputFile",
+            "description": "Output TSV file to append to",
+            "default": "results/utterances_all.tsv",
+            "type": "promptString"
+        }
+    ],
     "configurations": [
         // ============================================
         // EXAMPLES - Framework Demonstrations
@@ -252,6 +272,25 @@
             }
         },
         // ============================================
+        // TESTING - Utility Tests and Validation
+        // ============================================
+        {
+            "name": "🧪 Test: File Reader - Complete Analysis (All Files)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/test_file_reader.py",
+            "args": [
+                "--full"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "postDebugTask": "Open File Reader Results"
+        },
+        // ============================================
         // PRODUCTION APPLICATIONS
         // ============================================
         {
@@ -275,7 +314,7 @@
             }
         },
         {
-            "name": "Extract Templates",
+            "name": "Extract Utterance Templates",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/personalization/extract_templates.py",
@@ -580,6 +619,581 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }
-        }
+        },
+        // ============================================
+        // STATISTICAL ANALYSIS - No LLM Dependencies
+        // ============================================
+        {
+            "name": "📊 Email Statistical Analysis (Full)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_statistics.py",
+            "args": [
+                "analyze",
+                "--input_file=${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/data/emails.config.json",
+                "--output_file=${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/results/email_statistics_report.json",
+                "--detailed_report=true"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Email Statistical Analysis (Quick Overview)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_statistics.py",
+            "args": [
+                "quick",
+                "--input_file=${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/data/emails.config.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Email Statistical Analysis (Limited Dataset)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_statistics.py",
+            "args": [
+                "analyze",
+                "--input_file=${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/data/emails.config.json",
+                "--output_file=${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/results/email_statistics_test.json",
+                "--max_items=50",
+                "--detailed_report=true"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // Email processing
+        // ============================================
+        {
+            "name": "🏷️  Email Account Analysis (Comprehensive Report)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_account_analysis.py",
+            "args": [
+                "generate_comprehensive_report",
+                "--output_file=results/comprehensive_account_analysis.md"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🏷️  Email Account Analysis (List All Types)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_account_analysis.py",
+            "args": [
+                "list_by_type",
+                "all"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📧 Generate User Email Mapping JSON",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_account_analysis.py",
+            "args": [
+                "generate_user_email_mapping",
+                "--output_file=results/user_email_mapping.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📧 Extract Merged Account Emails (johndoe)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_extractor_merged_accounts.py",
+            "args": [
+                "extract_emails",
+                "johndoe",
+                "--emails_file=data/emails.config.json",
+                "--user_mapping_file=results/user_email_mapping.json",
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📧 Extract for Merged Account Emails (Custom)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_extractor_merged_accounts.py",
+            "args": [
+                "extract_emails",
+                "${input:emailAccount}",
+                "--emails_file=data/emails.config.json",
+                "--user_mapping_file=results/user_email_mapping.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📧 Extract Individual Account Emails (marion.chen)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_extractor_individual_accounts.py",
+            "args": [
+                "extract_emails_with_prompt",
+                "alex.johnson",
+                "--emails_file=data/emails.config.json",
+                "--users_file=data/users.config.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Individual Email Statistics (All Accounts)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/email_statistics_individual.py",
+            "args": [
+                "individual_account_statistics",
+                "--emails_file=data/emails.config.json",
+                "--users_file=data/users.config.json",
+                "--output_file=results/individual_email_statistics.json",
+                "--limit=0"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // TSV PROCESSING
+        // ============================================
+        {
+            "name": "📊 TSV Splitter - Split by Segment and Email Account",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_splitter.py",
+            "args": [
+                "split_utterances"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // --------------------------------------------
+        // TIMESTAMP PROMPT GENERATOR
+        // Generate LLM prompts to add timestamps to utterances based on email accessibility.
+        // Uses external template file (prompt_add_timestamp.md) and processes split TSV files.
+        // Manual LLM processing required after prompt generation.
+        // --------------------------------------------
+        {
+            "name": "⏰ Timestamp Prompt Generator - Generate All Account Prompts",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/timestamp_prompt_generator.py",
+            "args": [
+                "generate_timestamp_prompts",
+                "--split_results_dir=results/split_results",
+                "--output_dir=results/timestamp_prompts",
+                "--emails_file=data/emails.config.json",
+                "--users_file=data/users.config.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "⏰ Timestamp Prompt Generator - Single Account Test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/timestamp_prompt_generator.py",
+            "args": [
+                "generate_prompt_for_account",
+                "alex.johnson",
+                "test_utterances.json",
+                "test_timestamp_prompt.md",
+                "--template_file=prompt_add_timestamp.md"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "⏰ Timestamp Prompt Generator - Generate Remaining Prompts",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/timestamp_prompt_generator.py",
+            "args": [
+                "generate_remaining_timestamp_prompts",
+                "--untimestamped_file=results/utterances_email_untimestamped.tsv",
+                "--output_dir=results/timestamp_prompts_remaining",
+                "--emails_file=data/emails.config.json",
+                "--users_file=data/users.config.json",
+                "--template_file=prompt_add_timestamp.md"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // TSV VALIDATION
+        // ============================================
+        {
+            "name": "🔍 TSV Field Validator - Validate Timestamped Utterances",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_field_validator.py",
+            "args": [
+                "validate_file",
+                "results/utterances_seval_timestamped.tsv",
+                "--show_details=True",
+                "--max_issues=20",
+                "--output_report=results/validation_report.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔍 TSV Field Validator - Quick Check",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_field_validator.py",
+            "args": [
+                "quick_check",
+                "results/utterances_seval_timestamped.tsv"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔍 TSV Field Validator - Validate Specific Fields",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_field_validator.py",
+            "args": [
+                "validate_specific_fields",
+                "results/utterances_seval_timestamped.tsv",
+                "Utterance,Segment,user_id,timestamp",
+                "--output_report=results/specific_fields_validation.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // Files Processing
+        // ============================================
+        {
+            "name": "📁 Files Extractor",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/files_extractor.py",
+            "args": [
+                "analyze_folder",
+                "--folder_path=data/files",
+                "--output_file=results/files_contents.json",
+                "--include_subdirs=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // File Access Analysis
+        // ============================================
+        {
+            "name": "🔐 File Access Analyzer - Full Analysis",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/files_individual_extractor.py",
+            "args": [
+                "analyze_file_access",
+                "--config_file=data/files.config.json",
+                "--output_file=results/file_access_results.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "👤 File Access Analyzer - User Summary",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/files_individual_extractor.py",
+            "args": [
+                "get_user_accessible_files",
+                "--config_file=data/files.config.json",
+                "--output_folder=results",
+                "--user_email=session.lead"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "👤 File Access Analyzer - User Files to Prompt",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/files_individual_extractor.py",
+            "args": [
+                "extract_user_file_content_with_prompt",
+                "--config_file=data/files.config.json",
+                "--output_folder=results",
+                "--prompt_file=prompt_file_gen_complex_utterance.md",
+                "--user_email=rachael.morgan"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // Utterance Timestamper for Seval Data
+        // ============================================
+        {
+            "name": "⏰ File Utterance Timestamper for Seval Data",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/utterance_timestamper.py",
+            "args": [
+                "timestamp_file_utterances",
+                "results/utterances_email_timestamped.tsv",
+                "results/utterances_seval_timestamped.tsv",
+                "--files_folder=data/files",
+                "--hours_after_files=2.0",
+                "--time_window_hours=8.0"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📧 Email Utterance Timestamper for Seval Data",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/utterance_timestamper.py",
+            "args": [
+                "timestamp_email_utterances",
+                "--utterances_path=results/utterances_seval.tsv",
+                "--output_path=results/utterances_email_timestamped.tsv",
+                "--timestamp_results_folder=results/timestamp_results",
+                "--untimestamped_output_path=results/utterances_email_untimestamped.tsv"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // TSV file processing
+        // ============================================
+        {
+            "name": "📄 Process TSV and Append to All TSV",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/process_tsv.py",
+            "args": [
+                "process_file",
+                "--input_file=results/utterances_curr.tsv",
+                "--output_file=results/utterances_all.tsv",
+                "--segment=email",
+                "--append_mode=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📄 TSV to SEVAL Processor - Convert for Evaluation",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/process_tsv_to_seval.py",
+            "args": [
+                "process_to_seval",
+                "--input_file=results/utterances_all.tsv",
+                "--output_file=results/utterances_seval_processed.tsv",
+                "--max_items=100"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // TEMPORAL UTTERANCE ANALYZER
+        // ============================================
+        {
+            "name": "🕒 Temporal Utterance Analyzer - Sample Test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/temporal_utterance_analyzer.py",
+            "args": [
+                "analyze_temporal_references",
+                "--input_file=results/utterances_all.tsv",
+                "--output_folder=temporal_analysis_results",
+                "--max_items=5",
+                "--threads=1"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🕒 Temporal Utterance Analyzer - Full Analysis",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/temporal_utterance_analyzer.py",
+            "args": [
+                "analyze_temporal_references",
+                "--input_file=results/utterances_all.tsv",
+                "--output_folder=temporal_analysis_results",
+                "--threads=2"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🕒 Temporal Utterance Analyzer - Custom Input",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/temporal_utterance_analyzer.py",
+            "args": [
+                "analyze_temporal_references",
+                "--input_file=${input:inputFile}",
+                "--output_folder=temporal_analysis_results",
+                "--max_items=10",
+                "--threads=1"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // TSV TO SEVAL PROCESSOR - Data Transformation
+        // ============================================
+        {
+            "name": "🔄 TSV to SEVAL Processor (Sample)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/process_tsv_to_seval.py",
+            "args": [
+                "process_to_seval",
+                "--input_file=results/utterances_all.tsv",
+                "--output_file=results/utterances_seval_sample.tsv",
+                "--max_items=10"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔄 TSV to SEVAL Processor (Full)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/process_tsv_to_seval.py",
+            "args": [
+                "process_to_seval",
+                "--input_file=results/utterances_all.tsv",
+                "--output_file=results/utterances_seval.tsv"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
     ]
 }
