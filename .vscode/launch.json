@@ -18,6 +18,12 @@
             "description": "Output TSV file to append to",
             "default": "results/utterances_all.tsv",
             "type": "promptString"
+        },
+        {
+            "id": "segmentValue",
+            "description": "Enter the segment value to filter by (e.g., email, chat, teams)",
+            "default": "email",
+            "type": "promptString"
         }
     ],
     "configurations": [
@@ -930,6 +936,46 @@
                 "results/utterances_seval_timestamped.tsv",
                 "Utterance,Segment,user_id,timestamp",
                 "--output_report=results/specific_fields_validation.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // TSV FILTERING - SQL-like Column Filtering
+        // ============================================
+        {
+            "name": "📧 TSV Filter - Selecting Rows with Segment as Email",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_column_filter.py",
+            "args": [
+                "filter_by_column",
+                "Segment",
+                "email",
+                "--input_file=results/utterances_seval_timestamped.tsv",
+                "--output_file=results/utterances_seval_email_only.tsv",
+                "--show_stats=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 TSV Filter - Analyze Segment Column",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_column_filter.py",
+            "args": [
+                "analyze_column",
+                "Segment",
+                "--input_file=results/utterances_seval_timestamped.tsv"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
