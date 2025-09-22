@@ -24,6 +24,35 @@
             "description": "Enter the segment value to filter by (e.g., email, chat, teams)",
             "default": "email",
             "type": "promptString"
+        },
+        {
+            "id": "searchQuery",
+            "description": "Enter search query text to find in JSON files",
+            "default": "microsoft",
+            "type": "promptString"
+        },
+        {
+            "id": "expType",
+            "description": "Choose experiment type (control/experiment/both)",
+            "default": "both",
+            "type": "pickString",
+            "options": [
+                "both",
+                "control",
+                "experiment"
+            ]
+        },
+        {
+            "id": "customDirectory",
+            "description": "Enter custom directory path to search for JSON files",
+            "default": "c:\\working\\BizChatScripts\\projects\\gpt5_gen_complex_utterances\\synthetic_tenants\\seval_data\\scraping_raw_data_output",
+            "type": "promptString"
+        },
+        {
+            "id": "sevalInputDirectory",
+            "description": "Enter directory path containing SEVAL JSON files for processing",
+            "default": "c:\\working\\BizChatScripts\\projects\\gpt5_gen_complex_utterances\\synthetic_tenants\\seval\\seval_data\\212953_scraping_raw_data_output",
+            "type": "promptString"
         }
     ],
     "configurations": [
@@ -1241,5 +1270,63 @@
                 "PYTHONPATH": "${workspaceFolder}"
             }
         },
+        // ============================================
+        // SEVAL Job Processing
+        // ============================================
+        {
+            "name": "🔍 Search Query to Find Matching Raw Seval Files",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_raw_file_searcher.py",
+            "args": [
+                "search_query",
+                "--query=Aggregate OTA test results",
+                "--search_dir=seval_data/212953_scraping_raw_data_output",
+                "--exp=both",
+                "--threads=16"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📋 Generate Query Mappings (SEVAL)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_raw_file_searcher.py",
+            "args": [
+                "extract_query_mappings",
+                "--threads=16",
+                "--search_dir=seval_data/212953_scraping_raw_data_output",
+                "--output_file=results/query_file_mappings.tsv"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "⚡ Fast Search Using Mappings (SEVAL)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_raw_file_searcher.py",
+            "args": [
+                "search_using_mappings",
+                "--query=Aggregate OTA test results",
+                "--mappings_file=results/query_file_mappings.tsv",
+                "--threads=16"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
     ]
 }
