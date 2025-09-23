@@ -562,8 +562,6 @@ class SEVALRawFileSearcher:
             )
             return
 
-        logger.info(f"Starting model statistics extraction at: {datetime.now()}")
-
         # Find JSON files based on experiment type filter
         json_files = []
         search_path = Path(input_dir)
