@@ -1277,7 +1277,7 @@
             "name": "🔍 Search Query to Find Matching Raw Seval Files",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_raw_file_searcher.py",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_analysis_toolkit.py",
             "args": [
                 "search_query",
                 "--query=Aggregate OTA test results",
@@ -1296,7 +1296,7 @@
             "name": "📋 Generate Query Mappings (SEVAL)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_raw_file_searcher.py",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_analysis_toolkit.py",
             "args": [
                 "extract_query_mappings",
                 "--threads=16",
@@ -1314,11 +1314,30 @@
             "name": "⚡ Fast Search Using Mappings (SEVAL)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_raw_file_searcher.py",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_analysis_toolkit.py",
             "args": [
                 "search_using_mappings",
                 "--query=Aggregate OTA test results",
                 "--mappings_file=results/query_file_mappings.tsv",
+                "--threads=16"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Extract Model Statistics (SEVAL)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_analysis_toolkit.py",
+            "args": [
+                "extract_model_statistics",
+                "--input_dir=seval_data/206826_scraping_raw_data_output",
+                "--output_file=results/model_statistics.tsv",
+                "--exp=control",
                 "--threads=16"
             ],
             "console": "integratedTerminal",
