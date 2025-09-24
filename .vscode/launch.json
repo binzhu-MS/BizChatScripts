@@ -8,50 +8,9 @@
             "type": "promptString"
         },
         {
-            "id": "inputFile",
-            "description": "Input TSV file to process",
-            "default": "results/utterances_curr.tsv",
-            "type": "promptString"
-        },
-        {
-            "id": "outputFile",
-            "description": "Output TSV file to append to",
-            "default": "results/utterances_all.tsv",
-            "type": "promptString"
-        },
-        {
-            "id": "segmentValue",
-            "description": "Enter the segment value to filter by (e.g., email, chat, teams)",
-            "default": "email",
-            "type": "promptString"
-        },
-        {
-            "id": "searchQuery",
-            "description": "Enter search query text to find in JSON files",
-            "default": "microsoft",
-            "type": "promptString"
-        },
-        {
-            "id": "expType",
-            "description": "Choose experiment type (control/experiment/both)",
-            "default": "both",
-            "type": "pickString",
-            "options": [
-                "both",
-                "control",
-                "experiment"
-            ]
-        },
-        {
-            "id": "customDirectory",
-            "description": "Enter custom directory path to search for JSON files",
-            "default": "c:\\working\\BizChatScripts\\projects\\gpt5_gen_complex_utterances\\synthetic_tenants\\seval_data\\scraping_raw_data_output",
-            "type": "promptString"
-        },
-        {
             "id": "sevalInputDirectory",
             "description": "Enter directory path containing SEVAL JSON files for processing",
-            "default": "c:\\working\\BizChatScripts\\projects\\gpt5_gen_complex_utterances\\synthetic_tenants\\seval\\seval_data\\212953_scraping_raw_data_output",
+            "default": "c:\\working\\BizChatScripts\\projects\\seval\\seval_data\\212953_scraping_raw_data_output",
             "type": "promptString"
         }
     ],
@@ -1277,7 +1236,7 @@
             "name": "🔍 Search Query to Find Matching Raw Seval Files",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_analysis_toolkit.py",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
             "args": [
                 "search_query",
                 "--query=Aggregate OTA test results",
@@ -1286,7 +1245,7 @@
                 "--threads=16"
             ],
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval",
+            "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
@@ -1296,7 +1255,7 @@
             "name": "📋 Generate Query Mappings (SEVAL)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_analysis_toolkit.py",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
             "args": [
                 "extract_query_mappings",
                 "--threads=16",
@@ -1304,7 +1263,7 @@
                 "--output_file=results/query_file_mappings.tsv"
             ],
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval",
+            "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
@@ -1314,7 +1273,7 @@
             "name": "⚡ Fast Search Using Mappings (SEVAL)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_analysis_toolkit.py",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
             "args": [
                 "search_using_mappings",
                 "--query=Aggregate OTA test results",
@@ -1322,7 +1281,27 @@
                 "--threads=16"
             ],
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔍 Search with Console Stats & File Output (SEVAL)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
+            "args": [
+                "analyze_search_results",
+                "--mappings_file=results/query_file_mappings.tsv",
+                "--output_file=results/search_stats_with_console.tsv",
+                "--search_dir=seval_data/212953_scraping_raw_data_output",
+                "--threads=8",
+                "--max_queries=20"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
@@ -1332,7 +1311,7 @@
             "name": "📊 Extract Model Statistics (SEVAL)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval/seval_analysis_toolkit.py",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
             "args": [
                 "extract_model_statistics",
                 "--input_dir=seval_data/206826_scraping_raw_data_output",
@@ -1341,7 +1320,146 @@
                 "--threads=16"
             ],
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/seval",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 Extract Model Statistics with Utterances (SEVAL)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
+            "args": [
+                "extract_model_statistics",
+                "--input_dir=seval_data/206826_scraping_raw_data_output",
+                "--output_file=results/model_statistics_with_utterances.tsv",
+                "--exp=control",
+                "--threads=8"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔍 Search Results Analysis (SEVAL) -- Debugging",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
+            "args": [
+                "analyze_search_results",
+                "--mappings_file=results/query_file_mappings.tsv",
+                "--output_file=results/search_results_analysis.tsv",
+                "--search_dir=seval_data/212953_scraping_raw_data_output",
+                "--threads=8",
+                "--max_queries=50"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔍 Search Results Analysis - Full (SEVAL)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
+            "args": [
+                "analyze_search_results",
+                "--mappings_file=results/query_file_mappings.tsv",
+                "--output_file=results/search_results_analysis_full.tsv",
+                "--search_dir=seval_data/212953_scraping_raw_data_output",
+                "--threads=16"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // SEVAL ANALYSIS TOOLKIT - New Location
+        // ============================================
+        {
+            "name": "🔍 SEVAL - Setup Configuration",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/setup_config.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📋 SEVAL - Extract Query Mappings",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
+            "args": [
+                "extract_query_mappings",
+                "--threads=8",
+                "--output_file=results/query_file_mappings.tsv"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔍 SEVAL - Search Query (Interactive)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
+            "args": [
+                "search_query",
+                "${input:searchQuery}",
+                "--exp=${input:expType}",
+                "--threads=8"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📊 SEVAL - Analyze Search Results (JSON-Based)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
+            "args": [
+                "analyze_search_results",
+                "--mappings_file=results/query_file_mappings.tsv",
+                "--output_file=results/search_results_analysis.tsv",
+                "--threads=8",
+                "--max_queries=100"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🧪 SEVAL - Test JSON-Based Analysis",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/test_json_based_analysis.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
