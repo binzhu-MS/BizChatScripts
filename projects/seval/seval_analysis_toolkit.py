@@ -79,33 +79,261 @@ class SEVALAnalysisToolkit:
     """
 
     def __init__(self):
-        """Initialize with thread-safe result collection."""
+        """Initialize with thread-safe result collection and file access locks."""
         self.results_lock = Lock()
+        # Dictionary to track file locks - one lock per unique file path
+        self._file_locks = {}
+        self._file_locks_mutex = Lock()  # Protects the file_locks dictionary itself
 
-    def _extract_search_information(self, seval_data: Dict) -> Dict:
+    def _get_file_lock(self, file_path: str) -> Lock:
+        """
+        Get or create a lock for a specific file path.
+
+        This ensures that each unique file has its own lock, preventing race conditions
+        when multiple threads try to access the same file simultaneously.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            Lock object specific to this file path
+        """
+        # Normalize the path to ensure consistent locking
+        normalized_path = os.path.normpath(file_path)
+
+        with self._file_locks_mutex:
+            if normalized_path not in self._file_locks:
+                self._file_locks[normalized_path] = Lock()
+            return self._file_locks[normalized_path]
+
+    def _read_json_file_safely(self, file_path: str) -> Dict:
+        """
+        Safely read a JSON file with proper locking to prevent race conditions.
+
+        Args:
+            file_path: Path to the JSON file to read
+
+        Returns:
+            Parsed JSON data as dictionary
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
+            json.JSONDecodeError: If file contains invalid JSON
+            IOError: For other file access issues
+        """
+        file_lock = self._get_file_lock(file_path)
+
+        with file_lock:
+            # Set current file being processed for debugging
+            self._current_file_being_processed = Path(file_path).name
+
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            finally:
+                # Clean up the current file tracker
+                if hasattr(self, "_current_file_being_processed"):
+                    delattr(self, "_current_file_being_processed")
+
+    def _process_seval_file(self, file_path: str) -> Dict:
+        """
+        Process a SEVAL file with proper file locking to prevent race conditions.
+
+        Args:
+            file_path: Path to the SEVAL JSON file
+
+        Returns:
+            Dict containing processed search information
+        """
+        try:
+            # Read the file safely with proper locking
+            data = self._read_json_file_safely(file_path)
+
+            # Extract search information, passing the file path for better error reporting
+            return self._extract_search_information(data, file_path)
+
+        except FileNotFoundError:
+            logger.warning(f"File not found: {file_path}")
+            return self._get_empty_search_info()
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid JSON in file {file_path}: {e}")
+            return self._get_empty_search_info()
+
+        except Exception as e:
+            logger.warning(f"Error processing file {file_path}: {e}")
+            return self._get_empty_search_info()
+
+    def _extract_search_information(
+        self, seval_data: Dict, file_path: Optional[str] = None
+    ) -> Dict:
         """
         Extract comprehensive search information from SEVAL JSON structure.
 
         This method parses the message flow to extract:
-        - User query (Message 0)
-        - Search query executed (Message 3)
-        - Search results (Message 9)
-        - Final response (Message 10)
-        - File access info (Message 11)
-        - Error messages (Messages 4-6)
+        - User query (first message with author="user")
+        - Search results (InternalSearchResult messages)
+        - Final response (bot messages without messageType)
+        - File access info (InternalStorageMetaData messages)
+        - Error messages (messages with "no content returned")
 
         Args:
             seval_data: Parsed SEVAL JSON data
+            file_path: Optional file path for better error reporting
 
         Returns:
             Dict containing structured search information
         """
+        # Handle two different JSON structure patterns
         try:
+            # Pattern 1: Standard conversation with messages
             messages = seval_data["requests"][0]["response_body"]["messages"]
+            return self._extract_from_messages(messages)
         except (KeyError, IndexError):
-            logger.warning("Could not extract messages from SEVAL data structure")
+            # Pattern 2: Error result structure (failed conversations)
+            try:
+                result = seval_data["requests"][0]["response_body"]["result"]
+                if isinstance(result, dict) and (
+                    "error" in result or "exception" in result
+                ):
+                    # logger.info(
+                    #     "Processing error conversation (no search activity performed)"
+                    # )
+                    return self._extract_from_error_result(result)
+            except (KeyError, IndexError):
+                pass
+
+            # Neither pattern matched - provide detailed diagnostic information
+            # Get the filename for debugging - use provided file_path or fall back to other methods
+            filename = "unknown_file"
+            if file_path:
+                filename = Path(file_path).name
+            else:
+                try:
+                    if hasattr(self, "_current_file_being_processed"):
+                        filename = getattr(
+                            self, "_current_file_being_processed", "unknown_file"
+                        )
+                    elif (
+                        "conversation_id" in seval_data
+                        and seval_data["conversation_id"]
+                    ):
+                        filename = f"conversation_{seval_data['conversation_id']}"
+                except:
+                    pass
+
+            # Create detailed diagnostic message about the actual structure found
+            diagnostic_info = self._get_structure_diagnostic(
+                seval_data, filename, file_path or filename
+            )
+
+            logger.warning(
+                f"Could not extract messages from SEVAL data structure.\nFile: {filename}\nReason: {diagnostic_info}"
+            )
+
             return self._get_empty_search_info()
 
+    def _get_structure_diagnostic(
+        self, seval_data: Dict, filename: str, full_file_path: Optional[str] = None
+    ) -> str:
+        """
+        Generate detailed diagnostic information about the structure of a SEVAL file
+        that doesn't match expected patterns.
+
+        Args:
+            seval_data: The parsed JSON data from the file
+            filename: The filename for context (short name)
+            full_file_path: The full file path for detailed error reporting
+
+        Returns:
+            String with detailed diagnostic information
+        """
+        try:
+            # If filename is still unknown, try to get it from the current file being processed
+            if filename == "unknown_file" and hasattr(
+                self, "_current_file_being_processed"
+            ):
+                filename = getattr(
+                    self, "_current_file_being_processed", "unknown_file"
+                )
+
+            # Check if data is a dictionary
+            if not isinstance(seval_data, dict):
+                return f"Root structure is {type(seval_data).__name__}, expected dict"
+
+            top_keys = list(seval_data.keys())
+
+            # Check for requests key
+            if "requests" not in seval_data:
+                return f"Missing 'requests' key. Found keys: {top_keys}"
+
+            requests = seval_data["requests"]
+            if not requests:
+                return f"'requests' is empty. Top-level keys: {top_keys}"
+
+            if not isinstance(requests, list):
+                return f"'requests' is {type(requests).__name__}, expected list. Top-level keys: {top_keys}"
+
+            if len(requests) == 0:
+                return f"'requests' list is empty. Top-level keys: {top_keys}"
+
+            # Check first request
+            first_req = requests[0]
+            if not isinstance(first_req, dict):
+                return f"requests[0] is {type(first_req).__name__}, expected dict"
+
+            req_keys = list(first_req.keys())
+
+            # Check for response_body
+            if "response_body" not in first_req:
+                return f"Missing 'response_body' in requests[0]. Found keys: {req_keys}"
+
+            response_body = first_req["response_body"]
+            if not isinstance(response_body, dict):
+                return f"response_body is {type(response_body).__name__}, expected dict"
+
+            rb_keys = list(response_body.keys())
+
+            # Check for expected content
+            has_messages = "messages" in response_body
+            has_result = "result" in response_body
+
+            if not has_messages and not has_result:
+                # This is the specific case we want to track - print to console
+                display_path = full_file_path if full_file_path else filename
+                print(f"🚨 PROBLEMATIC FILE DETECTED: {filename}")
+                print(f"   File path: {display_path}")
+                print(f"   Issue: response_body missing both 'messages' and 'result'")
+                print(f"   Found keys in response_body: {rb_keys}")
+                print(f"   This file has an error-only response structure")
+                print("-" * 60)
+
+                return f"response_body missing both 'messages' and 'result'. Found keys: {rb_keys}"
+
+            # If we get here, it should have worked - likely a race condition
+            if has_messages:
+                messages = response_body["messages"]
+                if not isinstance(messages, list):
+                    return f"'messages' is {type(messages).__name__}, expected list. response_body keys: {rb_keys}"
+                return f"Structure appears correct with {len(messages)} messages - possible race condition during file access"
+
+            elif has_result:
+                result = response_body["result"]
+                result_type = type(result).__name__
+                if isinstance(result, dict):
+                    result_keys = list(result.keys())
+                    return f"Structure has 'result' ({result_type}) with keys {result_keys} - should match Pattern 2 but failed parsing"
+                else:
+                    return f"Structure has 'result' of type {result_type} - unexpected result type"
+
+            # Fallback case (should not reach here)
+            return f"Structure analysis completed but no specific issue identified. Keys: {rb_keys}"
+
+        except Exception as e:
+            return f"Error analyzing structure: {str(e)}"
+
+    def _extract_from_messages(self, messages: List[Dict]) -> Dict:
+        """Extract search information from messages array (Pattern 1)."""
         search_info = {
             "user_query": "",
             "search_query": "",
@@ -120,23 +348,27 @@ class SEVALAnalysisToolkit:
         for i, message in enumerate(messages):
             author = message.get("author", "unknown")
             text = message.get("text", "")
+            message_type = message.get("messageType", "")
 
             try:
-                # Extract user query (Message 0)
-                if i == 0 and author == "user":
+                # Extract user query (first message with author="user")
+                if author == "user" and not search_info["user_query"]:
                     search_info["user_query"] = text
 
-                # Extract search query (Message 3)
-                elif i == 3 and author == "bot" and "search for" in text.lower():
-                    search_info["search_query"] = text
+                # Extract search progress messages
+                elif message_type == "Progress" and "search" in text.lower():
+                    if not search_info["search_query"]:
+                        search_info["search_query"] = text
 
-                # Check for "No content returned" errors (Messages 4-6)
-                elif "no content returned" in text.lower():
+                # Check for "No content returned" errors in any message
+                if "no content returned" in text.lower():
                     search_info["error_messages"].append(f"Message {i}: {text}")
                     search_info["search_success"] = False
 
-                # Extract search results (Message 9)
-                elif text.startswith('{"results":'):
+                # Extract search results from InternalSearchResult messages
+                elif message_type == "InternalSearchResult" and text.startswith(
+                    '{"results":'
+                ):
                     try:
                         results_json = json.loads(text)
                         for item in results_json.get("results", []):
@@ -147,20 +379,30 @@ class SEVALAnalysisToolkit:
                                     "title": result_info.get("title", ""),
                                     "reference_id": result_info.get("reference_id", ""),
                                     "snippet": result_info.get("snippet", ""),
+                                    "file_name": result_info.get("fileName", ""),
+                                    "author": result_info.get("author", ""),
+                                    "file_type": result_info.get("fileType", ""),
                                 }
                             )
                     except json.JSONDecodeError:
                         search_info["error_messages"].append(
-                            f"Message {i}: JSON parse error in results"
+                            f"Message {i}: JSON parse error in InternalSearchResult"
                         )
 
-                # Extract final response (Message 10)
-                elif i == 10 and author == "bot" and len(text) > 100:
+                # Extract final response (bot message without messageType, substantial content)
+                elif (
+                    author == "bot"
+                    and not message_type
+                    and len(text) > 100
+                    and not search_info["final_response"]
+                ):
                     search_info["final_response"] = text
                     search_info["response_length"] = len(text)
 
-                # Extract file access URLs (Message 11)
-                elif text.startswith('{"storageResults":'):
+                # Extract file access URLs from InternalStorageMetaData messages
+                elif message_type == "InternalStorageMetaData" and text.startswith(
+                    '{"storageResults":'
+                ):
                     try:
                         storage_json = json.loads(text)
                         for item in storage_json.get("storageResults", []):
@@ -176,7 +418,7 @@ class SEVALAnalysisToolkit:
                             )
                     except json.JSONDecodeError:
                         search_info["error_messages"].append(
-                            f"Message {i}: JSON parse error in storage"
+                            f"Message {i}: JSON parse error in InternalStorageMetaData"
                         )
 
             except Exception as e:
@@ -184,6 +426,27 @@ class SEVALAnalysisToolkit:
                 continue
 
         return search_info
+
+    def _extract_from_error_result(self, result: Dict) -> Dict:
+        """Extract search information from error result structure (Pattern 2)."""
+        # Error conversations have no search activity
+        error_message = result.get("message", "")
+        error_details = result.get("error", "")
+
+        return {
+            "user_query": "",
+            "search_query": "",
+            "results_found": [],
+            "files_accessed": [],
+            "final_response": error_message,
+            "search_success": False,
+            "error_messages": (
+                [f"Conversation failed: {error_details[:200]}..."]
+                if error_details
+                else ["Conversation failed"]
+            ),
+            "response_length": len(error_message),
+        }
 
     def _extract_filename_from_url(self, url: str) -> str:
         """Extract filename from SharePoint or file URL."""
@@ -217,6 +480,155 @@ class SEVALAnalysisToolkit:
             "response_length": 0,
         }
 
+    def _extract_requested_files_emails_from_query(self, query_text: str) -> List[str]:
+        """
+        Extract specific files and emails mentioned in the query text.
+
+        This function identifies explicit file references (with extensions) and email subjects
+        that the user is specifically requesting to search for.
+
+        Args:
+            query_text: The user's query text
+
+        Returns:
+            List of requested files/emails found in the query
+        """
+        import re
+
+        requested_items = []
+
+        # Pattern 1: Files with extensions (.xlsx, .docx, .pdf, .pptx, etc.)
+        file_pattern = r"\b([A-Za-z0-9_\-]+\.[A-Za-z]{2,5})\b"
+        file_matches = re.findall(file_pattern, query_text)
+        requested_items.extend(file_matches)
+
+        # Pattern 2: Email subjects in quotes
+        email_subject_pattern = r'"([^"]+)"'
+        email_matches = re.findall(email_subject_pattern, query_text)
+        requested_items.extend(email_matches)
+
+        # Pattern 3: Email folders/categories (Sent Items, AutomatedReports, etc.)
+        email_folder_pattern = r"\b(Sent Items|AutomatedReports|Inbox|Drafts)\b"
+        folder_matches = re.findall(email_folder_pattern, query_text, re.IGNORECASE)
+        # Don't add folders as requested items, they are search locations
+
+        # Pattern 4: Specific document types mentioned with context
+        # e.g., "whitepaper", "policy emails", "alert rules v2 emails"
+        contextual_pattern = (
+            r"\b(\w+\s+emails?|\w+\s+whitepaper|\w+\s+rules?\s+v?\d*|\w+\s+policy)\b"
+        )
+        contextual_matches = re.findall(contextual_pattern, query_text, re.IGNORECASE)
+        requested_items.extend(contextual_matches)
+
+        # Clean up and normalize
+        cleaned_items = []
+        for item in requested_items:
+            item = item.strip()
+            if len(item) > 2:  # Skip very short matches
+                cleaned_items.append(item)
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_items = []
+        for item in cleaned_items:
+            if item.lower() not in seen:
+                seen.add(item.lower())
+                unique_items.append(item)
+
+        return unique_items
+
+    def _determine_targeted_search_success(
+        self, search_info: Dict, requested_items: List[str]
+    ) -> bool:
+        """
+        Determine if the search successfully found/accessed the specifically requested files/emails.
+
+        This function focuses on whether the requested items were found, ignoring failures
+        in ancillary searches (like searching emails when only files were requested).
+
+        Args:
+            search_info: Search information extracted from JSON structure
+            requested_items: List of specific files/emails mentioned in the query
+
+        Returns:
+            True if the search found/accessed the specifically requested items, False otherwise
+        """
+        if not requested_items:
+            # If no specific items were requested, fall back to original search_success logic
+            return search_info["search_success"]
+
+        # Extract filenames from search results
+        found_files = set()
+        accessed_files = set()
+
+        # From results_found (search results)
+        for result in search_info["results_found"]:
+            title = result.get("title", "").lower()
+            filename = result.get("file_name", "").lower()
+            found_files.add(title)
+            found_files.add(filename)
+
+        # From files_accessed (actual file access)
+        for file_info in search_info["files_accessed"]:
+            filename = file_info.get("filename", "").lower()
+            accessed_files.add(filename)
+
+        # Check if each requested item was found or accessed
+        found_requested_items = 0
+        for requested_item in requested_items:
+            requested_lower = requested_item.lower()
+
+            # Check for exact matches or partial matches
+            found_in_results = any(
+                requested_lower in found_file
+                or self._normalize_filename(requested_lower)
+                in self._normalize_filename(found_file)
+                for found_file in found_files
+                if found_file
+            )
+
+            found_in_accessed = any(
+                requested_lower in accessed_file
+                or self._normalize_filename(requested_lower)
+                in self._normalize_filename(accessed_file)
+                for accessed_file in accessed_files
+                if accessed_file
+            )
+
+            if found_in_results or found_in_accessed:
+                found_requested_items += 1
+
+        # Consider search successful if we found at least 50% of requested items
+        # This handles cases where some requested files might not exist or have slightly different names
+        success_threshold = max(
+            1, len(requested_items) // 2
+        )  # At least 1, or half of requested items
+
+        return found_requested_items >= success_threshold
+
+    def _normalize_filename(self, filename: str) -> str:
+        """
+        Normalize filename for comparison by removing extensions and special characters.
+
+        Args:
+            filename: Original filename
+
+        Returns:
+            Normalized filename for comparison
+        """
+        if not filename:
+            return ""
+
+        # Remove file extension
+        name_without_ext = filename.split(".")[0]
+
+        # Remove special characters and normalize spacing
+        import re
+
+        normalized = re.sub(r"[_\-\s]+", "", name_without_ext.lower())
+
+        return normalized
+
     def _determine_access_level(self, search_info: Dict) -> str:
         """
         Determine the level of content access achieved.
@@ -227,49 +639,201 @@ class SEVALAnalysisToolkit:
         Returns:
             Access level: 'no_access', 'partial_access', 'full_access', or 'unknown_access'
         """
-        # No Access: Search failed or returned errors
-        if not search_info["search_success"] or any(
+        detailed_info = self._get_detailed_access_breakdown(search_info)
+        return detailed_info["access_level"]
+
+    def _get_detailed_access_breakdown(self, search_info: Dict) -> Dict:
+        """
+        Get detailed breakdown of access level determination with specific reasons.
+
+        Returns:
+            Dict with access_level, detailed_category, reason, and additional metrics
+        """
+        # Check for explicit search failure indicators
+        has_no_content_errors = any(
             "no content returned" in msg.lower()
             for msg in search_info["error_messages"]
-        ):
-            return "no_access"
+        )
 
-        # No Access: No results found
+        results_count = len(search_info["results_found"])
+        files_accessed_count = len(search_info["files_accessed"])
+        response_length = search_info["response_length"]
+        has_error_messages = len(search_info["error_messages"]) > 0
+        search_success = search_info["search_success"]
+
+        # Detailed categorization for NO ACCESS
         if not search_info["results_found"]:
-            return "no_access"
+            # Check if this is a failed conversation (error result pattern)
+            if any(
+                "Conversation failed" in msg for msg in search_info["error_messages"]
+            ):
+                return {
+                    "access_level": "no_access",
+                    "detailed_category": "conversation_failed",
+                    "reason": "Conversation failed before search could be performed",
+                    "results_count": 0,
+                    "files_accessed_count": 0,
+                    "response_length": response_length,
+                    "has_errors": has_error_messages,
+                    "search_attempted": False,
+                }
+            elif has_no_content_errors:
+                return {
+                    "access_level": "no_access",
+                    "detailed_category": "search_no_content",
+                    "reason": "Search was performed but returned no content",
+                    "results_count": 0,
+                    "files_accessed_count": files_accessed_count,
+                    "response_length": response_length,
+                    "has_errors": has_error_messages,
+                    "search_attempted": True,
+                }
+            elif not search_success:
+                return {
+                    "access_level": "no_access",
+                    "detailed_category": "search_failed",
+                    "reason": "Search operation failed or encountered errors",
+                    "results_count": 0,
+                    "files_accessed_count": files_accessed_count,
+                    "response_length": response_length,
+                    "has_errors": has_error_messages,
+                    "search_attempted": True,
+                }
+            else:
+                return {
+                    "access_level": "no_access",
+                    "detailed_category": "no_results_found",
+                    "reason": "Search completed but found no matching results",
+                    "results_count": 0,
+                    "files_accessed_count": files_accessed_count,
+                    "response_length": response_length,
+                    "has_errors": has_error_messages,
+                    "search_attempted": True,
+                }
 
-        # Full Access: Files were found AND accessed AND content details provided
-        if (
-            search_info["files_accessed"]
-            and search_info["results_found"]
-            and search_info["response_length"] > 500
-        ):
-
-            # Check for specific content indicators in final response
+        # If we have results, check for FULL ACCESS
+        if search_info["results_found"] and response_length > 300:
+            # Check if response contains specific content from the found files
             response = search_info["final_response"].lower()
+
+            # Strong indicators of full access to file content
             full_access_indicators = [
                 "shows",
                 "contains",
                 "includes",
-                "data",
                 "according to",
-                "sheet shows",
-                "column",
-                "values",
-                "metrics",
-                "analysis of",
                 "based on",
                 "document indicates",
+                "file defines",
+                "specification",
+                "thresholds",
+                "metrics",
+                "panel",
+                "dashboard",
+                "alert",
+                "warning",
+                "critical",
+                "configuration",
+                "guidelines",
             ]
 
-            if any(indicator in response for indicator in full_access_indicators):
-                return "full_access"
+            # Check for specific content details in snippets
+            has_detailed_content = False
+            detailed_snippets_count = 0
+            for result in search_info["results_found"]:
+                snippet = result.get("snippet", "").lower()
+                if len(snippet) > 200 and any(
+                    indicator in snippet
+                    for indicator in [
+                        "threshold",
+                        "metric",
+                        "specification",
+                        "configuration",
+                    ]
+                ):
+                    has_detailed_content = True
+                    detailed_snippets_count += 1
 
-        # Partial Access: Files found but limited content provided
+            # Check for substantial file content in response
+            has_substantial_response = any(
+                indicator in response for indicator in full_access_indicators
+            )
+
+            # Full access if we have detailed content OR substantial response
+            if has_detailed_content or has_substantial_response:
+                return {
+                    "access_level": "full_access",
+                    "detailed_category": "substantial_content_access",
+                    "reason": f"Found {results_count} results with substantial content access",
+                    "results_count": results_count,
+                    "files_accessed_count": files_accessed_count,
+                    "response_length": response_length,
+                    "has_errors": has_error_messages,
+                    "search_attempted": True,
+                    "detailed_snippets_count": detailed_snippets_count,
+                    "has_substantial_response": has_substantial_response,
+                }
+
+        # PARTIAL ACCESS cases - we have results but limited/mixed success
         if search_info["results_found"]:
-            return "partial_access"
+            if has_no_content_errors:
+                return {
+                    "access_level": "partial_access",
+                    "detailed_category": "mixed_success_with_errors",
+                    "reason": f"Found {results_count} results but some content access failed",
+                    "results_count": results_count,
+                    "files_accessed_count": files_accessed_count,
+                    "response_length": response_length,
+                    "has_errors": has_error_messages,
+                    "search_attempted": True,
+                    "has_no_content_errors": True,
+                }
+            elif response_length <= 300:
+                return {
+                    "access_level": "partial_access",
+                    "detailed_category": "limited_content_response",
+                    "reason": f"Found {results_count} results but limited response content ({response_length} chars)",
+                    "results_count": results_count,
+                    "files_accessed_count": files_accessed_count,
+                    "response_length": response_length,
+                    "has_errors": has_error_messages,
+                    "search_attempted": True,
+                }
+            else:
+                return {
+                    "access_level": "partial_access",
+                    "detailed_category": "results_without_detailed_content",
+                    "reason": f"Found {results_count} results but without detailed file content indicators",
+                    "results_count": results_count,
+                    "files_accessed_count": files_accessed_count,
+                    "response_length": response_length,
+                    "has_errors": has_error_messages,
+                    "search_attempted": True,
+                }
 
-        return "unknown_access"
+        # Fallback cases
+        if has_no_content_errors and not search_success:
+            return {
+                "access_level": "no_access",
+                "detailed_category": "explicit_search_failure",
+                "reason": "Search explicitly failed with no content returned",
+                "results_count": results_count,
+                "files_accessed_count": files_accessed_count,
+                "response_length": response_length,
+                "has_errors": has_error_messages,
+                "search_attempted": True,
+            }
+
+        return {
+            "access_level": "unknown_access",
+            "detailed_category": "unclassified",
+            "reason": "Could not determine access level from available information",
+            "results_count": results_count,
+            "files_accessed_count": files_accessed_count,
+            "response_length": response_length,
+            "has_errors": has_error_messages,
+            "search_attempted": True,
+        }
 
     def _calculate_json_based_similarity(
         self, control_info: Dict, experiment_info: Dict
@@ -354,139 +918,247 @@ class SEVALAnalysisToolkit:
         # Fallback: return title as-is if no File tags found
         return title.strip()
 
-    def _classify_search_domain(self, search_info: Dict) -> str:
-        """
-        Classify business domain based on search query and results.
+    def _extract_mentioned_files(self, query_text: str) -> list:
+        """Extract specific filenames and emails mentioned in user queries.
+
+        This function detects:
+        - Filenames with common extensions (.xlsx, .docx, .pdf, .txt, .ppt, .xls, etc.)
+        - Email addresses
+        - Document references (even without extensions)
 
         Args:
-            search_info: Search information extracted from JSON structure
+            query_text: The user query text to analyze
 
         Returns:
-            Domain classification string
+            List of mentioned files/emails found in the query
         """
-        # Combine query and results text for analysis
-        analysis_text = (
-            search_info["user_query"]
-            + " "
-            + search_info["search_query"]
-            + " "
-            + " ".join(result["snippet"] for result in search_info["results_found"])
-        ).lower()
+        if not query_text:
+            return []
 
-        domain_keywords = {
-            "HR": [
-                "employee",
-                "hr",
-                "human resources",
-                "personnel",
-                "staff",
-                "recruitment",
-                "performance review",
-                "onboarding",
-                "benefits",
-                "payroll",
-            ],
-            "Finance": [
-                "budget",
-                "financial",
-                "accounting",
-                "revenue",
-                "cost",
-                "expense",
-                "invoice",
-                "payment",
-                "fiscal",
-                "profit",
-                "loss",
-            ],
-            "IT": [
-                "technical",
-                "system",
-                "software",
-                "database",
-                "server",
-                "network",
-                "deployment",
-                "configuration",
-                "monitoring",
-                "infrastructure",
-            ],
-            "Legal": [
-                "contract",
-                "legal",
-                "compliance",
-                "policy",
-                "regulation",
-                "terms",
-                "agreement",
-                "clause",
-                "law",
-                "governance",
-            ],
-            "Sales": [
-                "sales",
-                "customer",
-                "client",
-                "deal",
-                "prospect",
-                "revenue",
-                "opportunity",
-                "lead",
-                "pipeline",
-                "territory",
-            ],
-            "Operations": [
-                "operations",
-                "process",
-                "workflow",
-                "logistics",
-                "supply",
-                "procedure",
-                "efficiency",
-                "quality",
-                "production",
-            ],
-            "Testing": [
-                "test",
-                "testing",
-                "qa",
-                "quality assurance",
-                "verification",
-                "validation",
-                "bug",
-                "defect",
-                "automation",
-                "cycle",
-            ],
-            "Engineering": [
-                "engineering",
-                "development",
-                "code",
-                "algorithm",
-                "architecture",
-                "design",
-                "implementation",
-                "optimization",
-                "performance",
-            ],
-        }
+        import re
 
-        domain_scores = {}
-        for domain, keywords in domain_keywords.items():
-            score = sum(1 for keyword in keywords if keyword in analysis_text)
-            domain_scores[domain] = score
+        mentioned_files = set()
 
-        if domain_scores and max(domain_scores.values()) > 0:
-            return max(domain_scores.keys(), key=lambda k: domain_scores[k])
-        return "General"
+        # Pattern 1: Files with common extensions
+        file_extensions = [
+            "xlsx",
+            "docx",
+            "pdf",
+            "txt",
+            "ppt",
+            "pptx",
+            "xls",
+            "csv",
+            "doc",
+            "rtf",
+            "odt",
+            "ods",
+            "odp",
+            "json",
+            "xml",
+            "html",
+            "log",
+            "md",
+            "zip",
+            "rar",
+            "7z",
+            "tar",
+            "gz",
+        ]
+
+        # Look for filenames with extensions (case-insensitive)
+        for ext in file_extensions:
+            pattern = r"\b([A-Za-z0-9_\-\.]+\." + ext + r")\b"
+            matches = re.findall(pattern, query_text, re.IGNORECASE)
+            mentioned_files.update(matches)
+
+        # Pattern 2: Email addresses
+        email_pattern = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
+        email_matches = re.findall(email_pattern, query_text)
+        mentioned_files.update(email_matches)
+
+        # Pattern 3: Common document naming patterns (without extensions)
+        # Look for quoted filenames or capitalized multi-word names
+        doc_patterns = [
+            r'"([A-Za-z0-9_\-\s]+)"',  # Quoted names
+            r"\b([A-Z][A-Za-z0-9_]*(?:[A-Z][A-Za-z0-9_]*)+)\b",  # CamelCase names
+        ]
+
+        for pattern in doc_patterns:
+            matches = re.findall(pattern, query_text)
+            # Only add if it looks like a document name (contains underscore or multiple capitals)
+            for match in matches:
+                if "_" in match or sum(1 for c in match if c.isupper()) >= 2:
+                    mentioned_files.add(match)
+
+        return sorted(list(mentioned_files))
+
+    def _check_mentioned_files_access(
+        self, mentioned_files: list, found_files: list, accessed_files: list
+    ) -> tuple:
+        """Check which mentioned files were found and accessed by a system.
+
+        Args:
+            mentioned_files: List of files mentioned in the user query
+            found_files: List of file titles found by the system
+            accessed_files: List of filenames accessed by the system
+
+        Returns:
+            Tuple of (found_mentioned, accessed_mentioned) lists
+        """
+        if not mentioned_files:
+            return [], []
+
+        found_mentioned = []
+        accessed_mentioned = []
+
+        # Convert to lowercase for case-insensitive matching
+        mentioned_lower = [f.lower() for f in mentioned_files]
+        found_lower = [f.lower() for f in found_files]
+        accessed_lower = [f.lower() for f in accessed_files]
+
+        for mentioned_file in mentioned_files:
+            mentioned_lower_file = mentioned_file.lower()
+
+            # Check if mentioned file was found (partial matching)
+            for found_file in found_files:
+                if (
+                    mentioned_lower_file in found_file.lower()
+                    or found_file.lower() in mentioned_lower_file
+                    or
+                    # Check without extension
+                    mentioned_lower_file.split(".")[0] in found_file.lower()
+                ):
+                    found_mentioned.append(mentioned_file)
+                    break
+
+            # Check if mentioned file was accessed (partial matching)
+            for accessed_file in accessed_files:
+                if (
+                    mentioned_lower_file in accessed_file.lower()
+                    or accessed_file.lower() in mentioned_lower_file
+                    or
+                    # Check without extension
+                    mentioned_lower_file.split(".")[0] in accessed_file.lower()
+                ):
+                    accessed_mentioned.append(mentioned_file)
+                    break
+
+        return found_mentioned, accessed_mentioned
+
+    def _evaluate_fair_comparison_candidate(
+        self,
+        mentioned_files: list,
+        control_info: dict,
+        experiment_info: dict,
+        similarity_data: dict,
+        control_found_mentioned: list,
+        experiment_found_mentioned: list,
+        control_accessed_mentioned: list,
+        experiment_accessed_mentioned: list,
+        requested_items: Optional[List[str]] = None,
+    ) -> bool:
+        """
+        Evaluate if a query is a fair comparison candidate based on targeted search criteria.
+
+        Updated Criteria:
+        1. Both systems must have targeted search success (found the specifically requested items)
+        2. If both control and experiment have full access to requested items, they are fair comparison candidates
+        3. If both found the requested items but either has full access, they are fair comparison candidates
+        4. For queries without specific items, fall back to original logic
+
+        Args:
+            mentioned_files: List of files specifically mentioned in the query
+            control_info: Control system search information
+            experiment_info: Experiment system search information
+            similarity_data: File overlap similarity data
+            control_found_mentioned: Mentioned files found by control
+            experiment_found_mentioned: Mentioned files found by experiment
+            control_accessed_mentioned: Mentioned files accessed by control
+            experiment_accessed_mentioned: Mentioned files accessed by experiment
+            requested_items: Specific files/emails requested in the query
+
+        Returns:
+            Boolean indicating if this is a fair comparison candidate
+        """
+        # Use requested_items if provided, otherwise fall back to mentioned_files
+        target_items = requested_items if requested_items else mentioned_files
+
+        # Basic requirement: both systems must have targeted search success
+        control_search_success = self._determine_targeted_search_success(
+            control_info, target_items
+        )
+        experiment_search_success = self._determine_targeted_search_success(
+            experiment_info, target_items
+        )
+
+        if not (control_search_success and experiment_search_success):
+            return False
+
+        # Enhanced fair comparison logic based on your requirements
+        if target_items:
+            # Case 1: Query has specific requested items
+            control_has_full_access = (
+                similarity_data["control_access_level"] == "full_access"
+            )
+            experiment_has_full_access = (
+                similarity_data["experiment_access_level"] == "full_access"
+            )
+
+            # Both have full access to requested items
+            if control_has_full_access and experiment_has_full_access:
+                return True
+
+            # Both found the items but either has full access
+            both_found_items = (
+                len(control_found_mentioned) > 0 and len(experiment_found_mentioned) > 0
+            )
+            either_has_full_access = (
+                control_has_full_access or experiment_has_full_access
+            )
+
+            if both_found_items and either_has_full_access:
+                return True
+
+            return False
+
+        else:
+            # Case 2: No specific items requested - use original overlap logic
+            # Both systems must find at least one file/email
+            control_found_any = len(control_info["results_found"]) > 0
+            experiment_found_any = len(experiment_info["results_found"]) > 0
+
+            if not (control_found_any and experiment_found_any):
+                return False
+
+            # Check overlap criteria based on the system with fewer found files
+            control_files = set(f.lower() for f in similarity_data["control_files"])
+            experiment_files = set(
+                f.lower() for f in similarity_data["experiment_files"]
+            )
+
+            if not control_files or not experiment_files:
+                return False
+
+            # Calculate overlap based on the system with fewer files
+            if len(control_files) <= len(experiment_files):
+                # Control has fewer files - check if control files are contained/overlap in experiment
+                intersection = control_files.intersection(experiment_files)
+                overlap_percentage = len(intersection) / len(control_files) * 100
+            else:
+                # Experiment has fewer files - check if experiment files are contained/overlap in control
+                intersection = control_files.intersection(experiment_files)
+                overlap_percentage = len(intersection) / len(experiment_files) * 100
+
+            # Files must be fully contained (100%) or overlap by >=50%
+            return overlap_percentage >= 50.0
 
     def _search_in_file(
         self, json_file: Path, query_text: str
     ) -> Optional[Dict[str, Any]]:
         """Search within a single JSON file."""
         try:
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = self._read_json_file_safely(str(json_file))
 
             # Get query text from JSON of the file
             query = data.get("query", {}).get("id", "No query found")
@@ -736,8 +1408,7 @@ class SEVALAnalysisToolkit:
     ) -> Optional[Dict[str, Any]]:
         """Extract query information from a single JSON file."""
         try:
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = self._read_json_file_safely(str(json_file))
 
             query_obj = data.get("query", {})
             query_hash = query_obj.get("query_hash", "")
@@ -1023,8 +1694,7 @@ class SEVALAnalysisToolkit:
         def extract_reasoning_models_and_categorize(file_path):
             """Extract reasoning model information and categorize file based on success/failure status."""
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data = self._read_json_file_safely(file_path)
 
                 # Extract utterance text
                 utterance = data.get("query", {}).get("id", "No utterance found")
@@ -1632,7 +2302,7 @@ class SEVALAnalysisToolkit:
         """
         from datetime import datetime
 
-        print("🔍 Starting SEVAL Search Results Analysis...")
+        print("Starting SEVAL Search Results Analysis...")
         logger.info(f"Analyzing search results using mappings from: {mappings_file}")
 
         # Load query mappings
@@ -1647,56 +2317,23 @@ class SEVALAnalysisToolkit:
 
         logger.info(f"Processing {len(query_mappings)} unique queries...")
 
-        # Process queries with threading
-        results = []
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            future_to_query = {
-                executor.submit(
-                    self._analyze_query_search_results, query, file_info, search_dir
-                ): query
-                for query, file_info in query_mappings.items()
-            }
-
-            completed = 0
-            for future in as_completed(future_to_query):
-                query = future_to_query[future]
-                try:
-                    result = future.result()
-                    if result:
-                        results.append(result)
-                    completed += 1
-                    if completed % 50 == 0:
-                        logger.info(
-                            f"Processed {completed}/{len(query_mappings)} queries..."
-                        )
-                except Exception as exc:
-                    logger.error(f"Query '{query}' generated an exception: {exc}")
-
-        # Sort results by query for consistent output
-        results.sort(key=lambda x: x["query"])
-
-        # Convert old format results to new format for JSON-based analysis
+        # Create results directly from query mappings for JSON-based analysis
         converted_results = []
-        for result in results:
-            # Extract control and experiment file paths
+        for query, file_info in query_mappings.items():
+            # Get file paths
             control_file = ""
             experiment_file = ""
 
-            if result.get("control_analysis"):
-                control_files = [
-                    a.get("filename", "") for a in result["control_analysis"]
-                ]
+            if file_info.get("control"):
+                control_files = [f["filename"] for f in file_info["control"]]
                 control_file = control_files[0] if control_files else ""
 
-            if result.get("experiment_analysis"):
-                experiment_files = [
-                    a.get("filename", "") for a in result["experiment_analysis"]
-                ]
+            if file_info.get("experiment"):
+                experiment_files = [f["filename"] for f in file_info["experiment"]]
                 experiment_file = experiment_files[0] if experiment_files else ""
 
             converted_result = {
-                "query_id": f"query_{len(converted_results) + 1}",
-                "query": result["query"],
+                "query": query,
                 "control_file": (
                     os.path.join(search_dir, control_file) if control_file else ""
                 ),
@@ -1706,22 +2343,147 @@ class SEVALAnalysisToolkit:
             }
             converted_results.append(converted_result)
 
-        # Create clean TSV output using JSON-based analysis
-        clean_output_file = output_file.replace(".tsv", "_clean_json_based.tsv")
-        self.create_clean_tsv_output(converted_results, clean_output_file)
+        # Sort results by query for consistent output
+        converted_results.sort(key=lambda x: x["query"])
 
-        # Also create traditional output for compatibility
-        self._write_search_analysis_tsv(results, output_file)
+        # Create JSON-based TSV output
+        self.create_clean_tsv_output(converted_results, output_file)
 
-        # Display console statistics
-        self._display_search_statistics(results)
+        # Display JSON-based statistics
+        self._display_detailed_access_statistics(converted_results)
 
         print(f"\n📊 Search results analysis completed!")
-        print(f"Traditional results written to: {output_file}")
-        print(f"Clean JSON-based results written to: {clean_output_file}")
+        print(f"JSON-based results written to: {output_file}")
         logger.info(
-            f"Search results analysis completed. Processed {len(results)} queries."
+            f"Search results analysis completed. Processed {len(converted_results)} queries."
         )
+
+    def _display_detailed_access_statistics(self, results: List[Dict]) -> None:
+        """Display detailed statistics with breakdown of access levels and error details."""
+        print(f"\n📊 Detailed Access Level Analysis:")
+        print(f"{'='*60}")
+
+        # Analyze all results to get detailed breakdown
+        detailed_stats = {
+            "total_queries": len(results),
+            "access_level_breakdown": {"control": {}, "experiment": {}},
+            "detailed_category_breakdown": {"control": {}, "experiment": {}},
+            "error_analysis": {"control": {}, "experiment": {}},
+        }
+
+        # Process each result to get detailed information
+        for result in results:
+            for exp_type in ["control", "experiment"]:
+                file_path = result.get(f"{exp_type}_file", "")
+                if not file_path or not os.path.exists(file_path):
+                    # Missing file
+                    access_level = "missing_file"
+                    detailed_category = "file_not_found"
+                else:
+                    # Analyze the file with retry logic
+                    try:
+                        # Use the new retry method
+                        search_info = self._process_seval_file(file_path)
+                        breakdown = self._get_detailed_access_breakdown(search_info)
+
+                        access_level = breakdown["access_level"]
+                        detailed_category = breakdown["detailed_category"]
+
+                        # Track error details
+                        if breakdown.get("has_errors", False):
+                            reason = breakdown.get("reason", "Unknown error")
+                            if reason not in detailed_stats["error_analysis"][exp_type]:
+                                detailed_stats["error_analysis"][exp_type][reason] = 0
+                            detailed_stats["error_analysis"][exp_type][reason] += 1
+
+                    except Exception as e:
+                        access_level = "processing_error"
+                        detailed_category = "file_processing_failed"
+
+                        error_msg = f"Processing failed: {str(e)[:50]}..."
+                        if error_msg not in detailed_stats["error_analysis"][exp_type]:
+                            detailed_stats["error_analysis"][exp_type][error_msg] = 0
+                        detailed_stats["error_analysis"][exp_type][error_msg] += 1
+
+                # Update counts
+                if (
+                    access_level
+                    not in detailed_stats["access_level_breakdown"][exp_type]
+                ):
+                    detailed_stats["access_level_breakdown"][exp_type][access_level] = 0
+                detailed_stats["access_level_breakdown"][exp_type][access_level] += 1
+
+                if (
+                    detailed_category
+                    not in detailed_stats["detailed_category_breakdown"][exp_type]
+                ):
+                    detailed_stats["detailed_category_breakdown"][exp_type][
+                        detailed_category
+                    ] = 0
+                detailed_stats["detailed_category_breakdown"][exp_type][
+                    detailed_category
+                ] += 1
+
+        # Display results
+        total_queries = detailed_stats["total_queries"]
+        print(f"Total queries analyzed: {total_queries}")
+
+        # Display access level breakdown for each experiment type
+        for exp_type in ["control", "experiment"]:
+            print(f"\n🔐 {exp_type.upper()} ACCESS LEVELS:")
+            access_counts = detailed_stats["access_level_breakdown"][exp_type]
+            total_files = sum(access_counts.values())
+
+            for access_level, count in sorted(
+                access_counts.items(), key=lambda x: -x[1]
+            ):
+                percentage = (count / total_files) * 100 if total_files > 0 else 0
+                print(
+                    f"  {access_level.replace('_', ' ')}: {count} ({percentage:.1f}%)"
+                )
+
+            # Show detailed breakdown for no_access and partial_access
+            print(f"\n📋 {exp_type.upper()} DETAILED BREAKDOWN:")
+            detailed_counts = detailed_stats["detailed_category_breakdown"][exp_type]
+
+            # Focus on the categories user is interested in
+            focus_categories = {}
+            for category, count in detailed_counts.items():
+                if any(
+                    keyword in category
+                    for keyword in [
+                        "no_",
+                        "partial_",
+                        "failed",
+                        "error",
+                        "conversation",
+                    ]
+                ):
+                    focus_categories[category] = count
+
+            if focus_categories:
+                print("  Problem categories:")
+                for category, count in sorted(
+                    focus_categories.items(), key=lambda x: -x[1]
+                ):
+                    percentage = (count / total_files) * 100 if total_files > 0 else 0
+                    print(
+                        f"    {category.replace('_', ' ')}: {count} ({percentage:.1f}%)"
+                    )
+
+            # Show error details if any
+            error_details = detailed_stats["error_analysis"][exp_type]
+            if error_details:
+                print(f"\n⚠️  {exp_type.upper()} ERROR DETAILS:")
+                for error_msg, count in sorted(
+                    error_details.items(), key=lambda x: -x[1]
+                )[
+                    :10
+                ]:  # Top 10 errors
+                    percentage = (count / total_files) * 100 if total_files > 0 else 0
+                    print(f"    {error_msg}: {count} ({percentage:.1f}%)")
+
+        print(f"\n{'='*60}")
 
     def _load_query_mappings(self, mappings_file: str) -> Dict[str, Dict]:
         """Load query-to-file mappings from TSV file."""
@@ -1810,8 +2572,7 @@ class SEVALAnalysisToolkit:
     ) -> Optional[Dict]:
         """Analyze search results within a single SEVAL JSON file."""
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = self._read_json_file_safely(str(file_path))
 
             analysis = {
                 "filename": file_path.name,
@@ -2041,6 +2802,11 @@ class SEVALAnalysisToolkit:
                 "experiment_final_search_results",
                 "search_result_similarity",
                 "mentions_specific_content",
+                "mentioned_files",
+                "control_found_mentioned",
+                "experiment_found_mentioned",
+                "control_accessed_mentioned",
+                "experiment_accessed_mentioned",
                 "content_found_by_both",
                 "both_accessed_content",
                 "fair_comparison_candidate",
@@ -2106,6 +2872,17 @@ class SEVALAnalysisToolkit:
                     experiment_final_results,
                     similarity,
                     query_content_analysis["mentions_specific_content"],
+                    "|".join(query_content_analysis.get("mentioned_files", [])),
+                    "|".join(query_content_analysis.get("control_found_mentioned", [])),
+                    "|".join(
+                        query_content_analysis.get("experiment_found_mentioned", [])
+                    ),
+                    "|".join(
+                        query_content_analysis.get("control_accessed_mentioned", [])
+                    ),
+                    "|".join(
+                        query_content_analysis.get("experiment_accessed_mentioned", [])
+                    ),
                     query_content_analysis["content_found_by_both"],
                     query_content_analysis["both_accessed_content"],
                     query_content_analysis["fair_comparison_candidate"],
@@ -2432,8 +3209,17 @@ class SEVALAnalysisToolkit:
 
         return similarity
 
-    def _analyze_query_content_matching(self, result: Dict) -> Dict:
+    def _analyze_query_content_matching(
+        self, result: Dict, requested_items: Optional[List[str]] = None
+    ) -> Dict:
         """Analyze content matching for a single query using JSON structure analysis."""
+
+        # Extract requested items from query if not provided
+        if requested_items is None:
+            query_text = result.get("query", "")
+            requested_items = self._extract_requested_files_emails_from_query(
+                query_text
+            )
 
         # Extract search information from control and experiment files
         control_info = None
@@ -2443,9 +3229,10 @@ class SEVALAnalysisToolkit:
         control_file = result.get("control_file")
         if control_file:
             try:
-                with open(control_file, "r", encoding="utf-8") as f:
-                    control_data = json.load(f)
-                control_info = self._extract_search_information(control_data)
+                control_data = self._read_json_file_safely(control_file)
+                control_info = self._extract_search_information(
+                    control_data, control_file
+                )
             except Exception as e:
                 logger.warning(f"Could not parse control file {control_file}: {e}")
 
@@ -2453,9 +3240,10 @@ class SEVALAnalysisToolkit:
         experiment_file = result.get("experiment_file")
         if experiment_file:
             try:
-                with open(experiment_file, "r", encoding="utf-8") as f:
-                    experiment_data = json.load(f)
-                experiment_info = self._extract_search_information(experiment_data)
+                experiment_data = self._read_json_file_safely(experiment_file)
+                experiment_info = self._extract_search_information(
+                    experiment_data, experiment_file
+                )
             except Exception as e:
                 logger.warning(
                     f"Could not parse experiment file {experiment_file}: {e}"
@@ -2471,15 +3259,23 @@ class SEVALAnalysisToolkit:
             "experiment_files_found": [],
             "control_files_accessed": [],
             "experiment_files_accessed": [],
+            "mentioned_files": [],
+            "control_found_mentioned": [],
+            "experiment_found_mentioned": [],
+            "control_accessed_mentioned": [],
+            "experiment_accessed_mentioned": [],
             "content_overlap_pct": 0.0,
             "similarity_category": "No_Data",
             "control_access_level": "unknown",
             "experiment_access_level": "unknown",
             "control_search_success": False,
             "experiment_search_success": False,
-            "control_domain": "General",
-            "experiment_domain": "General",
         }
+
+        # Extract specific file/email mentions from user query
+        query_text = result.get("query", "")
+        mentioned_files = self._extract_mentioned_files(query_text)
+        analysis["mentioned_files"] = mentioned_files
 
         # Check if query mentions specific content (files, documents, etc.)
         query = result["query"].lower()
@@ -2512,6 +3308,36 @@ class SEVALAnalysisToolkit:
                 control_info, experiment_info
             )
 
+            # Check which mentioned files were found/accessed
+            control_found_mentioned, control_accessed_mentioned = (
+                self._check_mentioned_files_access(
+                    mentioned_files,
+                    [r["title"] for r in control_info["results_found"]],
+                    [f["filename"] for f in control_info["files_accessed"]],
+                )
+            )
+
+            experiment_found_mentioned, experiment_accessed_mentioned = (
+                self._check_mentioned_files_access(
+                    mentioned_files,
+                    [r["title"] for r in experiment_info["results_found"]],
+                    [f["filename"] for f in experiment_info["files_accessed"]],
+                )
+            )
+
+            # Enhanced fair comparison logic using sophisticated criteria
+            fair_comparison_candidate = self._evaluate_fair_comparison_candidate(
+                mentioned_files,
+                control_info,
+                experiment_info,
+                similarity_data,
+                control_found_mentioned,
+                experiment_found_mentioned,
+                control_accessed_mentioned,
+                experiment_accessed_mentioned,
+                requested_items,
+            )
+
             # Update analysis with detailed results
             analysis.update(
                 {
@@ -2520,11 +3346,7 @@ class SEVALAnalysisToolkit:
                         similarity_data["control_access_level"] == "full_access"
                         and similarity_data["experiment_access_level"] == "full_access"
                     ),
-                    "fair_comparison_candidate": (
-                        similarity_data["content_overlap_pct"] >= 30
-                        and control_info["search_success"]
-                        and experiment_info["search_success"]
-                    ),
+                    "fair_comparison_candidate": fair_comparison_candidate,
                     "control_files_found": [
                         r["title"] for r in control_info["results_found"]
                     ],
@@ -2537,21 +3359,35 @@ class SEVALAnalysisToolkit:
                     "experiment_files_accessed": [
                         f["filename"] for f in experiment_info["files_accessed"]
                     ],
+                    "control_found_mentioned": control_found_mentioned,
+                    "experiment_found_mentioned": experiment_found_mentioned,
+                    "control_accessed_mentioned": control_accessed_mentioned,
+                    "experiment_accessed_mentioned": experiment_accessed_mentioned,
                     "content_overlap_pct": similarity_data["content_overlap_pct"],
                     "similarity_category": similarity_data["similarity_category"],
                     "control_access_level": similarity_data["control_access_level"],
                     "experiment_access_level": similarity_data[
                         "experiment_access_level"
                     ],
-                    "control_search_success": control_info["search_success"],
-                    "experiment_search_success": experiment_info["search_success"],
-                    "control_domain": self._classify_search_domain(control_info),
-                    "experiment_domain": self._classify_search_domain(experiment_info),
+                    "control_search_success": self._determine_targeted_search_success(
+                        control_info, requested_items
+                    ),
+                    "experiment_search_success": self._determine_targeted_search_success(
+                        experiment_info, requested_items
+                    ),
                 }
             )
 
         elif control_info:
             # Only control data available
+            control_found_mentioned, control_accessed_mentioned = (
+                self._check_mentioned_files_access(
+                    mentioned_files,
+                    [r["title"] for r in control_info["results_found"]],
+                    [f["filename"] for f in control_info["files_accessed"]],
+                )
+            )
+
             analysis.update(
                 {
                     "control_files_found": [
@@ -2560,14 +3396,25 @@ class SEVALAnalysisToolkit:
                     "control_files_accessed": [
                         f["filename"] for f in control_info["files_accessed"]
                     ],
+                    "control_found_mentioned": control_found_mentioned,
+                    "control_accessed_mentioned": control_accessed_mentioned,
                     "control_access_level": self._determine_access_level(control_info),
-                    "control_search_success": control_info["search_success"],
-                    "control_domain": self._classify_search_domain(control_info),
+                    "control_search_success": self._determine_targeted_search_success(
+                        control_info, requested_items
+                    ),
                 }
             )
 
         elif experiment_info:
             # Only experiment data available
+            experiment_found_mentioned, experiment_accessed_mentioned = (
+                self._check_mentioned_files_access(
+                    mentioned_files,
+                    [r["title"] for r in experiment_info["results_found"]],
+                    [f["filename"] for f in experiment_info["files_accessed"]],
+                )
+            )
+
             analysis.update(
                 {
                     "experiment_files_found": [
@@ -2576,11 +3423,14 @@ class SEVALAnalysisToolkit:
                     "experiment_files_accessed": [
                         f["filename"] for f in experiment_info["files_accessed"]
                     ],
+                    "experiment_found_mentioned": experiment_found_mentioned,
+                    "experiment_accessed_mentioned": experiment_accessed_mentioned,
                     "experiment_access_level": self._determine_access_level(
                         experiment_info
                     ),
-                    "experiment_search_success": experiment_info["search_success"],
-                    "experiment_domain": self._classify_search_domain(experiment_info),
+                    "experiment_search_success": self._determine_targeted_search_success(
+                        experiment_info, requested_items
+                    ),
                 }
             )
 
@@ -2696,15 +3546,114 @@ class SEVALAnalysisToolkit:
             else:
                 print(f"  {exp_type.title()}: No failures detected")
 
+    def _display_json_based_statistics(self, converted_results: List[Dict]) -> None:
+        """Display console statistics for JSON-based analysis results."""
+        print(f"\n🔍 SEVAL JSON-Based Analysis Summary")
+        print("=" * 80)
+
+        total_queries = len(converted_results)
+        print(f"📊 Query Coverage:")
+        print(f"  Total queries analyzed: {total_queries}")
+
+        # Collect statistics by analyzing each result
+        stats = {
+            "mentions_specific_content": 0,
+            "content_found_by_both": 0,
+            "both_accessed_content": 0,
+            "fair_comparison_candidates": 0,
+            "control_search_success": 0,
+            "experiment_search_success": 0,
+            "similarity_categories": {},
+            "access_levels": {"control": {}, "experiment": {}},
+        }
+
+        for result in converted_results:
+            # Get analysis for this query
+            content_analysis = self._analyze_query_content_matching(result)
+
+            # Count key metrics
+            if content_analysis["mentions_specific_content"]:
+                stats["mentions_specific_content"] += 1
+            if content_analysis["content_found_by_both"]:
+                stats["content_found_by_both"] += 1
+            if content_analysis["both_accessed_content"]:
+                stats["both_accessed_content"] += 1
+            if content_analysis["fair_comparison_candidate"]:
+                stats["fair_comparison_candidates"] += 1
+            if content_analysis["control_search_success"]:
+                stats["control_search_success"] += 1
+            if content_analysis["experiment_search_success"]:
+                stats["experiment_search_success"] += 1
+
+            # Track similarity categories
+            sim_cat = content_analysis["similarity_category"]
+            stats["similarity_categories"][sim_cat] = (
+                stats["similarity_categories"].get(sim_cat, 0) + 1
+            )
+
+            # Track access levels
+            control_access = content_analysis["control_access_level"]
+            experiment_access = content_analysis["experiment_access_level"]
+            stats["access_levels"]["control"][control_access] = (
+                stats["access_levels"]["control"].get(control_access, 0) + 1
+            )
+            stats["access_levels"]["experiment"][experiment_access] = (
+                stats["access_levels"]["experiment"].get(experiment_access, 0) + 1
+            )
+
+        # Display content analysis results
+        print(f"\n📋 Content Analysis Results:")
+        print(
+            f"  Queries mentioning specific files/emails: {stats['mentions_specific_content']} ({100*stats['mentions_specific_content']/total_queries:.1f}%)"
+        )
+        print(
+            f"  Both found same specific content: {stats['content_found_by_both']} ({100*stats['content_found_by_both']/max(stats['mentions_specific_content'], 1):.1f}% of specific)"
+        )
+        print(
+            f"  Both accessed full content: {stats['both_accessed_content']} ({100*stats['both_accessed_content']/max(stats['mentions_specific_content'], 1):.1f}% of specific)"
+        )
+        print(
+            f"  Fair comparison candidates: {stats['fair_comparison_candidates']} queries ({100*stats['fair_comparison_candidates']/total_queries:.1f}%)"
+        )
+
+        # Display search success rates
+        print(f"\n🔍 Search Success Rates:")
+        print(
+            f"  Control successful searches: {stats['control_search_success']}/{total_queries} ({100*stats['control_search_success']/total_queries:.1f}%)"
+        )
+        print(
+            f"  Experiment successful searches: {stats['experiment_search_success']}/{total_queries} ({100*stats['experiment_search_success']/total_queries:.1f}%)"
+        )
+
+        # Display similarity breakdown
+        print(f"\n📊 Content Similarity Categories:")
+        for category, count in sorted(
+            stats["similarity_categories"].items(), key=lambda x: -x[1]
+        ):
+            print(
+                f"  {category.replace('_', ' ')}: {count} ({100*count/total_queries:.1f}%)"
+            )
+
+        # Display access level breakdown
+        print(f"\n🔐 Content Access Levels:")
+        for exp_type in ["control", "experiment"]:
+            print(f"  {exp_type.title()}:")
+            for access_level, count in sorted(
+                stats["access_levels"][exp_type].items(), key=lambda x: -x[1]
+            ):
+                print(
+                    f"    {access_level.replace('_', ' ')}: {count} ({100*count/total_queries:.1f}%)"
+                )
+
     def create_clean_tsv_output(self, results: List[Dict], output_file: str) -> str:
         """Create a clean TSV file without header comments, using JSON-based analysis."""
 
-        # Define TSV headers
+        # Define TSV headers with detailed breakdown columns
         headers = [
-            "query_id",
             "query",
             "control_file",
             "experiment_file",
+            "requested_files_emails",
             "mentions_specific_content",
             "content_found_by_both",
             "both_accessed_content",
@@ -2717,10 +3666,16 @@ class SEVALAnalysisToolkit:
             "similarity_category",
             "control_access_level",
             "experiment_access_level",
+            "control_detailed_category",
+            "experiment_detailed_category",
+            "control_access_reason",
+            "experiment_access_reason",
+            "control_results_count",
+            "experiment_results_count",
+            "control_response_length",
+            "experiment_response_length",
             "control_search_success",
             "experiment_search_success",
-            "control_domain",
-            "experiment_domain",
         ]
 
         with open(output_file, "w", encoding="utf-8", newline="") as f:
@@ -2731,14 +3686,77 @@ class SEVALAnalysisToolkit:
 
             # Process each result with JSON-based analysis
             for result in results:
-                content_analysis = self._analyze_query_content_matching(result)
+                query_text = result.get("query", "")
+                requested_items = self._extract_requested_files_emails_from_query(
+                    query_text
+                )
+                content_analysis = self._analyze_query_content_matching(
+                    result, requested_items
+                )
 
-                # Prepare row data
+                # Get detailed breakdown for both control and experiment
+                control_breakdown = {
+                    "detailed_category": "unknown",
+                    "reason": "Unknown",
+                    "results_count": 0,
+                    "response_length": 0,
+                }
+                experiment_breakdown = {
+                    "detailed_category": "unknown",
+                    "reason": "Unknown",
+                    "results_count": 0,
+                    "response_length": 0,
+                }
+
+                # Analyze control file if it exists
+                control_file = result.get("control_file", "")
+                if control_file and os.path.exists(control_file):
+                    search_info = self._process_seval_file(control_file)
+                    if search_info.get("error_messages") and any(
+                        "Could not parse" in msg
+                        for msg in search_info["error_messages"]
+                    ):
+                        control_breakdown = {
+                            "detailed_category": "processing_error",
+                            "reason": "File processing failed",
+                            "results_count": 0,
+                            "response_length": 0,
+                        }
+                    else:
+                        control_breakdown = self._get_detailed_access_breakdown(
+                            search_info
+                        )
+
+                # Analyze experiment file if it exists
+                experiment_file = result.get("experiment_file", "")
+                if experiment_file and os.path.exists(experiment_file):
+                    search_info = self._process_seval_file(experiment_file)
+                    if search_info.get("error_messages") and any(
+                        "Could not parse" in msg
+                        for msg in search_info["error_messages"]
+                    ):
+                        experiment_breakdown = {
+                            "detailed_category": "processing_error",
+                            "reason": "File processing failed",
+                            "results_count": 0,
+                            "response_length": 0,
+                        }
+                    else:
+                        experiment_breakdown = self._get_detailed_access_breakdown(
+                            search_info
+                        )
+
+                # Prepare row data with detailed breakdown
+                query_text = result.get("query", "")
+                requested_items = self._extract_requested_files_emails_from_query(
+                    query_text
+                )
+
                 row = {
-                    "query_id": result.get("query_id", ""),
-                    "query": result.get("query", ""),
+                    "query": query_text,
                     "control_file": result.get("control_file", ""),
                     "experiment_file": result.get("experiment_file", ""),
+                    "requested_files_emails": "|".join(requested_items),
                     "mentions_specific_content": content_analysis[
                         "mentions_specific_content"
                     ],
@@ -2765,14 +3783,28 @@ class SEVALAnalysisToolkit:
                     "experiment_access_level": content_analysis[
                         "experiment_access_level"
                     ],
+                    "control_detailed_category": control_breakdown["detailed_category"],
+                    "experiment_detailed_category": experiment_breakdown[
+                        "detailed_category"
+                    ],
+                    "control_access_reason": control_breakdown["reason"],
+                    "experiment_access_reason": experiment_breakdown["reason"],
+                    "control_results_count": control_breakdown.get("results_count", 0),
+                    "experiment_results_count": experiment_breakdown.get(
+                        "results_count", 0
+                    ),
+                    "control_response_length": control_breakdown.get(
+                        "response_length", 0
+                    ),
+                    "experiment_response_length": experiment_breakdown.get(
+                        "response_length", 0
+                    ),
                     "control_search_success": content_analysis[
                         "control_search_success"
                     ],
                     "experiment_search_success": content_analysis[
                         "experiment_search_success"
                     ],
-                    "control_domain": content_analysis["control_domain"],
-                    "experiment_domain": content_analysis["experiment_domain"],
                 }
 
                 writer.writerow(row)
