@@ -25,6 +25,9 @@ Usage:
     # Analyze search results patterns (requires query mappings)
     python seval_analysis_toolkit.py analyze_search_results --mappings_file "results/query_file_mappings.tsv" --output_file "results/search_analysis.tsv"
     python seval_analysis_toolkit.py analyze_search_results --threads 16 --max_queries 100
+
+    # Extract detailed conversation analysis from SEVAL file
+    python seval_analysis_toolkit.py extract_conversation_details --input_file "seval_data/experiment_file.json" --output_file "analysis_report.md"
 """
 
 import json
@@ -1319,7 +1322,6 @@ class SEVALAnalysisToolkit:
 
             with open(output_path, "w", newline="", encoding="utf-8") as tsvfile:
                 fieldnames = [
-                    "query_hash",
                     "query_text",
                     "control_file",
                     "experiment_file",
@@ -1335,7 +1337,6 @@ class SEVALAnalysisToolkit:
                 for query_hash, files in query_to_files.items():
                     writer.writerow(
                         {
-                            "query_hash": query_hash,
                             "query_text": files.get(
                                 "query_text", "No query text found"
                             ),
@@ -1582,7 +1583,6 @@ class SEVALAnalysisToolkit:
                             "filepath": str(Path(search_dir) / row["control_file"]),
                             "exp_name": "control",
                             "query_text": query_text,
-                            "query_hash": row.get("query_hash", ""),
                         }
                     )
 
@@ -1594,7 +1594,6 @@ class SEVALAnalysisToolkit:
                             "filepath": str(Path(search_dir) / row["experiment_file"]),
                             "exp_name": "experiment",
                             "query_text": query_text,
-                            "query_hash": row.get("query_hash", ""),
                         }
                     )
 
@@ -3811,6 +3810,533 @@ class SEVALAnalysisToolkit:
 
         logger.info(f"Created clean TSV output with {len(results)} rows: {output_file}")
         return output_file
+
+    def extract_conversation_details(
+        self,
+        input_file: str,
+        output_file: str,
+    ):
+        """
+        Extract detailed conversation information from a SEVAL JSON file.
+
+        This tool analyzes the conversation flow, tool calls, search results, and user-visible
+        outputs from a SEVAL JSON file and generates a comprehensive markdown report.
+
+        Args:
+            input_file: Path to the SEVAL JSON file to analyze
+            output_file: Path where the markdown report will be saved
+
+        Outputs:
+            1. Tool calls per round (tool name, messages, parameters)
+            2. Search results with file/email names and content snippets
+            3. Intermediate and final user-visible outputs
+            4. Formatted markdown report for easy human review
+        """
+        import json
+        import re
+        from datetime import datetime
+        from pathlib import Path
+
+        logger.info(f"Extracting conversation details from: {input_file}")
+        logger.info(f"Output markdown file: {output_file}")
+
+        if not os.path.exists(input_file):
+            logger.error(f"Input file not found: {input_file}")
+            return
+
+        try:
+            # Load the SEVAL JSON file
+            with open(input_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Extract basic information
+            conversation_id = data.get("conversation_id", "Unknown")
+            exp_name = data.get("exp_name", "Unknown")
+            query_text = data.get("query", {}).get("id", "Unknown")
+            conversation_success = data.get("conversation_success", False)
+
+            # Get messages from the response
+            messages = []
+            if data.get("requests") and len(data["requests"]) > 0:
+                request = data["requests"][0]
+                messages = request.get("response_body", {}).get("messages", [])
+
+            logger.info(
+                f"Processing {len(messages)} messages from {exp_name} experiment"
+            )
+
+            # Analyze the conversation
+            analysis = self._analyze_conversation_flow(
+                messages,
+                query_text,
+                exp_name,
+                conversation_id,
+                conversation_success,
+                input_file,
+            )
+
+            # Generate markdown report
+            self._generate_markdown_report(analysis, output_file)
+
+            logger.info(f"Successfully generated markdown report: {output_file}")
+            logger.info(
+                f"Found {len(analysis['tool_calls'])} tool calls and {len(analysis['search_results'])} search results"
+            )
+            logger.info(
+                f"User-visible messages: {len(analysis['user_visible_messages'])}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error processing file {input_file}: {e}")
+            raise
+
+    def _analyze_conversation_flow(
+        self,
+        messages: List[Dict],
+        query_text: str,
+        exp_name: str,
+        conversation_id: str,
+        conversation_success: bool,
+        input_file: str,
+    ) -> Dict:
+        """Analyze the conversation flow and extract key information."""
+        from datetime import datetime
+        import os
+
+        # Extract filename and SEVAL job ID from input path
+        filename = os.path.basename(input_file)
+
+        # Extract SEVAL job ID from path (e.g., "212953" from "212953_scraping_raw_data_output")
+        seval_job_id = "Unknown"
+        path_parts = input_file.replace("\\", "/").split("/")
+        for part in path_parts:
+            if "_scraping_raw_data_output" in part:
+                seval_job_id = part.split("_")[0]
+                break
+
+        analysis = {
+            "metadata": {
+                "conversation_id": conversation_id,
+                "exp_name": exp_name,
+                "query_text": query_text,
+                "conversation_success": conversation_success,
+                "total_messages": len(messages),
+                "analysis_timestamp": datetime.now().isoformat(),
+                "filename": filename,
+                "seval_job_id": seval_job_id,
+            },
+            "tool_calls": [],
+            "search_results": [],
+            "user_visible_messages": [],
+            "rounds": [],
+        }
+
+        current_round = 1
+        round_data = {
+            "round_number": current_round,
+            "tool_calls": [],
+            "search_results": [],
+            "progress_messages": [],
+        }
+
+        for i, msg in enumerate(messages):
+            msg_type = msg.get("messageType", "")
+            author = msg.get("author", "")
+            text = msg.get("text", "")
+            timestamp = msg.get("timestamp", "")
+            content_type = msg.get("contentType", "")
+
+            # Track tool calls (InvokeAction messages)
+            if msg_type == "InvokeAction" and "invocation" in msg:
+                tool_call = self._extract_tool_call_info(msg, i)
+                analysis["tool_calls"].append(tool_call)
+                round_data["tool_calls"].append(tool_call)
+
+            # Track search results
+            elif msg_type == "InternalSearchResult" or content_type == "SearchResults":
+                search_result = self._extract_search_result_info(msg, i)
+                analysis["search_results"].append(search_result)
+                round_data["search_results"].append(search_result)
+
+            # Track progress messages
+            elif msg_type == "Progress" and author == "bot":
+                progress_msg = {
+                    "message_index": i,
+                    "timestamp": timestamp,
+                    "text": text[:200] + ("..." if len(text) > 200 else ""),
+                    "full_text": text,
+                }
+                round_data["progress_messages"].append(progress_msg)
+
+            # Track user-visible messages (final responses)
+            elif author == "bot" and msg_type == "" and len(text) > 100:
+                user_msg = {
+                    "message_index": i,
+                    "timestamp": timestamp,
+                    "text": text,
+                    "citations": msg.get("citations", []),
+                    "length": len(text),
+                    "is_final_response": True,
+                }
+                analysis["user_visible_messages"].append(user_msg)
+
+            # Detect round transitions (when we see multiple tool calls or significant gaps)
+            if (
+                msg_type == "InvokeAction"
+                and len(round_data["tool_calls"]) > 0
+                and i > round_data["tool_calls"][-1]["message_index"] + 10
+            ):
+                # Save current round and start new one
+                analysis["rounds"].append(round_data)
+                current_round += 1
+                round_data = {
+                    "round_number": current_round,
+                    "tool_calls": [],
+                    "search_results": [],
+                    "progress_messages": [],
+                }
+
+        # Add the final round
+        if (
+            round_data["tool_calls"]
+            or round_data["search_results"]
+            or round_data["progress_messages"]
+        ):
+            analysis["rounds"].append(round_data)
+
+        return analysis
+
+    def _extract_tool_call_info(self, msg: Dict, msg_index: int) -> Dict:
+        """Extract tool call information from an InvokeAction message."""
+        invocation = msg.get("invocation", "")
+        text = msg.get("text", "")
+        timestamp = msg.get("timestamp", "")
+
+        # Parse tool name and parameters from invocation
+        tool_name = "Unknown"
+        parameters = {}
+
+        try:
+            # Parse the invocation JSON array
+            if invocation.startswith("[") and invocation.endswith("]"):
+                import json
+
+                invocation_data = json.loads(invocation)
+                if invocation_data and isinstance(invocation_data, list):
+                    # The first element might be a string containing JSON
+                    first_element = invocation_data[0]
+                    if isinstance(first_element, str):
+                        # Parse the nested JSON string
+                        try:
+                            first_call = json.loads(first_element)
+                        except json.JSONDecodeError:
+                            first_call = first_element
+                    else:
+                        first_call = first_element
+
+                    if isinstance(first_call, dict) and "function" in first_call:
+                        function_data = first_call["function"]
+                        if "name" in function_data:
+                            tool_name = function_data["name"]
+
+                        # Try to parse arguments for parameters
+                        if "arguments" in function_data:
+                            try:
+                                args_data = json.loads(function_data["arguments"])
+                                if isinstance(args_data, dict):
+                                    parameters = args_data
+                            except json.JSONDecodeError:
+                                pass
+
+            # Fallback: Look for tool name in invocation string (old method)
+            if tool_name == "Unknown" and '"name":' in invocation:
+                name_match = re.search(r'"name":"([^"]+)"', invocation)
+                if name_match:
+                    tool_name = name_match.group(1)
+
+            # Special handling for office365_search (legacy support)
+            if "office365_search" in invocation:
+                tool_name = "office365_search"
+                # Extract search queries
+                query_pattern = r'"query":"([^"]*)"'
+                queries = re.findall(query_pattern, invocation)
+                if queries:
+                    parameters["queries"] = [
+                        q.replace('\\"', '"').replace("\\\\", "\\")
+                        for q in queries
+                        if len(q) > 5
+                    ]
+
+            # Extract domain if present
+            if "domain" in invocation:
+                domain_pattern = r'"domain":"([^"]*)"'
+                domain_match = re.search(domain_pattern, invocation)
+                if domain_match:
+                    parameters["domain"] = domain_match.group(1)
+
+        except Exception as e:
+            logger.warning(f"Could not parse tool invocation: {e}")
+
+        return {
+            "message_index": msg_index,
+            "timestamp": timestamp,
+            "tool_name": tool_name,
+            "parameters": parameters,
+            "progress_text": text,
+            "raw_invocation": invocation[:500]
+            + ("..." if len(invocation) > 500 else ""),
+        }
+
+    def _extract_search_result_info(self, msg: Dict, msg_index: int) -> Dict:
+        """Extract search result information."""
+        text = msg.get("text", "")
+        timestamp = msg.get("timestamp", "")
+        msg_type = msg.get("messageType", "")
+        content_type = msg.get("contentType", "")
+
+        result_info = {
+            "message_index": msg_index,
+            "timestamp": timestamp,
+            "message_type": msg_type,
+            "content_type": content_type,
+            "items_found": 0,
+            "results": [],
+            "raw_content": text[:1000] + ("..." if len(text) > 1000 else ""),
+        }
+
+        # Parse JSON results if present
+        try:
+            if text.startswith("{") and '"results":' in text:
+                parsed = json.loads(text)
+                if "results" in parsed:
+                    results = parsed["results"]
+                    result_info["items_found"] = len(results)
+
+                    # Extract details for each result
+                    for result in results[:5]:  # Limit to first 5 results
+                        if "result" in result:
+                            res_data = result["result"]
+                            result_detail = {
+                                "reference_id": res_data.get("reference_id", ""),
+                                "type": res_data.get("type", ""),
+                                "subject": res_data.get("subject", ""),
+                                "snippet": res_data.get("snippet", "")[:300]
+                                + (
+                                    "..."
+                                    if len(res_data.get("snippet", "")) > 300
+                                    else ""
+                                ),
+                                "from_email": res_data.get("from", ""),
+                                "to_email": res_data.get("to", ""),
+                                "sent_time": res_data.get("sentTime", ""),
+                                "file_name": res_data.get("fileName", ""),
+                                "file_type": res_data.get("fileType", ""),
+                                "url": res_data.get("url", ""),
+                            }
+                            result_info["results"].append(result_detail)
+
+            elif text.startswith("[") and len(text) > 10:
+                # Handle array format results
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    result_info["items_found"] = len(parsed)
+                    for item in parsed[:5]:
+                        if isinstance(item, dict):
+                            result_detail = {
+                                "query": item.get("query", ""),
+                                "result": str(item.get("result", ""))[:300]
+                                + (
+                                    "..."
+                                    if len(str(item.get("result", ""))) > 300
+                                    else ""
+                                ),
+                            }
+                            result_info["results"].append(result_detail)
+
+        except json.JSONDecodeError:
+            # If not JSON, treat as plain text
+            if "No content returned" not in text and len(text) > 20:
+                result_info["results"].append(
+                    {
+                        "type": "text",
+                        "content": text[:300] + ("..." if len(text) > 300 else ""),
+                    }
+                )
+
+        return result_info
+
+    def _generate_markdown_report(self, analysis: Dict, output_file: str):
+        """Generate a comprehensive markdown report."""
+        metadata = analysis["metadata"]
+
+        # Ensure output directory exists
+        os.makedirs(
+            os.path.dirname(output_file) if os.path.dirname(output_file) else ".",
+            exist_ok=True,
+        )
+
+        with open(output_file, "w", encoding="utf-8") as f:
+            # Header
+            f.write(f"# SEVAL Conversation Analysis Report\n\n")
+            f.write(f"**Generated:** {metadata['analysis_timestamp']}\n\n")
+
+            # Metadata section
+            f.write(f"## Conversation Metadata\n\n")
+            f.write(f"- **File Name:** `{metadata['filename']}`\n")
+            f.write(f"- **SEVAL Job ID:** `{metadata['seval_job_id']}`\n")
+            f.write(f"- **Conversation ID:** `{metadata['conversation_id']}`\n")
+            f.write(f"- **Experiment Type:** `{metadata['exp_name']}`\n")
+            f.write(f"- **Success:** `{metadata['conversation_success']}`\n")
+            f.write(f"- **Total Messages:** {metadata['total_messages']}\n")
+            f.write(f"- **Tool Calls:** {len(analysis['tool_calls'])}\n")
+            f.write(f"- **Search Results:** {len(analysis['search_results'])}\n\n")
+
+            # Query section
+            f.write(f"## Original Query\n\n")
+            f.write(f"```\n{metadata['query_text']}\n```\n\n")
+
+            # Rounds analysis
+            f.write(f"## Conversation Rounds ({len(analysis['rounds'])} rounds)\n\n")
+
+            for round_data in analysis["rounds"]:
+                f.write(f"### Round {round_data['round_number']}\n\n")
+
+                # Tool calls in this round
+                if round_data["tool_calls"]:
+                    f.write(f"#### Tool Calls ({len(round_data['tool_calls'])})\n\n")
+                    for i, tool_call in enumerate(round_data["tool_calls"], 1):
+                        f.write(f"**Call {i}: {tool_call['tool_name']}**\n")
+                        f.write(f"- **Timestamp:** {tool_call['timestamp']}\n")
+                        f.write(f"- **Message Index:** {tool_call['message_index']}\n")
+
+                        if tool_call["parameters"]:
+                            f.write(f"- **Parameters:**\n")
+                            for key, value in tool_call["parameters"].items():
+                                if isinstance(value, list):
+                                    f.write(f"  - **{key}:** {len(value)} items\n")
+                                    for j, item in enumerate(value[:3], 1):
+                                        f.write(f"    {j}. `{item}`\n")
+                                    if len(value) > 3:
+                                        f.write(f"    ... and {len(value) - 3} more\n")
+                                else:
+                                    f.write(f"  - **{key}:** `{value}`\n")
+
+                        if tool_call["progress_text"]:
+                            f.write(f"- **Progress:** {tool_call['progress_text']}\n")
+
+                        f.write(f"\n")
+
+                # Search results in this round
+                if round_data["search_results"]:
+                    f.write(
+                        f"#### Search Results ({len(round_data['search_results'])})\n\n"
+                    )
+                    for i, search_result in enumerate(round_data["search_results"], 1):
+                        f.write(f"**Result {i}**\n")
+                        f.write(f"- **Timestamp:** {search_result['timestamp']}\n")
+                        f.write(
+                            f"- **Message Index:** {search_result['message_index']}\n"
+                        )
+                        f.write(
+                            f"- **Type:** {search_result['message_type']} / {search_result['content_type']}\n"
+                        )
+                        f.write(
+                            f"- **Items Found:** {search_result['items_found']}\n\n"
+                        )
+
+                        if search_result["results"]:
+                            f.write(f"**Found Items:**\n")
+                            for j, item in enumerate(search_result["results"], 1):
+                                f.write(f"{j}. ")
+                                if item.get("type") == "EmailMessage":
+                                    f.write(
+                                        f"**Email:** `{item.get('subject', 'No subject')}`\n"
+                                    )
+                                    if item.get("from_email"):
+                                        f.write(
+                                            f"   - **From:** {item['from_email']}\n"
+                                        )
+                                    if item.get("sent_time"):
+                                        f.write(f"   - **Sent:** {item['sent_time']}\n")
+                                    if item.get("snippet"):
+                                        f.write(
+                                            f"   - **Snippet:** {item['snippet']}\n"
+                                        )
+                                elif item.get("file_name"):
+                                    f.write(f"**File:** `{item['file_name']}`\n")
+                                    if item.get("file_type"):
+                                        f.write(f"   - **Type:** {item['file_type']}\n")
+                                    if item.get("snippet"):
+                                        f.write(
+                                            f"   - **Content:** {item['snippet']}\n"
+                                        )
+                                elif item.get("query"):
+                                    f.write(f"**Query Result:** `{item['query']}`\n")
+                                    f.write(
+                                        f"   - **Result:** {item.get('result', '')}\n"
+                                    )
+                                else:
+                                    f.write(
+                                        f"**Item:** {item.get('content', str(item))}\n"
+                                    )
+                                f.write(f"\n")
+                        f.write(f"\n")
+
+                # Progress messages
+                if round_data["progress_messages"]:
+                    f.write(
+                        f"#### Progress Messages ({len(round_data['progress_messages'])})\n\n"
+                    )
+                    for i, progress in enumerate(round_data["progress_messages"], 1):
+                        f.write(
+                            f"{i}. **[{progress['timestamp']}]** {progress['text']}\n"
+                        )
+                    f.write(f"\n")
+
+                f.write(f"---\n\n")
+
+            # User-visible outputs
+            f.write(f"## User-Visible Outputs\n\n")
+
+            if analysis["user_visible_messages"]:
+                for i, msg in enumerate(analysis["user_visible_messages"], 1):
+                    f.write(f"### Output {i}\n\n")
+                    f.write(f"- **Timestamp:** {msg['timestamp']}\n")
+                    f.write(f"- **Message Index:** {msg['message_index']}\n")
+                    f.write(f"- **Length:** {msg['length']} characters\n")
+                    f.write(f"- **Citations:** {len(msg['citations'])} items\n\n")
+
+                    f.write(f"**Content:**\n")
+                    f.write(f"```\n{msg['text']}\n```\n\n")
+
+                    if msg["citations"]:
+                        f.write(f"**Citations:**\n")
+                        for j, citation in enumerate(msg["citations"], 1):
+                            f.write(f"{j}. {citation}\n")
+                        f.write(f"\n")
+            else:
+                f.write(f"No user-visible outputs found.\n\n")
+
+            # Summary statistics
+            f.write(f"## Summary Statistics\n\n")
+            f.write(f"- **Total Rounds:** {len(analysis['rounds'])}\n")
+            f.write(f"- **Total Tool Calls:** {len(analysis['tool_calls'])}\n")
+            f.write(f"- **Total Search Results:** {len(analysis['search_results'])}\n")
+            f.write(
+                f"- **User-Visible Messages:** {len(analysis['user_visible_messages'])}\n"
+            )
+
+            # Calculate search efficiency
+            total_items_found = sum(
+                result["items_found"] for result in analysis["search_results"]
+            )
+            if analysis["tool_calls"]:
+                search_efficiency = total_items_found / len(analysis["tool_calls"])
+                f.write(
+                    f"- **Search Efficiency:** {search_efficiency:.1f} items per tool call\n"
+                )
+
+            f.write(f"- **Total Items Found:** {total_items_found}\n")
 
 
 def main():
