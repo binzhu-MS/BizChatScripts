@@ -18,7 +18,11 @@ Key Features:
 - Comprehensive email metadata: Preserves all email fields including attachments, importance, folders
 - Robust timestamp handling: Handles missing or malformed timestamps gracefully
 - Detailed logging: Provides comprehensive extraction progress and statistics
-- Prompt generation: Can generate filled prompt templates with extracted email data for LLM evaluation
+- Advanced prompt generation: Generates filled prompt templates with extracted email data for LLM evaluation
+  - Prompts include guidance for syntactic variety (avoid template patterns)
+  - Requires natural temporal expressions in utterances
+  - Requires query timestamps in ISO 8601 format
+  - Output format: TSV with Utterance, Email_Account, Query_Timestamp, Complexity_Reason
 
 Usage:
     python email_extractor_individual_accounts.py extract_emails john.doe

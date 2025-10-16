@@ -1061,6 +1061,48 @@
             }
         },
         // ============================================
+        // Utterance Timestamper for Seval Data
+        // ============================================
+        {
+            "name": "⏰ File Utterance Timestamper for Seval Data",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/utterance_timestamper.py",
+            "args": [
+                "timestamp_file_utterances",
+                "results/utterances_email_timestamped.tsv",
+                "results/utterances_seval_timestamped.tsv",
+                "--files_folder=data/files",
+                "--hours_after_files=2.0",
+                "--time_window_hours=8.0"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📧 Email Utterance Timestamper for Seval Data",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/utterance_timestamper.py",
+            "args": [
+                "timestamp_email_utterances",
+                "--utterances_path=results/utterances_seval.tsv",
+                "--output_path=results/utterances_email_timestamped.tsv",
+                "--timestamp_results_folder=results/timestamp_results",
+                "--untimestamped_output_path=results/utterances_email_untimestamped.tsv"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
         // Files Processing
         // ============================================
         {
@@ -1130,107 +1172,6 @@
                 "--output_folder=results",
                 "--prompt_file=prompt_file_gen_complex_utterance.md",
                 "--user_email=rachael.morgan"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        // ============================================
-        // Utterance Timestamper for Seval Data
-        // ============================================
-        {
-            "name": "⏰ File Utterance Timestamper for Seval Data",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/utterance_timestamper.py",
-            "args": [
-                "timestamp_file_utterances",
-                "results/utterances_email_timestamped.tsv",
-                "results/utterances_seval_timestamped.tsv",
-                "--files_folder=data/files",
-                "--hours_after_files=2.0",
-                "--time_window_hours=8.0"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        // ============================================
-        // TEMPORAL UTTERANCE ANALYZER
-        // ============================================
-        {
-            "name": "🕒 Temporal Utterance Analyzer - Sample Test",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/temporal_utterance_analyzer.py",
-            "args": [
-                "analyze_temporal_references",
-                "--input_file=results/utterances_all.tsv",
-                "--output_folder=temporal_analysis_results",
-                "--max_items=5",
-                "--threads=1"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        {
-            "name": "🕒 Temporal Utterance Analyzer - Full Analysis",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/temporal_utterance_analyzer.py",
-            "args": [
-                "analyze_temporal_references",
-                "--input_file=results/utterances_all.tsv",
-                "--output_folder=temporal_analysis_results",
-                "--threads=2"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        {
-            "name": "🕒 Temporal Utterance Analyzer - Custom Input",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/temporal_utterance_analyzer.py",
-            "args": [
-                "analyze_temporal_references",
-                "--input_file=${input:inputFile}",
-                "--output_folder=temporal_analysis_results",
-                "--max_items=10",
-                "--threads=1"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        {
-            "name": "📧 Email Utterance Timestamper for Seval Data",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/utterance_timestamper.py",
-            "args": [
-                "timestamp_email_utterances",
-                "--utterances_path=results/utterances_seval.tsv",
-                "--output_path=results/utterances_email_timestamped.tsv",
-                "--timestamp_results_folder=results/timestamp_results",
-                "--untimestamped_output_path=results/utterances_email_untimestamped.tsv"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",

@@ -13,6 +13,11 @@ Features:
 - Generates detailed JSON report with user access patterns
 - Provides console summary with logging
 - Handles both shared files and file ownership
+- Advanced prompt generation: Generates filled prompt templates with extracted file data for LLM evaluation
+  - Prompts include guidance for syntactic variety (avoid template patterns)
+  - Requires natural temporal expressions in utterances
+  - Requires query timestamps in ISO 8601 format
+  - Output format: TSV with Utterance, Email_Account, Query_Timestamp, Complexity_Reason
 
 Usage:
     python files_individual_extractor.py analyze_file_access --config_file="data/files.config.json" --output_file="results/permissions_analysis.json"
