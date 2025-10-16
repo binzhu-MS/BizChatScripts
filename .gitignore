@@ -206,3 +206,9 @@ pyrightconfig.json
 # MSAL token cache contains sensitive authentication tokens
 .msal_token_cache
 llms/.msal_token_cache
+
+# Ignore data, result(s), temp folder
+**/data/
+**/result
+**/results/
+**/temp/

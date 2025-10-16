@@ -7,20 +7,8 @@ Each email account is treated as completely independent - no alias merging, no g
 It provides statistics on how many emails each account has sent and received.
 
 Key Features:
-- Each account treated independently (no merging of alias    collector = IndividualEmailStatistics(
-        emails_file=emails_file, users_file=users_file
-    )
-
-    result = collector.collect_email_statistics(min_emails=0)
-
-    # Print activity summary at the top
-    summary = result["summary"]
-    print(f"\n📊 ACCOUNT ACTIVITY SUMMARY")
-    print("=" * 50)
-    print(f"📁 Total unique accounts: {summary['total_unique_accounts']:,}")
-    print(f"⚡ Accounts with email activity: {summary['accounts_with_email_activity']:,}")
-    print(f"💤 Accounts with no email activity: {summary['accounts_with_no_activity']:,}")
-    print("=" * 50)- Group accounts are standalone entities (not expanded to members)
+- Each account treated independently (no merging of aliases)
+- Group accounts are standalone entities (not expanded to members)
 - Uses users.config.json directly (no preprocessing required)
 - Simple email count statistics per account
 - Detailed breakdowns by account type (user/group/bot/other)

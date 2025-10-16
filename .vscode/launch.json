@@ -996,24 +996,6 @@
                 "PYTHONPATH": "${workspaceFolder}"
             }
         },
-        // ============================================
-        // TSV PROCESSING
-        // ============================================
-        {
-            "name": "📊 TSV Splitter - Split by Segment and Email Account",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_splitter.py",
-            "args": [
-                "split_utterances"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
         // --------------------------------------------
         // TIMESTAMP PROMPT GENERATOR
         // Generate LLM prompts to add timestamps to utterances based on email accessibility.
@@ -1070,102 +1052,6 @@
                 "--emails_file=data/emails.config.json",
                 "--users_file=data/users.config.json",
                 "--template_file=prompt_add_timestamp.md"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        // ============================================
-        // TSV VALIDATION
-        // ============================================
-        {
-            "name": "🔍 TSV Field Validator - Validate Timestamped Utterances",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_field_validator.py",
-            "args": [
-                "validate_file",
-                "results/utterances_seval_timestamped.tsv",
-                "--show_details=True",
-                "--max_issues=20",
-                "--output_report=results/validation_report.json"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        {
-            "name": "🔍 TSV Field Validator - Quick Check",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_field_validator.py",
-            "args": [
-                "quick_check",
-                "results/utterances_seval_timestamped.tsv"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        {
-            "name": "🔍 TSV Field Validator - Validate Specific Fields",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_field_validator.py",
-            "args": [
-                "validate_specific_fields",
-                "results/utterances_seval_timestamped.tsv",
-                "Utterance,Segment,user_id,timestamp",
-                "--output_report=results/specific_fields_validation.json"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        // ============================================
-        // TSV FILTERING - SQL-like Column Filtering
-        // ============================================
-        {
-            "name": "📧 TSV Filter - Selecting Rows with Segment as Email",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_column_filter.py",
-            "args": [
-                "filter_by_column",
-                "Segment",
-                "email",
-                "--input_file=results/utterances_seval_timestamped.tsv",
-                "--output_file=results/utterances_seval_email_only.tsv",
-                "--show_stats=True"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            }
-        },
-        {
-            "name": "📊 TSV Filter - Analyze Segment Column",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_column_filter.py",
-            "args": [
-                "analyze_column",
-                "Segment",
-                "--input_file=results/utterances_seval_timestamped.tsv"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
@@ -1357,12 +1243,16 @@
         // TSV PROCESSING SUITE - Combined Utilities
         // ============================================
         // Available Functions:
-        // 1. process_file - Transform TSV files with column manipulations
-        // 2. llm_tsv_to_seval_tsv - Direct conversion from LLM output to SEVAL format (one-step)
-        // 3. cleanup_tsv - Remove quotes and normalize non-ASCII characters
+        // 1. llm_tsv_to_seval_tsv - Direct conversion from LLM output to SEVAL format (one-step)
+        // 2. cleanup_tsv - Remove quotes and normalize non-ASCII characters
+        // 3. split_utterances - Split TSV by segment and email into separate files
+        // 4. filter_by_column / analyze_column - SQL-like filtering and analysis
+        // 5. validate_file / validate_specific_fields - Field validation and reports
+        // 6. check_duplicates / remove_duplicates - Duplicate detection and removal
+        // 7. merge_tsv_files - Merge/append two TSV files with header validation
         // ============================================
         {
-            "name": "� LLM TSV to SEVAL - Direct Conversion (Append Mode)",
+            "name": "📋 TSV - LLM to SEVAL Direct Conversion (Append Mode)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
@@ -1381,15 +1271,14 @@
             }
         },
         {
-            "name": "🔄 LLM TSV to SEVAL - Direct Conversion (Custom Paths)",
+            "name": "📋 TSV - Cleanup (Remove Quotes & Normalize Non-ASCII)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
             "args": [
-                "llm_tsv_to_seval_tsv",
-                "--input_file=utterances_curr.tsv",
-                "--output_file=utterances_seval.tsv",
-                "--segment=email"
+                "cleanup_tsv",
+                "--input_file=results/complex_utterances_syntenants_vertedge_1.tsv",
+                "--output_file=results/complex_utterances_syntenants_vertedge_1_cleaned.tsv"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
@@ -1399,14 +1288,166 @@
             }
         },
         {
-            "name": "🧹 TSV Cleanup - Remove Quotes & Normalize Non-ASCII",
+            "name": "📋 TSV - Split by Segment & Email (Custom Paths)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
             "args": [
-                "cleanup_tsv",
+                "split_utterances",
+                "--input_file=results/utterances_custom.tsv",
+                "--output_dir=results/custom_split_results"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // TSV FILTERING - SQL-like Column Filtering
+        // ============================================
+        {
+            "name": "📋 TSV - Filter (Select Rows with Segment = Email)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
+            "args": [
+                "filter_by_column",
+                "Segment", // Column name
+                "email", // Column value
                 "--input_file=results/utterances_seval_timestamped.tsv",
-                "--output_file=results/utterances_seval_timestamped_cleaned.tsv"
+                "--output_file=results/utterances_seval_email_only.tsv",
+                "--show_stats=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📋 TSV - Analyze Column (Segment Distribution)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
+            "args": [
+                "analyze_column",
+                "Segment",
+                "--input_file=results/utterances_seval_timestamped.tsv"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // TSV VALIDATION
+        // ============================================
+        {
+            "name": "📋 TSV - Validate Complete (Detailed Field Validation)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
+            "args": [
+                "validate_file",
+                "results/utterances_seval.tsv", // input tsv file
+                "--show_details=True", // Show detailed issues for each row
+                "--max_issues=20", // Limit to first 20 issues
+                "--output_report=results/validation_report.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📋 TSV - Validate Specific Fields (Required Fields Only)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
+            "args": [
+                "validate_specific_fields",
+                "results/utterances_seval_timestamped.tsv",
+                "Utterance,Segment,user_id,timestamp", // Comma-separated required fields
+                "--output_report=results/specific_fields_validation.json"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📋 TSV - Check Duplicates (Summary Report)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
+            "args": [
+                "check_duplicates",
+                "results/utterances_seval.tsv" // input file
+                // Shows summary statistics only (no detailed row info)
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📋 TSV - Check Duplicates (Detailed Report)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
+            "args": [
+                "check_duplicates",
+                "results/utterances_seval_timestamped.tsv",
+                "--show_details=True", // Show detailed duplicate information
+                "--max_duplicates=20", // Show first 20 duplicate groups
+                "--output_report=results/duplicate_report.json" // Save JSON report
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📋 TSV - Remove Duplicates (Keep First Occurrence)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
+            "args": [
+                "remove_duplicates",
+                "results/utterances_seval_timestamped.tsv", // Input file
+                "results/utterances_no_duplicates.tsv", // Output file (deduplicated)
+                "--show_stats=True" // Display removal statistics
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "📋 TSV - Merge Two Files (Header Validation)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/tsv_processor.py",
+            "args": [
+                "merge_tsv_files",
+                "--file1=results/complex_utterances_syntenants_vertedge_1_cleaned.tsv", // First file (base)
+                "--file2=results/utterances_seval_cleaned.tsv", // Second file (append)
+                "--output_file=results/complex_utterances_syntenants_vertedge_all.tsv" // Merged output
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
