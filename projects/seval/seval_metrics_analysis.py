@@ -1021,12 +1021,629 @@ def paired_analysis(
     return results
 
 
+def export_win_loss_utterances(
+    job_path: str,
+    metric: str,
+    output_dir: str = "results",
+    segment_column: Optional[str] = None,
+    min_difference: float = 0.0,
+) -> Dict[str, Any]:
+    """
+    Export utterances where treatment outperforms control and vice versa to separate files.
+
+    This function analyzes a specific metric and exports:
+    1. Utterances where treatment > control (treatment wins)
+    2. Utterances where control > treatment (control wins)
+    3. Utterances where treatment == control (ties)
+
+    Note on Missing Data Handling:
+        - Only utterances with BOTH control AND treatment scores present are included
+        - Utterances with missing control score, missing treatment score, or both missing
+          are EXCLUDED from all output files (not treated as ties)
+        - This ensures fair comparison - we only export cases where both variants
+          successfully produced a score
+
+    Args:
+        job_path: Path to the job folder containing metrics
+        metric: The metric base name to analyze
+        output_dir: Directory to save the output files (default: "results")
+        segment_column: Optional column name to include segment information
+        min_difference: Minimum absolute difference to include (default: 0.0)
+                       Use this to filter out small differences
+
+    Returns:
+        Dictionary with statistics about exported utterances
+    """
+    import os
+    from pathlib import Path
+
+    comparator = MetricsComparison(job_path)
+
+    if comparator.df is None:
+        raise ValueError("Failed to load metrics data")
+
+    control_col = f"{metric}_control"
+    treatment_col = f"{metric}_treatment"
+
+    if (
+        control_col not in comparator.df.columns
+        or treatment_col not in comparator.df.columns
+    ):
+        raise ValueError(f"Metric columns not found: {control_col}, {treatment_col}")
+
+    # Convert to numeric
+    control_vals = pd.to_numeric(comparator.df[control_col], errors="coerce")
+    treatment_vals = pd.to_numeric(comparator.df[treatment_col], errors="coerce")
+
+    # Calculate differences
+    valid_pairs_mask = ~control_vals.isna() & ~treatment_vals.isna()
+    df_valid = comparator.df[valid_pairs_mask].copy()
+    df_valid["control_score"] = control_vals[valid_pairs_mask]
+    df_valid["treatment_score"] = treatment_vals[valid_pairs_mask]
+    df_valid["score_difference"] = (
+        df_valid["treatment_score"] - df_valid["control_score"]
+    )
+    df_valid["abs_difference"] = df_valid["score_difference"].abs()
+
+    # Filter by minimum difference
+    df_valid = df_valid[df_valid["abs_difference"] >= min_difference]
+
+    # Split into three categories
+    treatment_wins = df_valid[df_valid["score_difference"] > 0].copy()
+    control_wins = df_valid[df_valid["score_difference"] < 0].copy()
+    ties = df_valid[df_valid["score_difference"] == 0].copy()
+
+    # Sort by absolute difference (largest differences first)
+    treatment_wins = treatment_wins.sort_values("score_difference", ascending=False)
+    control_wins = control_wins.sort_values("score_difference", ascending=True)
+
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Extract job ID from job_path (e.g., "seval_data/232361_metrics" -> "232361")
+    job_path_obj = Path(job_path)
+    job_folder_name = (
+        job_path_obj.name
+    )  # Gets last part of path (e.g., "232361_metrics")
+    # Extract job ID (everything before first underscore, or whole name if no underscore)
+    job_id = (
+        job_folder_name.split("_")[0] if "_" in job_folder_name else job_folder_name
+    )
+
+    # Determine which columns to export
+    export_columns = []
+
+    # Find query/utterance column
+    query_col = None
+    for col_name in [
+        "query",
+        "Query",
+        "question",
+        "Question",
+        "utterance",
+        "Utterance",
+    ]:
+        if col_name in df_valid.columns:
+            query_col = col_name
+            export_columns.append(col_name)
+            break
+
+    # Add ID columns if available
+    for id_col in ["query_id", "id", "ID"]:
+        if id_col in df_valid.columns and id_col not in export_columns:
+            export_columns.append(id_col)
+
+    # Add segment column if requested
+    if segment_column and segment_column in df_valid.columns:
+        export_columns.append(segment_column)
+
+    # Add score columns
+    export_columns.extend(
+        ["control_score", "treatment_score", "score_difference", "abs_difference"]
+    )
+
+    # Export treatment wins
+    treatment_wins_file = output_path / f"{job_id}_{metric}_treatment_wins.tsv"
+    if len(treatment_wins) > 0:
+        treatment_wins[export_columns].to_csv(
+            treatment_wins_file, sep="\t", index=False, encoding="utf-8"
+        )
+        print(
+            f"✓ Exported {len(treatment_wins)} treatment wins to: {treatment_wins_file}"
+        )
+    else:
+        print(f"⚠ No treatment wins found (with min_difference >= {min_difference})")
+
+    # Export control wins
+    control_wins_file = output_path / f"{job_id}_{metric}_control_wins.tsv"
+    if len(control_wins) > 0:
+        control_wins[export_columns].to_csv(
+            control_wins_file, sep="\t", index=False, encoding="utf-8"
+        )
+        print(f"✓ Exported {len(control_wins)} control wins to: {control_wins_file}")
+    else:
+        print(f"⚠ No control wins found (with min_difference >= {min_difference})")
+
+    # Export ties (optional, only if there are any)
+    ties_file = output_path / f"{job_id}_{metric}_ties.tsv"
+    if len(ties) > 0:
+        ties[export_columns].to_csv(ties_file, sep="\t", index=False, encoding="utf-8")
+        print(f"✓ Exported {len(ties)} ties to: {ties_file}")
+
+    # Generate summary statistics
+    stats = {
+        "metric": metric,
+        "total_valid_pairs": len(df_valid),
+        "min_difference_threshold": min_difference,
+        "treatment_wins": {
+            "count": len(treatment_wins),
+            "percentage": (
+                len(treatment_wins) / len(df_valid) * 100 if len(df_valid) > 0 else 0
+            ),
+            "mean_difference": (
+                float(treatment_wins["score_difference"].mean())
+                if len(treatment_wins) > 0
+                else 0
+            ),
+            "max_difference": (
+                float(treatment_wins["score_difference"].max())
+                if len(treatment_wins) > 0
+                else 0
+            ),
+            "file": str(treatment_wins_file),
+        },
+        "control_wins": {
+            "count": len(control_wins),
+            "percentage": (
+                len(control_wins) / len(df_valid) * 100 if len(df_valid) > 0 else 0
+            ),
+            "mean_difference": (
+                float(control_wins["score_difference"].mean())
+                if len(control_wins) > 0
+                else 0
+            ),
+            "min_difference": (
+                float(control_wins["score_difference"].min())
+                if len(control_wins) > 0
+                else 0
+            ),
+            "file": str(control_wins_file),
+        },
+        "ties": {
+            "count": len(ties),
+            "percentage": len(ties) / len(df_valid) * 100 if len(df_valid) > 0 else 0,
+            "file": str(ties_file) if len(ties) > 0 else None,
+        },
+    }
+
+    # Print summary
+    print("\n" + "=" * 60)
+    print(f"Win/Loss Export Summary for: {metric}")
+    print("=" * 60)
+    print(f"Total valid pairs: {stats['total_valid_pairs']}")
+    print(f"Minimum difference threshold: {min_difference}")
+    print(
+        f"\nTreatment wins: {stats['treatment_wins']['count']} ({stats['treatment_wins']['percentage']:.1f}%)"
+    )
+    if stats["treatment_wins"]["count"] > 0:
+        print(f"  - Mean difference: {stats['treatment_wins']['mean_difference']:.4f}")
+        print(f"  - Max difference: {stats['treatment_wins']['max_difference']:.4f}")
+    print(
+        f"\nControl wins: {stats['control_wins']['count']} ({stats['control_wins']['percentage']:.1f}%)"
+    )
+    if stats["control_wins"]["count"] > 0:
+        print(f"  - Mean difference: {stats['control_wins']['mean_difference']:.4f}")
+        print(f"  - Min difference: {stats['control_wins']['min_difference']:.4f}")
+    print(f"\nTies: {stats['ties']['count']} ({stats['ties']['percentage']:.1f}%)")
+    print("=" * 60)
+
+    return stats
+
+
+def export_two_jobs_utterances(
+    job1_metrics_path: str,
+    job2_metrics_path: str,
+    metric: str,
+    output_file: str,
+    job1_id: Optional[str] = None,
+    job2_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Combine ALL utterances from both SEVAL jobs into a single file.
+
+    This function loads the full metrics CSV from both jobs and combines them, showing:
+    - Score values and gains (treatment - control) for both jobs
+    - Combined gain (sum of both job gains)
+    - Utterances are kept in the original order from the first job
+    - All utterances are included, even those with missing scores
+
+    Args:
+        job1_metrics_path: Path to job1 metrics folder (e.g., "seval_data/123665_metrics")
+        job2_metrics_path: Path to job2 metrics folder (e.g., "seval_data/232361_metrics")
+        metric: Metric name (e.g., "citedcg_one_centric")
+        output_file: Path for combined output TSV file
+        job1_id: Optional identifier for first job (auto-extracted from path if not provided)
+        job2_id: Optional identifier for second job (auto-extracted from path if not provided)
+
+    Returns:
+        Dictionary with statistics
+
+    Example:
+        export_two_jobs_utterances(
+            job1_metrics_path="seval_data/123665_metrics",
+            job2_metrics_path="seval_data/232361_metrics",
+            metric="citedcg_one_centric",
+            output_file="results/combined_all_utterances.tsv"
+        )
+    """
+    # Auto-extract job IDs from paths if not provided
+    if job1_id is None:
+        # Extract from path like "seval_data/123665_metrics" -> "123665"
+        job1_folder = Path(job1_metrics_path).name
+        job1_id = job1_folder.split("_")[0]
+        logger.info(f"Auto-extracted job1_id: {job1_id}")
+
+    if job2_id is None:
+        # Extract from path like "seval_data/232361_metrics" -> "232361"
+        job2_folder = Path(job2_metrics_path).name
+        job2_id = job2_folder.split("_")[0]
+        logger.info(f"Auto-extracted job2_id: {job2_id}")
+
+    # Load both jobs' data
+    logger.info(f"Loading job {job1_id} from: {job1_metrics_path}")
+    comparator1 = MetricsComparison(job1_metrics_path)
+
+    logger.info(f"Loading job {job2_id} from: {job2_metrics_path}")
+    comparator2 = MetricsComparison(job2_metrics_path)
+
+    # Get dataframes
+    df1 = comparator1.df
+    df2 = comparator2.df
+
+    if df1 is None or df2 is None:
+        raise ValueError("Failed to load metrics data from one or both jobs")
+
+    # Get the metric columns
+    control_col1 = f"{metric}_control"
+    treatment_col1 = f"{metric}_treatment"
+    control_col2 = f"{metric}_control"
+    treatment_col2 = f"{metric}_treatment"
+
+    # Verify columns exist
+    for col, job in [(control_col1, job1_id), (treatment_col1, job1_id)]:
+        if col not in df1.columns:
+            raise ValueError(f"Column '{col}' not found in job {job}")
+
+    for col, job in [(control_col2, job2_id), (treatment_col2, job2_id)]:
+        if col not in df2.columns:
+            raise ValueError(f"Column '{col}' not found in job {job}")
+
+    # Find common query/utterance column
+    match_column = None
+    for candidate in [
+        "query",
+        "Query",
+        "utterance",
+        "Utterance",
+        "query_id",
+        "id",
+        "ID",
+    ]:
+        if candidate in df1.columns and candidate in df2.columns:
+            match_column = candidate
+            logger.info(f"Using match column: {match_column}")
+            break
+
+    if match_column is None:
+        raise ValueError("Could not find common query/utterance column in both jobs")
+
+    # Prepare job1 data with metric name in column headers
+    df1_subset = df1[[match_column, control_col1, treatment_col1]].copy()
+    df1_subset[f"{metric}_job{job1_id}_control"] = pd.to_numeric(
+        df1_subset[control_col1], errors="coerce"
+    )
+    df1_subset[f"{metric}_job{job1_id}_treatment"] = pd.to_numeric(
+        df1_subset[treatment_col1], errors="coerce"
+    )
+    df1_subset[f"{metric}_job{job1_id}_gain"] = (
+        df1_subset[f"{metric}_job{job1_id}_treatment"]
+        - df1_subset[f"{metric}_job{job1_id}_control"]
+    )
+
+    # Add segment column if it exists
+    segment_col = None
+    for seg_candidate in ["segment 2", "Segment", "segment"]:
+        if seg_candidate in df1.columns:
+            df1_subset[seg_candidate] = df1[seg_candidate]
+            segment_col = seg_candidate
+            break
+
+    # Prepare job2 data with metric name in column headers
+    df2_subset = df2[[match_column, control_col2, treatment_col2]].copy()
+    df2_subset[f"{metric}_job{job2_id}_control"] = pd.to_numeric(
+        df2_subset[control_col2], errors="coerce"
+    )
+    df2_subset[f"{metric}_job{job2_id}_treatment"] = pd.to_numeric(
+        df2_subset[treatment_col2], errors="coerce"
+    )
+    df2_subset[f"{metric}_job{job2_id}_gain"] = (
+        df2_subset[f"{metric}_job{job2_id}_treatment"]
+        - df2_subset[f"{metric}_job{job2_id}_control"]
+    )
+
+    # Merge on match column (outer join to include all utterances)
+    merged = pd.merge(
+        df1_subset, df2_subset, on=match_column, how="outer", suffixes=("", "_dup")
+    )
+
+    logger.info(f"Total utterances in combined output: {len(merged)}")
+
+    # Calculate combined gain
+    merged[f"{metric}_combined_gain"] = (
+        merged[f"{metric}_job{job1_id}_gain"] + merged[f"{metric}_job{job2_id}_gain"]
+    )
+
+    # Keep original order from first job (no sorting)
+    # Note: Outer join preserves order from left dataframe (job1)
+
+    # Prepare export columns
+    export_columns = [match_column]
+
+    if segment_col and segment_col in merged.columns:
+        export_columns.append(segment_col)
+
+    # Add all metric columns with metric name in headers
+    export_columns.extend(
+        [
+            f"{metric}_job{job1_id}_control",
+            f"{metric}_job{job1_id}_treatment",
+            f"{metric}_job{job1_id}_gain",
+            f"{metric}_job{job2_id}_control",
+            f"{metric}_job{job2_id}_treatment",
+            f"{metric}_job{job2_id}_gain",
+            f"{metric}_combined_gain",
+        ]
+    )
+
+    # Export to TSV
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    merged[export_columns].to_csv(output_path, sep="\t", index=False, encoding="utf-8")
+
+    # Calculate statistics
+    combined_gain_col = f"{metric}_combined_gain"
+    job1_gain_col = f"{metric}_job{job1_id}_gain"
+    job2_gain_col = f"{metric}_job{job2_id}_gain"
+
+    # Count utterances with valid scores in both jobs
+    valid_both = (~merged[job1_gain_col].isna() & ~merged[job2_gain_col].isna()).sum()
+
+    # Count utterances with missing scores
+    missing_job1 = merged[job1_gain_col].isna().sum()
+    missing_job2 = merged[job2_gain_col].isna().sum()
+
+    # Win/Loss/Tie analysis for each job (among all utterances)
+    job1_wins = (merged[job1_gain_col] > 0).sum()
+    job1_losses = (merged[job1_gain_col] < 0).sum()
+    job1_ties = (merged[job1_gain_col] == 0).sum()
+
+    job2_wins = (merged[job2_gain_col] > 0).sum()
+    job2_losses = (merged[job2_gain_col] < 0).sum()
+    job2_ties = (merged[job2_gain_col] == 0).sum()
+
+    # Cross-job analysis (only for utterances with valid scores in both jobs)
+    valid_mask = ~merged[job1_gain_col].isna() & ~merged[job2_gain_col].isna()
+
+    # Both win (treatment > control in both jobs)
+    both_win = ((merged[job1_gain_col] > 0) & (merged[job2_gain_col] > 0)).sum()
+
+    # Both lose (treatment < control in both jobs)
+    both_lose = ((merged[job1_gain_col] < 0) & (merged[job2_gain_col] < 0)).sum()
+
+    # Both tie (treatment == control in both jobs)
+    both_tie = ((merged[job1_gain_col] == 0) & (merged[job2_gain_col] == 0)).sum()
+
+    # Conflict (win in one, lose in other)
+    conflict = (
+        ((merged[job1_gain_col] > 0) & (merged[job2_gain_col] < 0))
+        | ((merged[job1_gain_col] < 0) & (merged[job2_gain_col] > 0))
+    ).sum()
+
+    # Mixed with tie/missing (win or lose in one job, tie or missing in the other)
+    job1_win_job2_tie_or_missing = (
+        (merged[job1_gain_col] > 0)
+        & ((merged[job2_gain_col] == 0) | merged[job2_gain_col].isna())
+    ).sum()
+
+    job1_lose_job2_tie_or_missing = (
+        (merged[job1_gain_col] < 0)
+        & ((merged[job2_gain_col] == 0) | merged[job2_gain_col].isna())
+    ).sum()
+
+    job2_win_job1_tie_or_missing = (
+        (merged[job2_gain_col] > 0)
+        & ((merged[job1_gain_col] == 0) | merged[job1_gain_col].isna())
+    ).sum()
+
+    job2_lose_job1_tie_or_missing = (
+        (merged[job2_gain_col] < 0)
+        & ((merged[job1_gain_col] == 0) | merged[job1_gain_col].isna())
+    ).sum()
+
+    total = len(merged)
+
+    stats = {
+        "job1_id": job1_id,
+        "job2_id": job2_id,
+        "metric": metric,
+        "total_utterances": total,
+        "valid_in_both_jobs": int(valid_both),
+        "missing_in_job1": int(missing_job1),
+        "missing_in_job2": int(missing_job2),
+        "job1_performance": {
+            "wins": int(job1_wins),
+            "losses": int(job1_losses),
+            "ties": int(job1_ties),
+        },
+        "job2_performance": {
+            "wins": int(job2_wins),
+            "losses": int(job2_losses),
+            "ties": int(job2_ties),
+        },
+        "cross_job_analysis": {
+            "both_win": int(both_win),
+            "both_lose": int(both_lose),
+            "both_tie": int(both_tie),
+            "conflict": int(conflict),
+            "job1_win_job2_tie_or_missing": int(job1_win_job2_tie_or_missing),
+            "job1_lose_job2_tie_or_missing": int(job1_lose_job2_tie_or_missing),
+            "job2_win_job1_tie_or_missing": int(job2_win_job1_tie_or_missing),
+            "job2_lose_job1_tie_or_missing": int(job2_lose_job1_tie_or_missing),
+        },
+        "combined_gain_stats": {
+            "mean": float(merged[combined_gain_col].mean()) if valid_both > 0 else None,
+            "median": (
+                float(merged[combined_gain_col].median()) if valid_both > 0 else None
+            ),
+            "min": float(merged[combined_gain_col].min()) if valid_both > 0 else None,
+            "max": float(merged[combined_gain_col].max()) if valid_both > 0 else None,
+        },
+        "output_file": str(output_path),
+    }
+
+    # Print summary
+    print("\n" + "=" * 80)
+    print(f"Export Two Jobs Utterances: Job {job1_id} + Job {job2_id}")
+    print(f"Metric: {metric}")
+    print("=" * 80)
+    print(f"Total utterances: {total}")
+    print(f"Valid scores in both jobs: {valid_both} ({valid_both/total*100:.1f}%)")
+    print(f"Missing in job {job1_id}: {missing_job1} ({missing_job1/total*100:.1f}%)")
+    print(f"Missing in job {job2_id}: {missing_job2} ({missing_job2/total*100:.1f}%)")
+
+    print()
+    print("-" * 80)
+    print(f"Job {job1_id} Performance (Treatment vs Control):")
+    print(f"  - Treatment Wins:   {job1_wins:>5} ({job1_wins/total*100:>5.1f}%)")
+    print(f"  - Treatment Losses: {job1_losses:>5} ({job1_losses/total*100:>5.1f}%)")
+    print(f"  - Ties:             {job1_ties:>5} ({job1_ties/total*100:>5.1f}%)")
+
+    print()
+    print(f"Job {job2_id} Performance (Treatment vs Control):")
+    print(f"  - Treatment Wins:   {job2_wins:>5} ({job2_wins/total*100:>5.1f}%)")
+    print(f"  - Treatment Losses: {job2_losses:>5} ({job2_losses/total*100:>5.1f}%)")
+    print(f"  - Ties:             {job2_ties:>5} ({job2_ties/total*100:>5.1f}%)")
+
+    print()
+    print("-" * 80)
+    print("Cross-Job Comparison:")
+    print(f"  - Both Win (treatment > control in both jobs):")
+    print(f"    {both_win:>5} ({both_win/total*100:>5.1f}%)")
+
+    print(f"  - Both Lose (treatment < control in both jobs):")
+    print(f"    {both_lose:>5} ({both_lose/total*100:>5.1f}%)")
+
+    print(f"  - Both Tie (treatment == control in both jobs):")
+    print(f"    {both_tie:>5} ({both_tie/total*100:>5.1f}%)")
+
+    print(f"  - Conflict (win in one job, lose in other):")
+    print(f"    {conflict:>5} ({conflict/total*100:>5.1f}%)")
+
+    print()
+    print(f"  - Job {job1_id} wins, Job {job2_id} tie/missing:")
+    print(
+        f"    {job1_win_job2_tie_or_missing:>5} ({job1_win_job2_tie_or_missing/total*100:>5.1f}%)"
+    )
+
+    print(f"  - Job {job1_id} loses, Job {job2_id} tie/missing:")
+    print(
+        f"    {job1_lose_job2_tie_or_missing:>5} ({job1_lose_job2_tie_or_missing/total*100:>5.1f}%)"
+    )
+
+    print(f"  - Job {job2_id} wins, Job {job1_id} tie/missing:")
+    print(
+        f"    {job2_win_job1_tie_or_missing:>5} ({job2_win_job1_tie_or_missing/total*100:>5.1f}%)"
+    )
+
+    print(f"  - Job {job2_id} loses, Job {job1_id} tie/missing:")
+    print(
+        f"    {job2_lose_job1_tie_or_missing:>5} ({job2_lose_job1_tie_or_missing/total*100:>5.1f}%)"
+    )
+
+    if valid_both > 0:
+        print()
+        print("-" * 80)
+        print("Combined Gain Statistics (valid pairs only):")
+        print(f"  - Mean:   {stats['combined_gain_stats']['mean']:>8.4f}")
+        print(f"  - Median: {stats['combined_gain_stats']['median']:>8.4f}")
+        print(f"  - Min:    {stats['combined_gain_stats']['min']:>8.4f}")
+        print(f"  - Max:    {stats['combined_gain_stats']['max']:>8.4f}")
+
+    print()
+    print("=" * 80)
+    print(f"✓ Combined results exported to: {output_path}")
+    print(f"  Output maintains original order from job {job1_id}")
+    print("=" * 80)
+
+    return stats
+
+
+def export_two_jobs_utterances_cli(
+    job1_metrics_path: str,
+    job2_metrics_path: str,
+    metric: str,
+    output_file: str,
+    job1_id: Optional[str] = None,
+    job2_id: Optional[str] = None,
+) -> None:
+    """
+    CLI wrapper for export_two_jobs_utterances that doesn't return anything.
+
+    This prevents Fire from outputting JSON to console.
+    See export_two_jobs_utterances() for full documentation.
+    """
+    export_two_jobs_utterances(
+        job1_metrics_path=job1_metrics_path,
+        job2_metrics_path=job2_metrics_path,
+        metric=metric,
+        output_file=output_file,
+        job1_id=job1_id,
+        job2_id=job2_id,
+    )
+
+
+def export_win_loss_utterances_cli(
+    job_path: str,
+    metric: str,
+    output_dir: str = "results",
+    segment_column: Optional[str] = None,
+    min_difference: float = 0.0,
+) -> None:
+    """
+    CLI wrapper for export_win_loss_utterances that doesn't return anything.
+
+    This prevents Fire from outputting JSON to console.
+    See export_win_loss_utterances() for full documentation.
+    """
+    export_win_loss_utterances(
+        job_path=job_path,
+        metric=metric,
+        output_dir=output_dir,
+        segment_column=segment_column,
+        min_difference=min_difference,
+    )
+
+
 if __name__ == "__main__":
     # Create a dictionary of available functions
     functions = {
         "comprehensive_analysis": comprehensive_metrics_analysis,
         "paired_analysis": paired_analysis,
         "list_metrics": list_metrics,
+        "export_win_loss_utterances": export_win_loss_utterances_cli,
+        "export_two_jobs_utterances": export_two_jobs_utterances_cli,
     }
 
     fire.Fire(functions)

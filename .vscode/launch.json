@@ -6,12 +6,6 @@
             "description": "Enter the email account to extract emails for",
             "default": "johndoe",
             "type": "promptString"
-        },
-        {
-            "id": "sevalInputDirectory",
-            "description": "Enter directory path containing SEVAL JSON files for processing",
-            "default": "c:\\working\\BizChatScripts\\projects\\seval\\seval_data\\212953_scraping_raw_data_output",
-            "type": "promptString"
         }
     ],
     "configurations": [
@@ -1408,7 +1402,7 @@
             "args": [
                 "search_query",
                 "--query=Search my Sent Items for \"DB_Migration_Test_",
-                "--search_dir=seval_data/212953_scraping_raw_data_output",
+                "--search_dir=seval_data/232361_scraping_raw_data_output",
                 "--exp=both",
                 "--threads=16"
             ],
@@ -1427,7 +1421,7 @@
             "args": [
                 "extract_query_mappings",
                 "--threads=16",
-                "--search_dir=seval_data/212953_scraping_raw_data_output",
+                "--search_dir=seval_data/232361_scraping_raw_data_output",
                 "--output_file=results/query_file_mappings.tsv"
             ],
             "console": "integratedTerminal",
@@ -1464,7 +1458,7 @@
                 "analyze_search_results",
                 "--mappings_file=results/query_file_mappings.tsv",
                 "--output_file=results/search_stats_with_console.tsv",
-                "--search_dir=seval_data/212953_scraping_raw_data_output",
+                "--search_dir=seval_data/232361_scraping_raw_data_output",
                 "--threads=8",
                 "--max_queries=20"
             ],
@@ -1522,7 +1516,7 @@
                 "analyze_search_results",
                 "--mappings_file=results/query_file_mappings.tsv",
                 "--output_file=results/search_results_analysis.tsv",
-                "--search_dir=seval_data/212953_scraping_raw_data_output",
+                "--search_dir=seval_data/232361_scraping_raw_data_output",
                 "--threads=8",
                 "--max_queries=50"
             ],
@@ -1541,8 +1535,8 @@
             "args": [
                 "analyze_search_results",
                 "--mappings_file=results/query_file_mappings.tsv",
-                "--search_dir=seval_data/212953_scraping_raw_data_output",
-                "--output_file=results/212953_search_results_analysis_full.tsv",
+                "--search_dir=seval_data/232361_scraping_raw_data_output",
+                "--output_file=results/232361_search_results_analysis_full.tsv",
                 "--threads=16"
             ],
             "console": "integratedTerminal",
@@ -1588,9 +1582,9 @@
             "args": [
                 "extract_conversation_details",
                 "--input_file",
-                "${workspaceFolder}/projects/seval/seval_data/212953_scraping_raw_data_output/experiment_sydney_response_4151ee7d-951f-4110-8b32-798fee21f56a_235d8666-86cf-4c10-ad21-2f82f15542b4.json",
+                "${workspaceFolder}/projects/seval/seval_data/232361_scraping_raw_data_output/experiment_sydney_response_4151ee7d-951f-4110-8b32-798fee21f56a_235d8666-86cf-4c10-ad21-2f82f15542b4.json",
                 "--output_file",
-                "${workspaceFolder}/projects/seval/results/212953_experiment_4151ee7d_conv_details.md"
+                "${workspaceFolder}/projects/seval/results/232361_experiment_4151ee7d_conv_details.md"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/seval",
@@ -1620,11 +1614,11 @@
             "justMyCode": true,
             "args": [
                 "comprehensive_analysis",
-                "seval_data/212953_metrics",
+                "seval_data/123665_metrics",
                 "--metrics=sbsleov3_sbsleov3_score",
                 "--segment_column=segment 2",
                 "--paired_test=True",
-                "--output_file=results/212953_sbsleov3_comprehensive_analysis.md"
+                "--output_file=results/123665_sbsleov3_comprehensive_analysis.md"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
@@ -1640,11 +1634,11 @@
             "justMyCode": true,
             "args": [
                 "comprehensive_analysis",
-                "seval_data/212953_metrics",
+                "seval_data/123665_metrics",
                 "--metrics=citedcg_one_centric",
                 "--segment_column=segment 2",
                 "--paired_test=True",
-                "--output_file=results/212953_citedcg_one_centric_comprehensive_analysis.md"
+                "--output_file=results/123665_citedcg_one_centric_comprehensive_analysis.md"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
@@ -1660,10 +1654,10 @@
             "justMyCode": true,
             "args": [
                 "paired_analysis",
-                "seval_data/212953_metrics",
+                "seval_data/123665_metrics",
                 "sbsleov3_sbsleov3_score",
                 "--segment_column=segment 2",
-                "--output_file=results/212953_sbsleov3_paired_analysis_only.md"
+                "--output_file=results/123665_sbsleov3_paired_analysis_only.md"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
@@ -1679,10 +1673,69 @@
             "justMyCode": true,
             "args": [
                 "paired_analysis",
-                "seval_data/212953_metrics",
+                "seval_data/123665_metrics",
                 "citedcg_one_centric",
                 "--segment_column=segment 2",
-                "--output_file=results/212953_citedcg_one_centric_paired_analysis_only.md"
+                "--output_file=results/123665_citedcg_one_centric_paired_analysis_only.md"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "SEVAL Export Win/Loss Utterances (citedcg_one_centric)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "export_win_loss_utterances",
+                "seval_data/123665_metrics",
+                "citedcg_one_centric",
+                "--output_dir=results",
+                "--segment_column=segment 2",
+                "--min_difference=0.0"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "SEVAL Export Win/Loss Utterances (sbsleov3_score)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "export_win_loss_utterances",
+                "seval_data/123665_metrics",
+                "sbsleov3_sbsleov3_score",
+                "--output_dir=results",
+                "--segment_column=segment 2",
+                "--min_difference=0.0"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "SEVAL Export Two Jobs Utterances - Single File (123665 + 232361)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "export_two_jobs_utterances",
+                "--job1_metrics_path=seval_data/123665_metrics",
+                "--job2_metrics_path=seval_data/232361_metrics",
+                "--metric=citedcg_one_centric",
+                "--output_file=results/123665_232361_citedcg_one_centric_all_utterances.tsv"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
@@ -1698,7 +1751,33 @@
             "justMyCode": true,
             "args": [
                 "list_metrics",
-                "seval_data/212953_metrics"
+                "seval_data/232361_metrics"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // FILTER TREATMENT WINNERS FROM SEVAL RESULTS
+        // ============================================
+        // Filter test data based on SEVAL job comparison results
+        // Selects non-conflicting treatment wins:
+        //   - Both jobs win (gain > 0 for both), OR
+        //   - One job wins while other is tie (gain == 0) or missing (NaN)
+        // Excludes conflicts where one job wins and the other loses
+        // ============================================
+        {
+            "name": "🏆 Filter Non-Conflicting Treatment Winners",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/filter_treatment_winners.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants",
+            "justMyCode": true,
+            "args": [
+                "--seval_results_file=../../seval/results/123665_232361_citedcg_one_centric_all_utterances.tsv",
+                "--test_data_file=results/complex_utterances_syntenants_vertedge_all.tsv",
+                "--output_file=results/complex_utterances_syntenants_vertedge_selected.tsv"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
