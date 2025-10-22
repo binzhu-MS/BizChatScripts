@@ -212,3 +212,4 @@ llms/.msal_token_cache
 **/result
 **/results/
 **/temp/
+**/seval_data/

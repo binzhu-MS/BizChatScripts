@@ -68,6 +68,26 @@ scipy>=1.7.0              # Scientific computing library for statistical tests
 statsmodels>=0.12.0       # Statistical modeling and econometrics library
 
 # =============================================================================
+# VISUALIZATION DEPENDENCIES
+# Required for creating plots and charts in complexity_statistics.py
+# =============================================================================
+matplotlib>=3.5.0         # Plotting library for data visualization
+
+# =============================================================================
+# TEMPLATE AND LOGGING DEPENDENCIES
+# Required for template rendering and advanced logging
+# =============================================================================
+jinja2>=3.0.0             # Template engine for JinjaTemplateLoader
+loguru>=0.6.0             # Advanced logging library for jsonl_viewer
+
+# =============================================================================
+# JSON PARSING DEPENDENCIES
+# Required for parsing various JSON formats (JSON5, JSON with comments)
+# =============================================================================
+json5>=0.9.6              # JSON5 format parser
+commentjson>=0.9.0        # JSON with comments parser
+
+# =============================================================================
 # DEVELOPMENT AND TESTING DEPENDENCIES
 # Required for running tests and development workflows
 # =============================================================================
