@@ -6,18 +6,19 @@ This program provides comprehensive analysis tools for SEVAL results including
 search functionality, model statistics extraction, and search results analysis.
 
 Usage:
+    # Search for SEVAL files (file names) by partial query text and experiment type.
     python seval_analysis_toolkit.py search_query --exp control --query "microsoft"
     python seval_analysis_toolkit.py search_query --exp experiment --query "azure"
     python seval_analysis_toolkit.py search_query --exp both --query "teams"
     python seval_analysis_toolkit.py search_query --query "search without exp filter"
 
-    # Generate query mappings for faster searches
+    # Generate query mappings (each query to control/experiment file pairs) for faster searches
     python seval_analysis_toolkit.py extract_query_mappings --threads 16
 
     # Fast search using pre-generated mappings
     python seval_analysis_toolkit.py search_using_mappings --query "microsoft"
 
-    # Extract model statistics from SEVAL files
+    # Extract model usage statistics from SEVAL files
     python seval_analysis_toolkit.py extract_model_statistics --input_dir "seval_data" --output_file "model_stats.tsv"
     python seval_analysis_toolkit.py extract_model_statistics --input_dir "seval_data" --output_file "model_stats.tsv" --exp control
     python seval_analysis_toolkit.py extract_model_statistics --input_dir "seval_data" --output_file "model_stats.tsv" --exp experiment --threads 16
@@ -26,20 +27,67 @@ Usage:
     python seval_analysis_toolkit.py analyze_search_results --mappings_file "results/query_file_mappings.tsv" --output_file "results/search_analysis.tsv"
     python seval_analysis_toolkit.py analyze_search_results --threads 16 --max_queries 100
 
-    # Extract detailed conversation analysis from SEVAL file
+    # Extract detailed conversation information from SEVAL file (extracts turn/hop data, tool invocations, search results from messages[] array and EvaluationData message)
     python seval_analysis_toolkit.py extract_conversation_details --input_file "seval_data/experiment_file.json" --output_file "analysis_report.md"
 """
 
-import json
-import re
+# DATA STRUCTURE REFERENCE FOR SEVAL FILES:
+#
+# Search results and tool invocations can be found in multiple locations:
+#
+# 1. EvaluationData Message (COMPLETE SOURCE - contains ALL search results):
+#    Path: messages[] → {"messageType": "EvaluationData"} → evaluationData
+#    Structure:
+#      evaluationData:
+#        turnData: [                                    # Array of conversation turns
+#          {
+#            userInput: "user's query text",          # The user's question/request
+#            orchestrationIterations: [                # Multiple search/reasoning iterations per turn
+#              {
+#                modelActions: [                       # Actions taken by the model
+#                  {
+#                    toolInvocations: [                # Tool calls (search, etc.)
+#                      {
+#                        batchedQueries: [             # Parallel queries to different domains
+#                          {
+#                            arguments: "JSON string",  # Parse to get: {"domain": "emails|files|chats|people", "query": "search text"}
+#                            processedResult: "JSON string",  # Parse to get: {"results": [{reference_id, type, title, snippet, author, ...}]}
+#                            result: "raw search API response"
+#                          }
+#                        ]
+#                      }
+#                    ]
+#                  }
+#                ]
+#              }
+#            ]
+#          }
+#        ]
+#    Note: Both 'arguments' and 'processedResult' are JSON-encoded strings, not objects
+#
+# 2. InternalSearchResult Messages (PARTIAL - only shows results displayed to user):
+#    Path: messages[] → {"messageType": "InternalSearchResult"}
+#    Contains: Subset of search results that were actually cited or shown
+#    Note: May not include all results returned by search API
+#
+# 3. SearchInvocations in Message Metadata (QUERY INFO ONLY):
+#    Path: messages[] → searchInvocations → queries[]
+#    Contains: Query text and domain, but NOT the actual results
+#
+# For complete result extraction with reference_ids for CiteDCG mapping,
+# ALWAYS use EvaluationData.turnData.orchestrationIterations path.
+
 import csv
-import os
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Set
-import fire
+import json
 import logging
+import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from threading import Lock
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import fire
 
 # Configure logging
 logging.basicConfig(
@@ -1624,10 +1672,10 @@ class SEVALAnalysisToolkit:
             exp: Filter by experiment type ('control', 'experiment', or 'both') (default: 'both')
             threads: Number of threads for parallel processing (default: 8)
         """
-        import json
-        import re
-        import os
         import concurrent.futures
+        import json
+        import os
+        import re
         from datetime import datetime
         from pathlib import Path
 
@@ -3016,31 +3064,6 @@ class SEVALAnalysisToolkit:
 
         return " | ".join(details)
 
-    def _format_search_details(self, analyses: List[Dict]) -> str:
-        """Format detailed search information for TSV output."""
-        details = []
-
-        for analysis in analyses:
-            file_details = f"{analysis['filename']}:"
-            search_rounds = analysis.get("search_rounds", [])
-
-            round_details = []
-            for search_round in search_rounds:
-                round_info = (
-                    f"domain={search_round['domain']}, "
-                    f"success={search_round['success']}, "
-                    f"results={search_round['total_results']}"
-                )
-                if search_round["failure_reason"]:
-                    round_info += f", failure={search_round['failure_reason']}"
-                round_details.append(round_info)
-
-            if round_details:
-                file_details += "[" + "; ".join(round_details) + "]"
-            details.append(file_details)
-
-        return " | ".join(details)
-
     def _analyze_content_matching(self, results: List[Dict]) -> Dict:
         """Analyze content matching between control and experiment for fair comparison."""
         import re
@@ -3435,215 +3458,6 @@ class SEVALAnalysisToolkit:
 
         return analysis
 
-    def _display_search_statistics(self, results: List[Dict]) -> None:
-        """Display console statistics for search results analysis."""
-        print(f"\n🔍 SEVAL Search Results Analysis Summary")
-        print("=" * 80)
-
-        total_queries = len(results)
-        queries_with_control = sum(1 for r in results if r.get("control_analysis"))
-        queries_with_experiment = sum(
-            1 for r in results if r.get("experiment_analysis")
-        )
-        queries_with_both = sum(
-            1
-            for r in results
-            if r.get("control_analysis") and r.get("experiment_analysis")
-        )
-
-        # Calculate detailed distribution
-        queries_control_only = queries_with_control - queries_with_both
-        queries_experiment_only = queries_with_experiment - queries_with_both
-
-        print(f"📊 Query Coverage:")
-        print(f"  Total queries analyzed: {total_queries}")
-        print(
-            f"  Queries with both types: {queries_with_both} ({100*queries_with_both/total_queries:.1f}%)"
-        )
-        print(
-            f"  Queries with control only: {queries_control_only} ({100*queries_control_only/total_queries:.1f}%)"
-        )
-        print(
-            f"  Queries with experiment only: {queries_experiment_only} ({100*queries_experiment_only/total_queries:.1f}%)"
-        )
-
-        # Analyze content matching for fair comparison
-        content_analysis = self._analyze_content_matching(results)
-        print(f"\n📋 Content Matching Analysis (for fair comparison):")
-        print(
-            f"  Queries mentioning specific files/emails: {content_analysis['specific_content_queries']}"
-        )
-        print(
-            f"  Both found same specific content: {content_analysis['both_found_same_content']} ({100*content_analysis['both_found_same_content']/max(content_analysis['specific_content_queries'], 1):.1f}%)"
-        )
-        print(
-            f"  Both accessed full content: {content_analysis['both_full_content_access']} ({100*content_analysis['both_full_content_access']/max(content_analysis['specific_content_queries'], 1):.1f}%)"
-        )
-        print(
-            f"  Fair comparison candidates: {content_analysis['fair_comparison_candidates']} queries"
-        )
-
-        # Aggregate search statistics
-        control_total_searches = 0
-        control_successful_searches = 0
-        experiment_total_searches = 0
-        experiment_successful_searches = 0
-        control_content_access = 0
-        experiment_content_access = 0
-
-        for result in results:
-            control_analyses = result.get("control_analysis", []) or []
-            experiment_analyses = result.get("experiment_analysis", []) or []
-
-            control_stats = self._aggregate_analysis_stats(control_analyses)
-            experiment_stats = self._aggregate_analysis_stats(experiment_analyses)
-
-            control_total_searches += control_stats["total_searches"]
-            control_successful_searches += control_stats["successful_searches"]
-            control_content_access += control_stats["successful_content_access"]
-
-            experiment_total_searches += experiment_stats["total_searches"]
-            experiment_successful_searches += experiment_stats["successful_searches"]
-            experiment_content_access += experiment_stats["successful_content_access"]
-
-        print(f"\n🔍 Search Operation Statistics:")
-        print(
-            f"  Control searches: {control_successful_searches}/{control_total_searches} successful ({100*control_successful_searches/max(control_total_searches, 1):.1f}%)"
-        )
-        print(
-            f"  Experiment searches: {experiment_successful_searches}/{experiment_total_searches} successful ({100*experiment_successful_searches/max(experiment_total_searches, 1):.1f}%)"
-        )
-
-        print(f"\n📄 Content Access Statistics:")
-        print(f"  Control successful content access: {control_content_access}")
-        print(f"  Experiment successful content access: {experiment_content_access}")
-
-        # Search failure analysis
-        failure_patterns = {"control": {}, "experiment": {}}
-        for result in results:
-            for exp_type in ["control", "experiment"]:
-                analyses = result.get(f"{exp_type}_analysis", []) or []
-                for analysis in analyses:
-                    for search_round in analysis.get("search_rounds", []):
-                        if (
-                            not search_round["success"]
-                            and search_round["failure_reason"]
-                        ):
-                            failure_reason = search_round["failure_reason"]
-                            failure_patterns[exp_type][failure_reason] = (
-                                failure_patterns[exp_type].get(failure_reason, 0) + 1
-                            )
-
-        print(f"\n❌ Search Failure Patterns:")
-        for exp_type in ["control", "experiment"]:
-            if failure_patterns[exp_type]:
-                print(f"  {exp_type.title()}:")
-                for reason, count in sorted(
-                    failure_patterns[exp_type].items(), key=lambda x: -x[1]
-                ):
-                    print(f"    '{reason}': {count} occurrences")
-            else:
-                print(f"  {exp_type.title()}: No failures detected")
-
-    def _display_json_based_statistics(self, converted_results: List[Dict]) -> None:
-        """Display console statistics for JSON-based analysis results."""
-        print(f"\n🔍 SEVAL JSON-Based Analysis Summary")
-        print("=" * 80)
-
-        total_queries = len(converted_results)
-        print(f"📊 Query Coverage:")
-        print(f"  Total queries analyzed: {total_queries}")
-
-        # Collect statistics by analyzing each result
-        stats = {
-            "mentions_specific_content": 0,
-            "content_found_by_both": 0,
-            "both_accessed_content": 0,
-            "fair_comparison_candidates": 0,
-            "control_search_success": 0,
-            "experiment_search_success": 0,
-            "similarity_categories": {},
-            "access_levels": {"control": {}, "experiment": {}},
-        }
-
-        for result in converted_results:
-            # Get analysis for this query
-            content_analysis = self._analyze_query_content_matching(result)
-
-            # Count key metrics
-            if content_analysis["mentions_specific_content"]:
-                stats["mentions_specific_content"] += 1
-            if content_analysis["content_found_by_both"]:
-                stats["content_found_by_both"] += 1
-            if content_analysis["both_accessed_content"]:
-                stats["both_accessed_content"] += 1
-            if content_analysis["fair_comparison_candidate"]:
-                stats["fair_comparison_candidates"] += 1
-            if content_analysis["control_search_success"]:
-                stats["control_search_success"] += 1
-            if content_analysis["experiment_search_success"]:
-                stats["experiment_search_success"] += 1
-
-            # Track similarity categories
-            sim_cat = content_analysis["similarity_category"]
-            stats["similarity_categories"][sim_cat] = (
-                stats["similarity_categories"].get(sim_cat, 0) + 1
-            )
-
-            # Track access levels
-            control_access = content_analysis["control_access_level"]
-            experiment_access = content_analysis["experiment_access_level"]
-            stats["access_levels"]["control"][control_access] = (
-                stats["access_levels"]["control"].get(control_access, 0) + 1
-            )
-            stats["access_levels"]["experiment"][experiment_access] = (
-                stats["access_levels"]["experiment"].get(experiment_access, 0) + 1
-            )
-
-        # Display content analysis results
-        print(f"\n📋 Content Analysis Results:")
-        print(
-            f"  Queries mentioning specific files/emails: {stats['mentions_specific_content']} ({100*stats['mentions_specific_content']/total_queries:.1f}%)"
-        )
-        print(
-            f"  Both found same specific content: {stats['content_found_by_both']} ({100*stats['content_found_by_both']/max(stats['mentions_specific_content'], 1):.1f}% of specific)"
-        )
-        print(
-            f"  Both accessed full content: {stats['both_accessed_content']} ({100*stats['both_accessed_content']/max(stats['mentions_specific_content'], 1):.1f}% of specific)"
-        )
-        print(
-            f"  Fair comparison candidates: {stats['fair_comparison_candidates']} queries ({100*stats['fair_comparison_candidates']/total_queries:.1f}%)"
-        )
-
-        # Display search success rates
-        print(f"\n🔍 Search Success Rates:")
-        print(
-            f"  Control successful searches: {stats['control_search_success']}/{total_queries} ({100*stats['control_search_success']/total_queries:.1f}%)"
-        )
-        print(
-            f"  Experiment successful searches: {stats['experiment_search_success']}/{total_queries} ({100*stats['experiment_search_success']/total_queries:.1f}%)"
-        )
-
-        # Display similarity breakdown
-        print(f"\n📊 Content Similarity Categories:")
-        for category, count in sorted(
-            stats["similarity_categories"].items(), key=lambda x: -x[1]
-        ):
-            print(
-                f"  {category.replace('_', ' ')}: {count} ({100*count/total_queries:.1f}%)"
-            )
-
-        # Display access level breakdown
-        print(f"\n🔐 Content Access Levels:")
-        for exp_type in ["control", "experiment"]:
-            print(f"  {exp_type.title()}:")
-            for access_level, count in sorted(
-                stats["access_levels"][exp_type].items(), key=lambda x: -x[1]
-            ):
-                print(
-                    f"    {access_level.replace('_', ' ')}: {count} ({100*count/total_queries:.1f}%)"
-                )
-
     def create_clean_tsv_output(self, results: List[Dict], output_file: str) -> str:
         """Create a clean TSV file without header comments, using JSON-based analysis."""
 
@@ -3820,17 +3634,18 @@ class SEVALAnalysisToolkit:
         Extract detailed conversation information from a SEVAL JSON file.
 
         This tool analyzes the conversation flow, tool calls, search results, and user-visible
-        outputs from a SEVAL JSON file and generates a comprehensive markdown report.
+        outputs from a SEVAL JSON file and generates comprehensive JSON and markdown reports.
 
         Args:
             input_file: Path to the SEVAL JSON file to analyze
-            output_file: Path where the markdown report will be saved
+            output_file: Path where the JSON analysis will be saved (a markdown report will also be generated)
 
         Outputs:
             1. Tool calls per round (tool name, messages, parameters)
             2. Search results with file/email names and content snippets
             3. Intermediate and final user-visible outputs
-            4. Formatted markdown report for easy human review
+            4. JSON file with complete structured data
+
         """
         import json
         import re
@@ -3838,7 +3653,7 @@ class SEVALAnalysisToolkit:
         from pathlib import Path
 
         logger.info(f"Extracting conversation details from: {input_file}")
-        logger.info(f"Output markdown file: {output_file}")
+        logger.info(f"Output JSON file: {output_file}")
 
         if not os.path.exists(input_file):
             logger.error(f"Input file not found: {input_file}")
@@ -3875,13 +3690,34 @@ class SEVALAnalysisToolkit:
                 input_file,
             )
 
-            # Generate markdown report
-            self._generate_markdown_report(analysis, output_file)
-
-            logger.info(f"Successfully generated markdown report: {output_file}")
-            logger.info(
-                f"Found {len(analysis['tool_calls'])} tool calls and {len(analysis['search_results'])} search results"
+            # Add summary counts to metadata
+            eval_summary = analysis["evaluation_data_results"].get("summary", {})
+            analysis["metadata"].update(
+                {
+                    "total_unique_tool_functions": eval_summary.get("total_tool_invocations_count", 0),
+                    "total_tool_invocations_count": eval_summary.get("total_tool_invocations_count", 0),
+                    "total_queries": eval_summary.get("total_queries", 0),
+                    "total_search_results": eval_summary.get("total_search_results", 0),
+                    "total_user_messages": len(analysis["user_visible_messages"]),
+                    "total_rounds": len(analysis["rounds"]),
+                }
             )
+
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(analysis, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"Successfully generated JSON analysis: {output_file}")
+            
+            # Log evaluation data summary
+            eval_results = analysis.get("evaluation_data_results", {})
+            summary = eval_results.get("summary", {})
+            if summary:
+                logger.info(
+                    f"EvaluationData: {summary.get('total_search_results', 0)} search results from "
+                    f"{summary.get('total_queries', 0)} queries in "
+                    f"{summary.get('total_tool_invocations_count', 0)} tool invocations across "
+                    f"{summary.get('total_turns', 0)} turns"
+                )
             logger.info(
                 f"User-visible messages: {len(analysis['user_visible_messages'])}"
             )
@@ -3900,8 +3736,8 @@ class SEVALAnalysisToolkit:
         input_file: str,
     ) -> Dict:
         """Analyze the conversation flow and extract key information."""
-        from datetime import datetime
         import os
+        from datetime import datetime
 
         # Extract filename and SEVAL job ID from input path
         filename = os.path.basename(input_file)
@@ -3914,19 +3750,20 @@ class SEVALAnalysisToolkit:
                 seval_job_id = part.split("_")[0]
                 break
 
+        # Extract all search results from evaluationData
+        evaluation_results = self._extract_evaluation_data_results(messages)
+
         analysis = {
             "metadata": {
                 "conversation_id": conversation_id,
                 "exp_name": exp_name,
                 "query_text": query_text,
                 "conversation_success": conversation_success,
-                "total_messages": len(messages),
                 "analysis_timestamp": datetime.now().isoformat(),
                 "filename": filename,
                 "seval_job_id": seval_job_id,
             },
-            "tool_calls": [],
-            "search_results": [],
+            "evaluation_data_results": evaluation_results,
             "user_visible_messages": [],
             "rounds": [],
         }
@@ -3935,8 +3772,10 @@ class SEVALAnalysisToolkit:
         round_data = {
             "round_number": current_round,
             "tool_calls": [],
+            "search_invocations": [],
             "search_results": [],
             "progress_messages": [],
+            "latest_invocation_id": None,
         }
 
         for i, msg in enumerate(messages):
@@ -3946,20 +3785,13 @@ class SEVALAnalysisToolkit:
             timestamp = msg.get("timestamp", "")
             content_type = msg.get("contentType", "")
 
-            # Track tool calls (InvokeAction messages)
-            if msg_type == "InvokeAction" and "invocation" in msg:
-                tool_call = self._extract_tool_call_info(msg, i)
-                analysis["tool_calls"].append(tool_call)
-                round_data["tool_calls"].append(tool_call)
-
-            # Track search results
-            elif msg_type == "InternalSearchResult" or content_type == "SearchResults":
-                search_result = self._extract_search_result_info(msg, i)
-                analysis["search_results"].append(search_result)
-                round_data["search_results"].append(search_result)
+            # NOTE: Tool calls, search invocations, and search results are extracted
+            # from evaluationData (authoritative source), not from messages[] array
+            # to avoid duplicates. Messages[] contains multiple Internal messages
+            # with repeated invocation info as search progresses.
 
             # Track progress messages
-            elif msg_type == "Progress" and author == "bot":
+            if msg_type == "Progress" and author == "bot":
                 progress_msg = {
                     "message_index": i,
                     "timestamp": timestamp,
@@ -3980,34 +3812,76 @@ class SEVALAnalysisToolkit:
                 }
                 analysis["user_visible_messages"].append(user_msg)
 
-            # Detect round transitions (when we see multiple tool calls or significant gaps)
-            if (
-                msg_type == "InvokeAction"
-                and len(round_data["tool_calls"]) > 0
-                and i > round_data["tool_calls"][-1]["message_index"] + 10
-            ):
-                # Save current round and start new one
-                analysis["rounds"].append(round_data)
-                current_round += 1
-                round_data = {
-                    "round_number": current_round,
-                    "tool_calls": [],
-                    "search_results": [],
-                    "progress_messages": [],
-                }
+            # NOTE: Round transitions are now determined from evaluationData.turnData
+            # instead of detecting from messages[] array
 
-        # Add the final round
-        if (
-            round_data["tool_calls"]
-            or round_data["search_results"]
-            or round_data["progress_messages"]
-        ):
-            analysis["rounds"].append(round_data)
+        # Populate rounds from evaluationData instead of messages[] array
+        # This ensures we have clean, non-duplicated tool call and search data
+        self._populate_rounds_from_evaluation_data(
+            analysis, evaluation_results, round_data
+        )
+
+        # Extract cited reference_ids from final response
+        cited_ref_ids = set()
+        for user_msg in analysis["user_visible_messages"]:
+            text = user_msg.get("text", "")
+            # Find all turn1searchX patterns in the response
+            import re
+
+            matches = re.findall(r"turn1search\d+", text)
+            cited_ref_ids.update(matches)
+
+        # Mark search results as cited or not cited
+        for round_data in analysis["rounds"]:
+            for search_result in round_data.get("search_results", []):
+                for result in search_result.get("results", []):
+                    ref_id = result.get("reference_id", "")
+                    result["was_cited"] = ref_id in cited_ref_ids
+
+        # Store cited reference IDs in analysis for later use
+        analysis["cited_reference_ids"] = sorted(list(cited_ref_ids))
 
         return analysis
 
-    def _extract_tool_call_info(self, msg: Dict, msg_index: int) -> Dict:
-        """Extract tool call information from an InvokeAction message."""
+    def _populate_rounds_from_evaluation_data(self, analysis, evaluation_results, round_data):
+        """
+        Populate rounds from already-extracted evaluationData.
+        
+        Args:
+            analysis: The analysis dictionary to populate
+            evaluation_results: The evaluation_data_results (already extracted)
+            round_data: The current round data dictionary (with progress_messages)
+        """
+        if not evaluation_results or "turns" not in evaluation_results:
+            # No evaluationData available, append current round_data if it has content
+            if round_data.get("progress_messages"):
+                analysis["rounds"].append(round_data)
+            return
+        
+        # Process each turn from the already-extracted evaluation_results
+        for turn in evaluation_results.get("turns", []):
+            turn_num = turn.get("turn_number", 1)
+            
+            # Create round entry for this turn
+            turn_round_data = {
+                "round_number": turn_num,
+                "progress_messages": round_data.get("progress_messages", [])
+            }
+            
+            # Append this turn's round data
+            analysis["rounds"].append(turn_round_data)
+
+    def _extract_tool_call_info(
+        self, msg: Dict, msg_index: int, round_number: int = 1, invocation_id: str = None
+    ) -> Dict:
+        """Extract tool call information from an InvokeAction message.
+
+        Args:
+            msg: Message dictionary
+            msg_index: Index of message in messages array
+            round_number: Current conversation round/turn number
+            invocation_id: Unique identifier for this invocation
+        """
         invocation = msg.get("invocation", "")
         text = msg.get("text", "")
         timestamp = msg.get("timestamp", "")
@@ -4078,7 +3952,9 @@ class SEVALAnalysisToolkit:
             logger.warning(f"Could not parse tool invocation: {e}")
 
         return {
+            "invocation_id": invocation_id,
             "message_index": msg_index,
+            "round_number": round_number,
             "timestamp": timestamp,
             "tool_name": tool_name,
             "parameters": parameters,
@@ -4087,15 +3963,362 @@ class SEVALAnalysisToolkit:
             + ("..." if len(invocation) > 500 else ""),
         }
 
-    def _extract_search_result_info(self, msg: Dict, msg_index: int) -> Dict:
-        """Extract search result information."""
+    def _extract_search_invocations(
+        self, msg: Dict, msg_index: int, round_number: int = 1, invocation_ref: str = None
+    ) -> Optional[Dict]:
+        """Extract search invocation details including all queries.
+
+        Args:
+            msg: Message dictionary
+            msg_index: Index of message in messages array
+            round_number: Current conversation round/turn number
+            invocation_ref: Reference to the tool invocation that triggered this search
+        """
+        invocation = msg.get("invocation", "")
+        timestamp = msg.get("timestamp", "")
+        msg_type = msg.get("messageType", "")
+
+        invocation_info = {
+            "invocation_ref": invocation_ref,
+            "message_index": msg_index,
+            "round_number": round_number,
+            "timestamp": timestamp,
+            "message_type": msg_type,
+            "function_name": "",
+            "queries": [],
+        }
+
+        if not invocation or not isinstance(invocation, str):
+            return None
+
+        try:
+            inv_data = json.loads(invocation)
+            if isinstance(inv_data, list) and len(inv_data) > 0:
+                for inv_item in inv_data:
+                    func = inv_item.get("function", {})
+                    func_name = func.get("name", "")
+
+                    if "office365_search" in func_name:
+                        invocation_info["function_name"] = func_name
+                        args_str = func.get("arguments", "")
+
+                        try:
+                            args = json.loads(args_str)
+                            queries = args.get("queries", [])
+
+                            for query in queries:
+                                invocation_info["queries"].append(
+                                    {
+                                        "domain": query.get("domain", ""),
+                                        "query": query.get("query", ""),
+                                        "response_length": query.get(
+                                            "response_length", ""
+                                        ),
+                                    }
+                                )
+                        except:
+                            pass
+        except:
+            pass
+
+        return invocation_info if invocation_info["function_name"] else None
+
+    def _extract_evaluation_data_results(self, messages: list) -> Dict:
+        """Extract all search results from EvaluationData message.
+
+        This method extracts the COMPLETE set of search results from the EvaluationData message.
+        The data is organized hierarchically:
+
+        Data Source Path:
+          messages[]
+            → {"messageType": "EvaluationData"}
+              → evaluationData
+                → turnData[]                           # Each conversation turn (hop)
+                  → orchestrationIterations[]          # Search/reasoning iterations within turn
+                    → modelActions[]                   # Actions taken by model
+                      → toolInvocations[]              # Tool calls (search API, etc.)
+                        → batchedQueries[]             # Parallel queries to different domains
+                          → arguments (JSON string)    # Contains: {"domain": "emails|files|chats|people", "query": "search text"}
+                          → processedResult (JSON)     # Contains: {"results": [{reference_id, type, title, snippet, ...}]}
+
+        Return Structure:
+          {
+            "turns": [                               # One entry per conversation turn
+              {
+                "turn_number": 1,                    # Turn/hop identifier (1-indexed)
+                "user_input": "user's query",        # The user's question for this turn
+                "invocations": [                     # One entry per tool invocation in this turn
+                  {
+                    "invocation_number": 1,          # Invocation counter within turn
+                    "queries": [                     # Batched queries in this invocation
+                      {
+                        "query_number": 1,           # Query counter within invocation
+                        "domain": "emails",          # Search domain (emails, files, chats, people)
+                        "query": "search text",      # Actual query text sent to search API
+                        "result_count": 10,          # Number of results returned
+                        "results": [                 # Array of search results
+                          {
+                            "reference_id": "turn1search1",  # Unique ID for CiteDCG mapping
+                            "type": "Email|File|Chat|Person",
+                            "title": "...",
+                            "snippet": "...",
+                            "author": "...",
+                            # ... additional metadata fields
+                          }
+                        ]
+                      }
+                    ],
+                    "total_results": 67              # Total results in this invocation
+                  }
+                ],
+                "total_results": 67                  # Total results in this turn
+              }
+            ],
+            "total_results": 67,                     # Total results across all turns
+            "total_invocations": 1                   # Total invocations across all turns
+          }
+
+        Note: This extracts ALL search results, not just those cited in the final response.
+        Use reference_id to map results to CiteDCG quality scores.
+        """
+        results_by_turn = []
+
+        # Find EvaluationData message (contains complete search history)
+        eval_message = None
+        for msg in messages:
+            if msg.get("messageType") == "EvaluationData":
+                eval_message = msg
+                break
+
+        if not eval_message:
+            return {"turns": [], "total_results": 0, "total_invocations": 0}
+
+        eval_data = eval_message.get("evaluationData", {})
+        turn_data_list = eval_data.get("turnData", [])
+
+        total_results = 0
+        total_tool_invocations_count = 0
+        total_queries = 0
+
+        for turn_idx, turn_data in enumerate(turn_data_list):
+            turn_results = {
+                "turn_number": turn_idx + 1,
+                "user_input": turn_data.get("userInput", ""),
+                "invocations": [],
+                "total_results": 0,
+            }
+
+            iterations = turn_data.get("orchestrationIterations", [])
+
+            for iteration in iterations:
+                model_actions = iteration.get("modelActions", [])
+
+                for model_action in model_actions:
+                    tool_invocations = model_action.get("toolInvocations", [])
+
+                    for tool_inv in tool_invocations:
+                        batched_queries = tool_inv.get("batchedQueries", [])
+
+                        if not batched_queries:
+                            continue
+
+                        # Extract tool name from invocation
+                        tool_name = tool_inv.get("function", "unknown")
+
+                        total_tool_invocations_count += 1
+                        invocation_results = {
+                            "invocation_number": len(turn_results["invocations"]) + 1,
+                            "tool_name": tool_name,
+                            "queries": [],
+                            "total_results": 0,
+                        }
+
+                        for query_idx, batched_query in enumerate(batched_queries):
+                            total_queries += 1
+                            # Parse arguments to get query details
+                            arguments_str = batched_query.get("arguments", "")
+                            domain = "unknown"
+                            query_text = ""
+
+                            if arguments_str:
+                                try:
+                                    arguments = json.loads(arguments_str)
+                                    domain = arguments.get("domain", "unknown")
+                                    query_text = arguments.get("query", "")
+                                except:
+                                    pass
+
+                            # Parse processedResult to get results
+                            processed_result_str = batched_query.get(
+                                "processedResult", ""
+                            )
+                            results = []
+
+                            if processed_result_str:
+                                try:
+                                    processed_data = json.loads(processed_result_str)
+                                    results = processed_data.get("results", [])
+                                except:
+                                    pass
+
+                            query_results = {
+                                "query_number": query_idx + 1,
+                                "domain": domain,
+                                "query": query_text,
+                                "result_count": len(results),
+                                "results": [],
+                            }
+
+                            # Extract key info from each result
+                            for result in results:
+                                result_type = result.get("type", "")
+                                
+                                # Handle PeopleInferenceAnswer differently
+                                if result_type == "PeopleInferenceAnswer":
+                                    # Extract & clean displayName
+                                    display_name = result.get("displayName", "")
+                                    if display_name:
+                                        display_name = display_name.replace(
+                                            "<Person>", ""
+                                        ).replace("</Person>", "")
+                                    
+                                    result_data = {
+                                        "reference_id": result.get(
+                                            "reference_id", ""
+                                        ),
+                                        "type": result_type,
+                                        "title": display_name,
+                                        "snippet": result.get(
+                                            "profession", ""
+                                        ),
+                                        "author": result.get(
+                                            "userPrincipalName", ""
+                                        ),
+                                        "lastModifiedTime": "",
+                                        "fileName": result.get(
+                                            "companyName", ""
+                                        ),
+                                        "fileType": result.get(
+                                            "department", ""
+                                        ),
+                                        # Additional people-specific fields
+                                        "emailAddresses": result.get(
+                                            "emailAddresses", ""
+                                        ),
+                                        "officeLocation": result.get(
+                                            "officeLocation", ""
+                                        ),
+                                    }
+                                elif result_type == "TeamsMessage":
+                                    # Handle TeamsMessage type-specific fields
+                                    result_data = {
+                                        "reference_id": result.get(
+                                            "reference_id", ""
+                                        ),
+                                        "type": result_type,
+                                        "title": result.get("title", ""),
+                                        "snippet": result.get(
+                                            "snippet", ""
+                                        )[:200],
+                                        "author": result.get("to", ""),
+                                        "lastModifiedTime": result.get(
+                                            "dateTimeSent", ""
+                                        ),
+                                        "fileName": "",
+                                        "fileType": "",
+                                    }
+                                elif result_type == "EmailMessage":
+                                    # Handle EmailMessage type-specific fields
+                                    result_data = {
+                                        "reference_id": result.get(
+                                            "reference_id", ""
+                                        ),
+                                        "type": result_type,
+                                        "title": result.get("subject", ""),
+                                        "snippet": result.get(
+                                            "snippet", ""
+                                        )[:200],
+                                        "author": result.get("from", ""),
+                                        "lastModifiedTime": result.get(
+                                            "dateTimeReceived", ""
+                                        ),
+                                        "fileName": "",
+                                        "fileType": "",
+                                    }
+                                else:
+                                    # Generic extraction for other types
+                                    result_data = {
+                                        "reference_id": result.get(
+                                            "reference_id", ""
+                                        ),
+                                        "type": result_type,
+                                        "title": result.get("title", ""),
+                                        "snippet": result.get(
+                                            "snippet", ""
+                                        )[:200],
+                                        "author": result.get("author", ""),
+                                        "lastModifiedTime": result.get(
+                                            "lastModifiedTime", ""
+                                        ),
+                                        "fileName": result.get(
+                                            "fileName", ""
+                                        ),
+                                        "fileType": result.get(
+                                            "fileType", ""
+                                        ),
+                                    }
+                                
+                                query_results["results"].append(result_data)
+
+                            invocation_results["queries"].append(query_results)
+                            invocation_results["total_results"] += len(results)
+                            turn_results["total_results"] += len(results)
+                            total_results += len(results)
+
+                        turn_results["invocations"].append(invocation_results)
+
+            results_by_turn.append(turn_results)
+
+        return {
+            "summary": {
+                "total_turns": len(results_by_turn),
+                "total_tool_invocations_count": total_tool_invocations_count,
+                "total_queries": total_queries,
+                "total_search_results": total_results,
+            },
+            "turns": results_by_turn,
+        }
+
+    def _extract_search_result_info(
+        self, msg: Dict, msg_index: int, round_number: int = 1, invocation_ref: str = None
+    ) -> Dict:
+        """Extract search result information.
+
+        Args:
+            msg: Message dictionary
+            msg_index: Index of message in messages array
+            round_number: Current conversation round/turn number
+            invocation_ref: Reference to the tool invocation that triggered this search
+        """
         text = msg.get("text", "")
         timestamp = msg.get("timestamp", "")
         msg_type = msg.get("messageType", "")
         content_type = msg.get("contentType", "")
 
+        # Try to extract from adaptiveCards if text is empty
+        if not text or len(text) < 10:
+            if "adaptiveCards" in msg and len(msg["adaptiveCards"]) > 0:
+                card = msg["adaptiveCards"][0]
+                if "body" in card and len(card["body"]) > 0:
+                    body_item = card["body"][0]
+                    if "inlines" in body_item and len(body_item["inlines"]) > 0:
+                        inline_item = body_item["inlines"][0]
+                        text = inline_item.get("text", "")
+
         result_info = {
+            "invocation_ref": invocation_ref,
             "message_index": msg_index,
+            "round_number": round_number,
             "timestamp": timestamp,
             "message_type": msg_type,
             "content_type": content_type,
@@ -4112,28 +4335,117 @@ class SEVALAnalysisToolkit:
                     results = parsed["results"]
                     result_info["items_found"] = len(results)
 
+                    # Also capture searchMetadata if present
+                    if "searchMetadata" in parsed:
+                        result_info["searchMetadata"] = parsed["searchMetadata"]
+
                     # Extract details for each result
-                    for result in results[:5]:  # Limit to first 5 results
-                        if "result" in result:
-                            res_data = result["result"]
-                            result_detail = {
-                                "reference_id": res_data.get("reference_id", ""),
-                                "type": res_data.get("type", ""),
-                                "subject": res_data.get("subject", ""),
-                                "snippet": res_data.get("snippet", "")[:300]
-                                + (
-                                    "..."
-                                    if len(res_data.get("snippet", "")) > 300
-                                    else ""
-                                ),
-                                "from_email": res_data.get("from", ""),
-                                "to_email": res_data.get("to", ""),
-                                "sent_time": res_data.get("sentTime", ""),
-                                "file_name": res_data.get("fileName", ""),
-                                "file_type": res_data.get("fileType", ""),
-                                "url": res_data.get("url", ""),
-                            }
-                            result_info["results"].append(result_detail)
+                    for result in results:  # Process all results, not just first 5
+                        # Results are already in the correct format (not nested under "result" key)
+                        result_detail = {
+                            "reference_id": result.get("reference_id", ""),
+                            "id": result.get(
+                                "id", ""
+                            ),  # SharePoint/Email ID for CiteDCG mapping
+                            "type": result.get("type", ""),
+                            # Email fields
+                            "subject": result.get("subject", ""),
+                            "from_email": result.get("from", ""),
+                            "to_email": result.get("to", ""),
+                            "sent_time": result.get("sentTime", ""),
+                            "dateTimeReceived": result.get("dateTimeReceived", ""),
+                            "dateTimeSent": result.get("dateTimeSent", ""),
+                            "isRead": result.get("isRead", None),
+                            # File fields
+                            "file_name": result.get("fileName", ""),
+                            "title": result.get("title", ""),
+                            "file_type": result.get("fileType", ""),
+                            "author": result.get("author", ""),
+                            "lastModifiedTime": result.get("lastModifiedTime", ""),
+                            "lastModifiedBy": result.get("lastModifiedBy", ""),
+                            # People fields
+                            "displayName": result.get("displayName", ""),
+                            "emailAddresses": result.get("emailAddresses", ""),
+                            "userPrincipalName": result.get("userPrincipalName", ""),
+                            "profession": result.get("profession", ""),
+                            "department": result.get("department", ""),
+                            "officeLocation": result.get("officeLocation", ""),
+                            # Common fields
+                            "snippet": result.get("snippet", "")[:300]
+                            + ("..." if len(result.get("snippet", "")) > 300 else ""),
+                            "url": result.get("url", ""),
+                            # Related entities for people results
+                            "relatedEntities": result.get("relatedEntities", []),
+                        }
+                        result_info["results"].append(result_detail)
+
+                # Also check telemetry.groundingResponse for additional results
+                if "telemetry" in msg:
+                    telemetry = msg.get("telemetry", {})
+                    if "groundingResponse" in telemetry:
+                        grounding = telemetry["groundingResponse"]
+                        if isinstance(grounding, dict) and "results" in grounding:
+                            grounding_results = grounding["results"]
+                            # Add grounding results that aren't already in the main results
+                            existing_ref_ids = set(
+                                r.get("reference_id") for r in result_info["results"]
+                            )
+                            for result in grounding_results:
+                                ref_id = result.get("reference_id", "")
+                                if ref_id and ref_id not in existing_ref_ids:
+                                    result_detail = {
+                                        "reference_id": ref_id,
+                                        "id": result.get("id", ""),
+                                        "type": result.get("type", ""),
+                                        # Email fields
+                                        "subject": result.get("subject", ""),
+                                        "from_email": result.get("from", ""),
+                                        "to_email": result.get("to", ""),
+                                        "sent_time": result.get("sentTime", ""),
+                                        "dateTimeReceived": result.get(
+                                            "dateTimeReceived", ""
+                                        ),
+                                        "dateTimeSent": result.get("dateTimeSent", ""),
+                                        "isRead": result.get("isRead", None),
+                                        # File fields
+                                        "file_name": result.get("fileName", ""),
+                                        "title": result.get("title", ""),
+                                        "file_type": result.get("fileType", ""),
+                                        "author": result.get("author", ""),
+                                        "lastModifiedTime": result.get(
+                                            "lastModifiedTime", ""
+                                        ),
+                                        "lastModifiedBy": result.get(
+                                            "lastModifiedBy", ""
+                                        ),
+                                        # People fields
+                                        "displayName": result.get("displayName", ""),
+                                        "emailAddresses": result.get(
+                                            "emailAddresses", ""
+                                        ),
+                                        "userPrincipalName": result.get(
+                                            "userPrincipalName", ""
+                                        ),
+                                        "profession": result.get("profession", ""),
+                                        "department": result.get("department", ""),
+                                        "officeLocation": result.get(
+                                            "officeLocation", ""
+                                        ),
+                                        # Common fields
+                                        "snippet": result.get("snippet", "")[:300]
+                                        + (
+                                            "..."
+                                            if len(result.get("snippet", "")) > 300
+                                            else ""
+                                        ),
+                                        "url": result.get("url", ""),
+                                        "relatedEntities": result.get(
+                                            "relatedEntities", []
+                                        ),
+                                        "source": "grounding",  # Mark as coming from grounding
+                                    }
+                                    result_info["results"].append(result_detail)
+                                    result_info["items_found"] += 1
 
             elif text.startswith("[") and len(text) > 10:
                 # Handle array format results
@@ -4206,6 +4518,7 @@ class SEVALAnalysisToolkit:
                     f.write(f"#### Tool Calls ({len(round_data['tool_calls'])})\n\n")
                     for i, tool_call in enumerate(round_data["tool_calls"], 1):
                         f.write(f"**Call {i}: {tool_call['tool_name']}**\n")
+                        f.write(f"- **Invocation ID:** `{tool_call.get('invocation_id', 'N/A')}`\n")
                         f.write(f"- **Timestamp:** {tool_call['timestamp']}\n")
                         f.write(f"- **Message Index:** {tool_call['message_index']}\n")
 
@@ -4226,6 +4539,34 @@ class SEVALAnalysisToolkit:
 
                         f.write(f"\n")
 
+                # Search invocations in this round
+                if round_data["search_invocations"]:
+                    f.write(
+                        f"#### Search Invocations ({len(round_data['search_invocations'])})\n\n"
+                    )
+                    for i, search_inv in enumerate(round_data["search_invocations"], 1):
+                        f.write(f"**Invocation {i}: {search_inv['function_name']}**\n")
+                        f.write(f"- **Triggered By:** `{search_inv.get('invocation_ref', 'N/A')}`\n")
+                        f.write(f"- **Timestamp:** {search_inv['timestamp']}\n")
+                        f.write(f"- **Message Index:** {search_inv['message_index']}\n")
+                        f.write(f"- **Message Type:** {search_inv['message_type']}\n")
+                        f.write(
+                            f"- **Number of Queries:** {len(search_inv['queries'])}\n\n"
+                        )
+
+                        if search_inv["queries"]:
+                            f.write(f"**Queries:**\n\n")
+                            for q_idx, query in enumerate(search_inv["queries"], 1):
+                                f.write(f"{q_idx}. **Domain:** `{query['domain']}`\n")
+                                f.write(
+                                    f"   - **Query:** `{query['query'][:100]}{'...' if len(query['query']) > 100 else ''}`\n"
+                                )
+                                f.write(
+                                    f"   - **Response Length:** `{query['response_length']}`\n\n"
+                                )
+
+                        f.write(f"\n")
+
                 # Search results in this round
                 if round_data["search_results"]:
                     f.write(
@@ -4233,6 +4574,7 @@ class SEVALAnalysisToolkit:
                     )
                     for i, search_result in enumerate(round_data["search_results"], 1):
                         f.write(f"**Result {i}**\n")
+                        f.write(f"- **From Invocation:** `{search_result.get('invocation_ref', 'N/A')}`\n")
                         f.write(f"- **Timestamp:** {search_result['timestamp']}\n")
                         f.write(
                             f"- **Message Index:** {search_result['message_index']}\n"
@@ -4252,6 +4594,15 @@ class SEVALAnalysisToolkit:
                                     f.write(
                                         f"**Email:** `{item.get('subject', 'No subject')}`\n"
                                     )
+                                    if item.get("reference_id"):
+                                        cited_marker = (
+                                            " ✓ CITED" if item.get("was_cited") else ""
+                                        )
+                                        f.write(
+                                            f"   - **Reference ID:** `{item['reference_id']}`{cited_marker}\n"
+                                        )
+                                    if item.get("id"):
+                                        f.write(f"   - **ID:** `{item['id']}`\n")
                                     if item.get("from_email"):
                                         f.write(
                                             f"   - **From:** {item['from_email']}\n"
@@ -4262,8 +4613,84 @@ class SEVALAnalysisToolkit:
                                         f.write(
                                             f"   - **Snippet:** {item['snippet']}\n"
                                         )
+                                elif item.get("type") in [
+                                    "File",
+                                    "PeopleInferenceAnswer",
+                                    "PeopleNotes",
+                                    "TeamsMessage",
+                                    "External",
+                                ]:
+                                    # Handle all typed results
+                                    type_label = item.get("type", "Unknown")
+                                    display_name = (
+                                        item.get("file_name")
+                                        or item.get("title")
+                                        or item.get("displayName")
+                                        or item.get("subject")
+                                        or "(No name)"
+                                    )
+                                    f.write(f"**{type_label}:** `{display_name}`\n")
+
+                                    if item.get("reference_id"):
+                                        cited_marker = (
+                                            " ✓ CITED" if item.get("was_cited") else ""
+                                        )
+                                        f.write(
+                                            f"   - **Reference ID:** `{item['reference_id']}`{cited_marker}\n"
+                                        )
+                                    if item.get("id"):
+                                        f.write(f"   - **ID:** `{item['id']}`\n")
+
+                                    # Type-specific fields
+                                    if item.get("file_type"):
+                                        f.write(
+                                            f"   - **File Type:** {item['file_type']}\n"
+                                        )
+                                    if item.get("author"):
+                                        f.write(f"   - **Author:** {item['author']}\n")
+                                    if item.get("lastModifiedTime"):
+                                        f.write(
+                                            f"   - **Modified:** {item['lastModifiedTime']}\n"
+                                        )
+                                    if item.get("profession"):
+                                        f.write(
+                                            f"   - **Role:** {item['profession']}\n"
+                                        )
+                                    if item.get("department"):
+                                        f.write(
+                                            f"   - **Department:** {item['department']}\n"
+                                        )
+                                    if item.get("emailAddresses"):
+                                        f.write(
+                                            f"   - **Email:** {item['emailAddresses']}\n"
+                                        )
+                                    if item.get("url"):
+                                        f.write(
+                                            f"   - **URL:** {item['url'][:100]}...\n"
+                                        )
+
+                                    if item.get("snippet"):
+                                        f.write(
+                                            f"   - **Snippet:** {item['snippet']}\n"
+                                        )
+
+                                    # Show related entities count for people
+                                    if (
+                                        item.get("relatedEntities")
+                                        and len(item["relatedEntities"]) > 0
+                                    ):
+                                        f.write(
+                                            f"   - **Related Entities:** {len(item['relatedEntities'])} items\n"
+                                        )
                                 elif item.get("file_name"):
+                                    # Fallback for files without type field
                                     f.write(f"**File:** `{item['file_name']}`\n")
+                                    if item.get("reference_id"):
+                                        f.write(
+                                            f"   - **Reference ID:** `{item['reference_id']}`\n"
+                                        )
+                                    if item.get("id"):
+                                        f.write(f"   - **ID:** `{item['id']}`\n")
                                     if item.get("file_type"):
                                         f.write(f"   - **Type:** {item['file_type']}\n")
                                     if item.get("snippet"):
@@ -4272,13 +4699,26 @@ class SEVALAnalysisToolkit:
                                         )
                                 elif item.get("query"):
                                     f.write(f"**Query Result:** `{item['query']}`\n")
+                                    if item.get("reference_id"):
+                                        f.write(
+                                            f"   - **Reference ID:** `{item['reference_id']}`\n"
+                                        )
+                                    if item.get("id"):
+                                        f.write(f"   - **ID:** `{item['id']}`\n")
                                     f.write(
                                         f"   - **Result:** {item.get('result', '')}\n"
                                     )
                                 else:
+                                    # Generic item type
                                     f.write(
                                         f"**Item:** {item.get('content', str(item))}\n"
                                     )
+                                    if item.get("reference_id"):
+                                        f.write(
+                                            f"   - **Reference ID:** `{item['reference_id']}`\n"
+                                        )
+                                    if item.get("id"):
+                                        f.write(f"   - **ID:** `{item['id']}`\n")
                                 f.write(f"\n")
                         f.write(f"\n")
 
@@ -4291,9 +4731,8 @@ class SEVALAnalysisToolkit:
                         f.write(
                             f"{i}. **[{progress['timestamp']}]** {progress['text']}\n"
                         )
-                    f.write(f"\n")
 
-                f.write(f"---\n\n")
+            f.write(f"---\n\n")
 
             # User-visible outputs
             f.write(f"## User-Visible Outputs\n\n")
@@ -4321,10 +4760,31 @@ class SEVALAnalysisToolkit:
             f.write(f"## Summary Statistics\n\n")
             f.write(f"- **Total Rounds:** {len(analysis['rounds'])}\n")
             f.write(f"- **Total Tool Calls:** {len(analysis['tool_calls'])}\n")
+            f.write(
+                f"- **Total Search Invocations:** {len(analysis['search_invocations'])}\n"
+            )
             f.write(f"- **Total Search Results:** {len(analysis['search_results'])}\n")
             f.write(
                 f"- **User-Visible Messages:** {len(analysis['user_visible_messages'])}\n"
             )
+
+            # Calculate search query statistics
+            total_queries = sum(
+                len(inv["queries"]) for inv in analysis["search_invocations"]
+            )
+            f.write(f"- **Total Search Queries:** {total_queries}\n")
+
+            # Domain breakdown
+            domain_counts = {}
+            for inv in analysis["search_invocations"]:
+                for query in inv["queries"]:
+                    domain = query.get("domain", "unknown")
+                    domain_counts[domain] = domain_counts.get(domain, 0) + 1
+
+            if domain_counts:
+                f.write(f"- **Queries by Domain:**\n")
+                for domain in sorted(domain_counts.keys()):
+                    f.write(f"  - {domain}: {domain_counts[domain]}\n")
 
             # Calculate search efficiency
             total_items_found = sum(
@@ -4336,7 +4796,226 @@ class SEVALAnalysisToolkit:
                     f"- **Search Efficiency:** {search_efficiency:.1f} items per tool call\n"
                 )
 
-            f.write(f"- **Total Items Found:** {total_items_found}\n")
+            f.write(f"- **Total Items Found:** {total_items_found}\n\n")
+
+            # Add CiteDCG mapping section
+            f.write("\n## CiteDCG Mapping Reference\n\n")
+            f.write(
+                "This section provides a summary of all search results with their reference IDs for mapping to CiteDCG quality scores.\n\n"
+            )
+
+            # Collect all search results across all rounds
+            all_search_results = []
+            for round_data in analysis["rounds"]:
+                for search_result in round_data.get("search_results", []):
+                    if search_result.get("results"):
+                        for result in search_result["results"]:
+                            if result.get("reference_id"):
+                                all_search_results.append(result)
+
+            if all_search_results:
+                cited_count = sum(1 for r in all_search_results if r.get("was_cited"))
+                not_cited_count = len(all_search_results) - cited_count
+
+                f.write(f"**Total Search Results Found:** {len(all_search_results)}\n")
+                f.write(f"**Cited in Final Response:** {cited_count}\n")
+                f.write(f"**Not Cited:** {not_cited_count}\n\n")
+
+                # Group by type
+                by_type = {}
+                for result in all_search_results:
+                    result_type = result.get("type", "Unknown")
+                    if result_type not in by_type:
+                        by_type[result_type] = []
+                    by_type[result_type].append(result)
+
+                f.write("### Results by Type\n\n")
+                for result_type, results in sorted(by_type.items()):
+                    f.write(f"#### {result_type} ({len(results)} results)\n\n")
+                    f.write("| Reference ID | Cited | ID/Email | Name/Subject |\n")
+                    f.write("|--------------|-------|----------|-------------|\n")
+
+                    for result in results:
+                        ref_id = result.get("reference_id", "")
+                        was_cited = "✓" if result.get("was_cited") else ""
+                        item_id = (
+                            result.get("id", "")
+                            or result.get("emailAddresses", "")
+                            or "-"
+                        )
+                        name = (
+                            result.get("file_name")
+                            or result.get("title")
+                            or result.get("displayName")
+                            or result.get("subject")
+                            or "(No name)"
+                        )
+
+                        # Truncate long values
+                        if len(str(item_id)) > 50:
+                            item_id = str(item_id)[:47] + "..."
+                        if len(str(name)) > 60:
+                            name = str(name)[:57] + "..."
+
+                        f.write(
+                            f"| `{ref_id}` | {was_cited} | `{item_id}` | {name} |\n"
+                        )
+
+                    f.write("\n")
+
+                # Add mapping instructions
+                f.write("### CiteDCG Mapping Instructions\n\n")
+                f.write("To map these results to CiteDCG quality scores:\n\n")
+                f.write(
+                    "1. The `reference_id` (e.g., `turn1search5`) maps to CiteDCG results **by rank order**\n"
+                )
+                f.write(
+                    "2. Load the CiteDCG results file and sort all results by their `Rank` field\n"
+                )
+                f.write(
+                    "3. Extract the index from `turn1searchX` (e.g., `turn1search5` → index 5)\n"
+                )
+                f.write(
+                    "4. The result at index X in the sorted CiteDCG array corresponds to this search result\n"
+                )
+                f.write(
+                    "5. Extract the `CiteDCGLLMLabel` from the matched CiteDCG result\n\n"
+                )
+                f.write("**Example mapping code:**\n")
+                f.write("```python\n")
+                f.write("# Load and sort CiteDCG results\n")
+                f.write("citedcg_results = load_citedcg_file(citedcg_path)\n")
+                f.write(
+                    "sorted_results = sorted(citedcg_results, key=lambda x: x.get('Rank', 999))\n\n"
+                )
+                f.write("# Map reference_id to CiteDCG score\n")
+                f.write("reference_id = 'turn1search5'\n")
+                f.write("index = int(reference_id.replace('turn1search', ''))\n")
+                f.write("citedcg_score = sorted_results[index]['CiteDCGLLMLabel']\n")
+                f.write("```\n\n")
+            else:
+                f.write(
+                    "No search results with reference IDs found in this conversation.\n\n"
+                )
+
+            # Add EvaluationData search results section
+            eval_data = analysis.get("evaluation_data_results", {})
+            if eval_data and eval_data.get("total_results", 0) > 0:
+                f.write("\n## EvaluationData Search Results\n\n")
+                f.write(
+                    "This section contains all search results extracted from the EvaluationData message, "
+                    "organized by turn, invocation, and query. These results include complete metadata "
+                    "and reference IDs for mapping to CiteDCG quality scores.\n\n"
+                )
+
+                f.write(f"**Total Results:** {eval_data['total_results']}\n")
+                f.write(f"**Total Invocations:** {eval_data['total_invocations']}\n")
+                f.write(f"**Total Turns:** {len(eval_data.get('turns', []))}\n\n")
+
+                # Process each turn
+                for turn in eval_data.get("turns", []):
+                    turn_num = turn.get("turn_number", 0)
+                    user_input = turn.get("user_input", "")
+
+                    f.write(f"### Turn {turn_num}\n\n")
+                    f.write(f"**User Input:** {user_input}\n\n")
+                    f.write(
+                        f"**Total Results in Turn:** {turn.get('total_results', 0)}\n\n"
+                    )
+
+                    # Process each invocation in the turn
+                    for invocation in turn.get("invocations", []):
+                        inv_num = invocation.get("invocation_number", 0)
+                        f.write(f"#### Invocation {inv_num}\n\n")
+                        f.write(
+                            f"**Results in Invocation:** {invocation.get('total_results', 0)}\n\n"
+                        )
+
+                        # Process each query in the invocation
+                        for query in invocation.get("queries", []):
+                            query_num = query.get("query_number", 0)
+                            domain = query.get("domain", "unknown")
+                            query_text = query.get("query", "")
+                            result_count = query.get("result_count", 0)
+
+                            f.write(f"##### Query {query_num} ({domain} domain)\n\n")
+                            f.write(f"**Query Text:** {query_text}\n\n")
+                            f.write(f"**Results Found:** {result_count}\n\n")
+
+                            # Display results in a table
+                            results = query.get("results", [])
+                            if results:
+                                f.write(
+                                    "| Reference ID | Type | Title/Name | Author/From |\n"
+                                )
+                                f.write(
+                                    "|--------------|------|------------|-------------|\n"
+                                )
+
+                                for result in results:
+                                    ref_id = result.get("reference_id", "")
+                                    result_type = result.get("type", "Unknown")
+
+                                    # Get title/name based on result type
+                                    title = (
+                                        result.get("title")
+                                        or result.get("displayName")
+                                        or result.get("fileName")
+                                        or result.get("subject")
+                                        or "(No title)"
+                                    )
+
+                                    # Get author/from based on result type
+                                    author = (
+                                        result.get("author")
+                                        or result.get("from")
+                                        or result.get("givenName")
+                                        or "-"
+                                    )
+
+                                    # Truncate long values
+                                    if len(str(title)) > 50:
+                                        title = str(title)[:47] + "..."
+                                    if len(str(author)) > 30:
+                                        author = str(author)[:27] + "..."
+
+                                    f.write(
+                                        f"| `{ref_id}` | {result_type} | {title} | {author} |\n"
+                                    )
+
+                                f.write("\n")
+
+                                # Add expandable details section for complete metadata
+                                f.write(
+                                    "<details>\n<summary>Click to view complete result metadata</summary>\n\n"
+                                )
+                                f.write("```json\n")
+                                import json
+
+                                f.write(json.dumps(results, indent=2))
+                                f.write("\n```\n")
+                                f.write("</details>\n\n")
+                            else:
+                                f.write("No results found for this query.\n\n")
+
+                # Add summary table by domain
+                f.write("### Summary by Domain\n\n")
+                domain_summary = {}
+                for turn in eval_data.get("turns", []):
+                    for invocation in turn.get("invocations", []):
+                        for query in invocation.get("queries", []):
+                            domain = query.get("domain", "unknown")
+                            count = query.get("result_count", 0)
+                            domain_summary[domain] = (
+                                domain_summary.get(domain, 0) + count
+                            )
+
+                if domain_summary:
+                    f.write("| Domain | Total Results |\n")
+                    f.write("|--------|---------------|\n")
+                    for domain in sorted(domain_summary.keys()):
+                        f.write(f"| {domain} | {domain_summary[domain]} |\n")
+                    f.write("\n")
 
 
 def main():

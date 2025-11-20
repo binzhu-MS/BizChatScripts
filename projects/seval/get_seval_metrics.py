@@ -1,58 +1,451 @@
 """
-Read Seval metrics from the job folder
+SEVAL Metrics Reader and Extractor
 
-This script reads CSV files from the job folder containing Seval metrics.
-Simply provide the full path to the job folder (e.g., "100335_metrics").
+This module provides two main types of functionality for SEVAL experiment data:
 
-Usage:
-    # Run directly
-    python get_seval_metrics.py "c:/path/to/100335_metrics"
-    python get_seval_metrics.py "c:/path/to/100335_metrics" --list_files=True
+1. CSV-BASED METRICS PROCESSING (A/B Test Results):
+   - Reads aggregated metric scores from CSV files in the metrics job folder
+   - Used for comparing Control vs Treatment experiments
+   - Input: CSV files from folders like "100335_metrics/consolidated_*"
+   - Output: DataFrames with metrics comparison and markdown reports
+
+2. JSON-BASED SCORE EXTRACTION (Per-Result Scores):
+   - Extracts CiteDCG scores for individual search results for each utterance from 
+     results.json for either Control or Treatment experiment.
+   - Used for detailed per-utterance and per-search-result analysis
+   - Input: JSON files from folders like "130949_metrics/Consolidated NDCG and CiteDCG Labels Control/results.json"
+   - Output: JSON with scores for each search result
+
+USAGE:
+
+A. CSV Metrics Processing (existing functionality):
+    # List available CSV files
+    python -m projects.seval.get_seval_metrics list_csv_files --job_path="c:/path/to/100335_metrics"
     
-    # Run as module (recommended for proper imports)
-    python -m tools.get_seval_metrics "c:/path/to/100335_metrics"
-    python -m tools.get_seval_metrics "c:/path/to/100335_metrics" --citedcg_report=True
+    # Read and display metrics summary
+    python -m projects.seval.get_seval_metrics read_metrics --job_path="c:/path/to/100335_metrics"
     
-    # Add reasoning class column from JSON data
-    python -m tools.get_seval_metrics "c:/path/to/100335_metrics" --add_reasoning_class=True --reasoning_json_path="path/to/data.json"
+    # Get comprehensive metrics summary
+    python -m projects.seval.get_seval_metrics get_metrics_summary --job_path="c:/path/to/100335_metrics"
     
-    or programmatically:
-    from get_seval_metrics import MetricsDataReader, MetricsAnalyzer, MetricsComparisonMarkdownGenerator, ReasoningClassExtractor
+    # Read metrics with reasoning class column
+    python -m projects.seval.get_seval_metrics read_metrics --job_path="c:/path/to/100335_metrics" --add_reasoning_class=True --reasoning_json_path="path/to/data.json"
     
-    # Basic data reading
+    # Generate CiteDCG report by reasoning class
+    python -m projects.seval.get_seval_metrics generate_citedcg_report --job_path="c:/path/to/100335_metrics" --add_reasoning_class=True --reasoning_json_path="path/to/data.json"
+    
+    ---
+    
+    # Programmatic usage
+    from projects.seval.get_seval_metrics import MetricsDataReader, MetricsAnalyzer
+    
     reader = MetricsDataReader(job_path="/path/to/100335_metrics")
     df = reader.read_metrics()
     
-    # Analysis and report generation with reasoning class
     analyzer = MetricsAnalyzer(job_path="/path/to/100335_metrics")
-    df_with_reasoning = analyzer.get_dataframe(add_reasoning_class=True, reasoning_json_path="/path/to/data.json")
-    
-    # By-segment comparison
-    results = analyzer.extract_metric_pairs(['metric1_control', 'metric1_treatment'], segment_column='segment 2')
-    
-    # Overall comparison (no segments)
     results = analyzer.extract_metric_pairs(['metric1_control', 'metric1_treatment'])
+
+B. Per-Result CiteDCG Score Extraction (new functionality):
+    # Command line - module calling (preferred)
+    python -m projects.seval.get_seval_metrics extract_per_result_citedcg --metrics_folder="130949_metrics" --experiment="control" --output_file="scores.json"
     
-    generator = MetricsComparisonMarkdownGenerator(results, "My Report Title")
-    markdown_report = generator.generate_report()
+    # Or direct file execution (also works)
+    python get_seval_metrics.py extract_per_result_citedcg --metrics_folder="130949_metrics" --experiment="control" --output_file="scores.json"
+    
+    # Extract for treatment experiment
+    python -m projects.seval.get_seval_metrics extract_per_result_citedcg --metrics_folder="130949_metrics" --experiment="treatment" --output_file="scores.json"
+    
+    # Filter by specific utterance
+    python -m projects.seval.get_seval_metrics extract_per_result_citedcg --metrics_folder="130949_metrics" --experiment="control" --utterance="scorecard" --output_file="scores.json"
+    
+    # Programmatic usage
+    from projects.seval.get_seval_metrics import PerResultCiteDCGExtractor
+    
+    extractor = PerResultCiteDCGExtractor()
+    extractor.extract(metrics_folder="130949_metrics", experiment="control", output_file="scores.json")
 """
 
-import pandas as pd
-import os
+import json
+import logging
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
-import logging
+from typing import Any, Dict, Optional
+
+# Add parent directory to path for utils imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 import fire
+import pandas as pd
 from fire.core import FireExit
 
 # Import from the utils package (sibling folder)
 from utils.statistics_utils import tdiff
-import json
 
 # Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+
+class PerResultCiteDCGExtractor:
+    """
+    Extract per-result CiteDCG scores from SEVAL results.json files.
+    
+    Extracts individual search result scores (as opposed to aggregated CSV metrics).
+    
+    Provides standardized interface:
+    - Input: metrics_folder name + experiment (auto-constructs path)
+    - Optional utterance filtering
+    - JSON output with per-result scores
+    """
+    
+    def __init__(self):
+        """
+        Initialize extractor.
+        
+        Uses default base path: projects/seval/seval_data/
+        """
+        self.base_path = Path("seval_data")
+    
+    def extract(
+        self,
+        metrics_folder: str,
+        experiment: str,
+        output_file: str,
+        utterance: Optional[str] = None
+    ):
+        """
+        Extract CiteDCG scores from results.json.
+        
+        Args:
+            metrics_folder: Metrics folder name (e.g., "130949_metrics")
+            experiment: "control" or "treatment"
+            output_file: Path for output JSON file
+            utterance: Optional - filter by utterance substring
+        """
+        # Construct path to results.json
+        exp_capitalized = experiment.capitalize()
+        results_path = (
+            self.base_path / metrics_folder /
+            f"Consolidated NDCG and CiteDCG Labels {exp_capitalized}" /
+            "results.json"
+        )
+        
+        if not results_path.exists():
+            logger.error(f"Results file not found: {results_path}")
+            return
+        
+        logger.info(f"Reading CiteDCG data from: {results_path}")
+        logger.info(f"  Metrics folder: {metrics_folder}, Experiment: {experiment}")
+        if utterance:
+            logger.info(f"  Filtering by utterance: '{utterance}'")
+        
+        # Load and parse JSON/JSONL
+        # File may contain multiple JSON objects (one per line)
+        all_data = []
+        try:
+            with open(results_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                # Try to parse as single JSON first
+                try:
+                    data = json.loads(content)
+                    all_data = [data] if isinstance(data, dict) else data
+                except json.JSONDecodeError:
+                    # Fall back to JSONL (one JSON object per line)
+                    for line_num, line in enumerate(content.split('\n'), 1):
+                        line = line.strip()
+                        if line:
+                            try:
+                                all_data.append(json.loads(line))
+                            except json.JSONDecodeError as e:
+                                logger.warning(
+                                    f"Skipping invalid JSON on line {line_num}: {e}"
+                                )
+        except Exception as e:
+            logger.error(f"Failed to load results.json: {e}")
+            return
+        
+        # Extract CiteDCG data from all JSON objects
+        extracted_data = []
+        for data_obj in all_data:
+            extracted_data.extend(self._extract_cite_dcg_data(data_obj))
+        
+        if not extracted_data:
+            logger.warning("No CiteDCG data found in results file")
+            return
+        
+        logger.info(f"Extracted {len(extracted_data)} results")
+        
+        # Filter by utterance if specified
+        if utterance:
+            filtered_data = [
+                item for item in extracted_data
+                if utterance.lower() in item.get('utterance', '').lower()
+            ]
+            logger.info(
+                f"Filtered to {len(filtered_data)} results "
+                f"matching '{utterance}'"
+            )
+            extracted_data = filtered_data
+        
+        # Group by query and write JSON output
+        grouped_data = self._group_by_query(extracted_data)
+        self._write_json_output(grouped_data, output_file)
+        logger.info(f"Wrote {len(grouped_data)} queries to {output_file}")
+    
+    def _extract_cite_dcg_data(self, data: dict) -> list:
+        """Extract CiteDCG scores from JSON structure."""
+        results = []
+        all_search_results = data.get("AllSearchResults", {})
+        
+        for query_id, query_data in all_search_results.items():
+            if not query_data:
+                continue
+            
+            for search_domain, domain_data in query_data.items():
+                if not isinstance(domain_data, list):
+                    continue
+                
+                for domain_item in domain_data:
+                    # Extract plugin metadata
+                    plugin_name = domain_item.get("PluginName", "")
+                    plugin_invocation = domain_item.get(
+                        "PluginInvocation", ""
+                    )
+                    query_string = self._extract_query_from_invocation(
+                        plugin_invocation
+                    )
+                    
+                    results_list = domain_item.get("Results", [])
+                    
+                    for result in results_list:
+                        if "CiteDCGLLMLabel" not in result:
+                            continue
+                        
+                        extracted = self._extract_single_result(
+                            result,
+                            query_id,
+                            search_domain,
+                            plugin_name,
+                            query_string,
+                        )
+                        results.append(extracted)
+        
+        return results
+    
+    def _extract_query_from_invocation(self, invocation_str: str) -> str:
+        """Extract query string from PluginInvocation field."""
+        if not invocation_str:
+            return ""
+        
+        try:
+            # Extract the 'query' parameter value from invocation string
+            # Example: "office365_search({'domain': 'files', ...})"
+            import re
+            match = re.search(r"'query':\s*'([^']+)'", invocation_str)
+            if match:
+                return match.group(1)
+            
+            # Try double quotes
+            match = re.search(r'"query":\s*"([^"]+)"', invocation_str)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            logger.debug(f"Error extracting query from invocation: {e}")
+        
+        return ""
+    
+    def _extract_single_result(
+        self,
+        result: dict,
+        query_id: str,
+        search_domain: str,
+        plugin_name: str = "",
+        query_string: str = "",
+    ) -> dict:
+        """Extract relevant fields from a single result."""
+        extracted = {
+            "query_id": query_id,
+            "search_domain": search_domain,
+            "plugin_name": plugin_name,
+            "query_string": query_string,
+            "ReferenceId": result.get("ReferenceId", ""),
+            "CiteDCGLLMLabel": result.get("CiteDCGLLMLabel", ""),
+            "ResultType": result.get("ResultType", ""),
+            "Type": result.get("Type", ""),
+        }
+        
+        # Extract source metadata
+        source = result.get("Source", {})
+        extracted["Title"] = source.get("Title", "")
+        extracted["Subject"] = source.get("Subject", "")
+        
+        # Extract utterance from prompt
+        prompt_list = result.get("CiteDCGLLMPrompt", [])
+        if prompt_list and len(prompt_list) > 0:
+            prompt_content = prompt_list[0].get("content", "")
+            extracted["utterance"] = self._extract_field_from_prompt(
+                prompt_content, "Utterance = "
+            )
+            extracted["timestamp"] = self._extract_field_from_prompt(
+                prompt_content, "Timestamp =  "
+            )
+        else:
+            extracted["utterance"] = ""
+            extracted["timestamp"] = ""
+        
+        return extracted
+    
+    def _extract_field_from_prompt(
+        self, prompt_content: str, field_name: str
+    ) -> str:
+        """Extract field value from prompt content."""
+        if not prompt_content or field_name not in prompt_content:
+            return ""
+        
+        try:
+            start_idx = prompt_content.find(field_name)
+            if start_idx == -1:
+                return ""
+            
+            start_idx += len(field_name)
+            end_idx = prompt_content.find("\n", start_idx)
+            
+            if end_idx == -1:
+                value = prompt_content[start_idx:].strip()
+            else:
+                value = prompt_content[start_idx:end_idx].strip()
+            
+            # Remove quotes
+            if value.startswith('"') and value.endswith('"'):
+                value = value[1:-1]
+            
+            return value
+        except Exception as e:
+            logger.warning(f"Error extracting {field_name}: {e}")
+            return ""
+    
+    def _group_by_query(self, data: list) -> list:
+        """Group results by query/utterance, domain, and query_string."""
+        from collections import defaultdict
+        
+        query_groups = defaultdict(lambda: {"results": []})
+        
+        for item in data:
+            utterance = item.get("utterance", "")
+            query_id = item.get("query_id", "")
+            
+            key = utterance
+            
+            if not query_groups[key].get("query_id"):
+                query_groups[key]["query_id"] = query_id
+                query_groups[key]["utterance"] = utterance
+                query_groups[key]["timestamp"] = item.get("timestamp", "")
+            
+            query_groups[key]["results"].append(item)
+        
+        # Convert to list with hierarchical grouping
+        grouped_list = []
+        for group_data in query_groups.values():
+            results = group_data["results"]
+            
+            # Group by (domain, query_string) for search-level grouping
+            search_groups = defaultdict(list)
+            for result in results:
+                domain = result.get("search_domain", "unknown")
+                query_string = result.get("query_string", "")
+                plugin_name = result.get("plugin_name", "")
+                key = (domain, query_string, plugin_name)
+                
+                # Remove redundant fields for result item
+                result_item = {
+                    k: v
+                    for k, v in result.items()
+                    if k not in [
+                        "query_id",
+                        "utterance",
+                        "timestamp",
+                        "search_domain",
+                        "plugin_name",
+                        "query_string",
+                    ]
+                }
+                search_groups[key].append(result_item)
+            
+            # Create search entries
+            searches = []
+            total_results = 0
+            all_scores = []
+            
+            for (domain, query_string, plugin_name), search_results in (
+                search_groups.items()
+            ):
+                # Calculate stats for this search
+                scores = [
+                    r.get("CiteDCGLLMLabel", 0)
+                    for r in search_results
+                    if r.get("CiteDCGLLMLabel")
+                ]
+                avg_score = (
+                    round(sum(scores) / len(scores), 2) if scores else None
+                )
+                
+                searches.append(
+                    {
+                        "search_domain": domain,
+                        "plugin_name": plugin_name,
+                        "query_string": query_string,
+                        "result_count": len(search_results),
+                        "avg_cite_dcg_label": avg_score,
+                        "results": search_results,
+                    }
+                )
+                
+                total_results += len(search_results)
+                all_scores.extend(scores)
+            
+            # Sort searches by domain then query_string
+            searches.sort(
+                key=lambda x: (x["search_domain"], x["query_string"])
+            )
+            
+            # Calculate overall average
+            overall_avg = (
+                round(sum(all_scores) / len(all_scores), 2)
+                if all_scores
+                else None
+            )
+            
+            # Count results by domain
+            domain_counts = {}
+            for search in searches:
+                domain = search["search_domain"]
+                domain_counts[domain] = (
+                    domain_counts.get(domain, 0) + search["result_count"]
+                )
+            
+            ordered_group = {
+                "query_id": group_data.get("query_id", ""),
+                "utterance": group_data.get("utterance", ""),
+                "timestamp": group_data.get("timestamp", ""),
+                "total_results": total_results,
+                "avg_cite_dcg_label": overall_avg,
+                "results_by_domain": domain_counts,
+                "searches": searches,
+            }
+            grouped_list.append(ordered_group)
+        
+        # Sort by query_id
+        grouped_list.sort(key=lambda x: int(x.get("query_id", 0)))
+        return grouped_list
+    
+    def _write_json_output(self, data: list, output_file: str):
+        """Write data to JSON file."""
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
 
 class ReasoningClassExtractor:
     """
@@ -1076,11 +1469,110 @@ def generate_optimal_switching_json(analysis_results: Dict[str, Any]) -> Dict[st
     return optimal_switching
 
 
-def main(
+def list_csv_files(
     job_path: str,
-    list_files: bool = False,
-    summary: bool = False,
-    citedcg_report: bool = False,
+    metrics_file_name: str = "all_metrics_paired.csv",
+    metrics_relative_path: str = "offline_scorecard_generator_output"
+) -> None:
+    """
+    List all available CSV files in the metrics job folder.
+    
+    Args:
+        job_path: Full path to the job folder (e.g., "/path/to/100335_metrics")
+        metrics_file_name: Name of the main metrics CSV file
+        metrics_relative_path: Relative path from job folder to metrics files
+    
+    Example:
+        python -m projects.seval.get_seval_metrics list_csv_files \\
+            --job_path="c:/path/to/100335_metrics"
+    """
+    try:
+        reader = MetricsDataReader(
+            job_path=job_path,
+            metrics_file_name=metrics_file_name,
+            metrics_relative_path=metrics_relative_path
+        )
+        
+        job_name = Path(job_path).name
+        available_files = reader.list_available_files()
+        
+        print(f"\n=== Available Files in {job_name} ===")
+        print(f"Total files: {len(available_files)}")
+        if available_files:
+            print("Files:")
+            for i, file_name in enumerate(available_files, 1):
+                print(f"  {i}. {file_name}")
+        else:
+            print("No CSV files found")
+            
+    except Exception as e:
+        logger.error(f"Error listing files in {job_path}: {e}")
+        sys.exit(1)
+
+
+def get_metrics_summary(
+    job_path: str,
+    add_reasoning_class: bool = False,
+    reasoning_json_path: Optional[str] = None,
+    metrics_file_name: str = "all_metrics_paired.csv",
+    metrics_relative_path: str = "offline_scorecard_generator_output"
+) -> None:
+    """
+    Generate comprehensive summary of the metrics data.
+    
+    Args:
+        job_path: Full path to the job folder (e.g., "/path/to/100335_metrics")
+        add_reasoning_class: Add reasoning class column based on utterance matching
+        reasoning_json_path: Path to JSON file containing reasoning class mappings
+        metrics_file_name: Name of the main metrics CSV file
+        metrics_relative_path: Relative path from job folder to metrics files
+    
+    Example:
+        python -m projects.seval.get_seval_metrics get_metrics_summary \\
+            --job_path="c:/path/to/100335_metrics"
+    """
+    try:
+        analyzer = MetricsAnalyzer(
+            job_path=job_path,
+            metrics_file_name=metrics_file_name,
+            metrics_relative_path=metrics_relative_path
+        )
+        
+        df = analyzer.get_dataframe(
+            add_reasoning_class=add_reasoning_class,
+            reasoning_json_path=reasoning_json_path
+        )
+        
+        job_name = Path(job_path).name
+        print(f"\n=== Comprehensive Summary for {job_name} ===")
+        print(f"Total rows: {len(df)}")
+        print(f"Total columns: {len(df.columns)}")
+        
+        if 'utterance' in df.columns:
+            print(f"Unique utterances: {df['utterance'].nunique()}")
+        
+        if add_reasoning_class and 'reasoning_class' in df.columns:
+            mapped_count = (df['reasoning_class'] != '').sum()
+            unique_classes = df[df['reasoning_class'] != '']['reasoning_class'].nunique()
+            print(f"Reasoning classes: {mapped_count}/{len(df)} utterances mapped to {unique_classes} unique classes")
+        
+        missing_values_total = df.isnull().sum().sum()
+        print(f"Missing values (total): {missing_values_total}")
+        
+        type_counts = {}
+        for dtype in df.dtypes.values:
+            type_name = str(dtype)
+            type_counts[type_name] = type_counts.get(type_name, 0) + 1
+        
+        print(f"Data types: {dict(type_counts)}")
+        
+    except Exception as e:
+        logger.error(f"Error generating summary for {job_path}: {e}")
+        sys.exit(1)
+
+
+def generate_citedcg_report(
+    job_path: str,
     add_reasoning_class: bool = False,
     reasoning_json_path: Optional[str] = None,
     switching_json_path: Optional[str] = None,
@@ -1090,203 +1582,154 @@ def main(
     paired_test: bool = True
 ) -> None:
     """
-    Read and analyze Seval metrics from the job folder.
+    Generate CiteDCG report in markdown format and save to file.
+    
+    Generates a performance comparison report sorted by performance gain.
+    If add_reasoning_class=True, segments by reasoning class; otherwise segments by 'segment 2' column.
     
     Args:
-        job_path: Full path to the job folder (e.g., "/path/to/100335_metrics") (required)
-        list_files: List all available CSV files in the job folder
-        summary: Generate comprehensive summary of the metrics
-        citedcg_report: Generate CiteDCG report in markdown format and save to file (sorted by performance gain).
-                       If add_reasoning_class=True, segments by reasoning class; otherwise segments by 'segment 2' column.
-        add_reasoning_class: Add reasoning class column based on utterance matching with JSON data
-        reasoning_json_path: Path to JSON file containing reasoning class mappings (required if add_reasoning_class=True)
-        switching_json_path: Path to JSON file containing switching strategy (list of reasoning classes that should use treatment)
-        output_optimal_switching: Generate optimal switching JSON output organized by metric with reasoning classes 
-                                 categorized based on control vs treatment performance (requires add_reasoning_class=True)
-        metrics_file_name: Name of the main metrics CSV file (default: "all_metrics_paired.csv")
-        metrics_relative_path: Relative path from job folder to metrics files 
-                              (default: "offline_scorecard_generator_output")
-        paired_test: Use paired t-test (True) or independent t-test (False) for statistical analysis (default: True)
+        job_path: Full path to the job folder (e.g., "/path/to/100335_metrics")
+        add_reasoning_class: Add reasoning class column based on utterance matching
+        reasoning_json_path: Path to JSON file containing reasoning class mappings
+        switching_json_path: Path to JSON file containing switching strategy
+        output_optimal_switching: Generate optimal switching JSON output
+        metrics_file_name: Name of the main metrics CSV file
+        metrics_relative_path: Relative path from job folder to metrics files
+        paired_test: Use paired t-test (True) or independent t-test (False)
     
-    Example usage:
-        # Basic usage - read main metrics file
-        python -m tools.get_seval_metrics "c:/path/to/100335_metrics"
-        
-        # Add reasoning class column from JSON data
-        python -m tools.get_seval_metrics "c:/path/to/100335_metrics" --add_reasoning_class=True --reasoning_json_path="path/to/data.json"
-        
-        # Generate CiteDCG report by reasoning class (requires reasoning class data)
-        python -m tools.get_seval_metrics "c:/path/to/100335_metrics" --citedcg_report=True --add_reasoning_class=True --reasoning_json_path="path/to/data.json"
-        
-        # Generate CiteDCG report with switching strategy comparison
-        python -m tools.get_seval_metrics "c:/path/to/100335_metrics" --citedcg_report=True --add_reasoning_class=True --reasoning_json_path="path/to/data.json" --switching_json_path="path/to/switching.json"
-        
-        # Generate optimal switching JSON output organized by metric
-        python -m tools.get_seval_metrics "c:/path/to/100335_metrics" --citedcg_report=True --add_reasoning_class=True --reasoning_json_path="path/to/data.json" --output_optimal_switching=True
-        
-        # Generate traditional CiteDCG report by segment (default behavior)
-        python -m tools.get_seval_metrics "c:/path/to/100335_metrics" --citedcg_report=True
-        
+    Example:
+        python -m projects.seval.get_seval_metrics generate_citedcg_report \\
+            --job_path="c:/path/to/100335_metrics" \\
+            --add_reasoning_class=True \\
+            --reasoning_json_path="path/to/data.json"
     """
     try:
-        # Initialize reader
-        reader = MetricsDataReader(
-            job_path=job_path,
-            metrics_file_name=metrics_file_name,
-            metrics_relative_path=metrics_relative_path
-        )
-        
-        # Get job name from path for display
         job_name = Path(job_path).name
+        print(f"\n=== Generating CiteDCG Report for {job_name} ===")
         
-        # List files option
-        if list_files:
-            available_files = reader.list_available_files()
-            print(f"\n=== Available Files in {job_name} ===")
-            print(f"Total files: {len(available_files)}")
-            if available_files:
-                print("Files:")
-                for i, file_name in enumerate(available_files, 1):
-                    print(f"  {i}. {file_name}")
-            else:
-                print("No CSV files found")
-            return
+        # Define target CiteDCG metrics
+        target_columns = [
+            'citedcg_one_centric_control', 'citedcg_one_centric_treatment',
+            'citedcg_num_enterprise_cites_control', 'citedcg_num_enterprise_cites_treatment'
+        ]
         
-        # Generate CiteDCG report using the new architecture
-        if citedcg_report:
-            print(f"\n=== Generating CiteDCG Report for {job_name} ===")
-            
-            # Define target CiteDCG metrics
-            target_columns = [
-                'citedcg_one_centric_control', 'citedcg_one_centric_treatment',
-                'citedcg_num_enterprise_cites_control', 'citedcg_num_enterprise_cites_treatment'
-            ]
-            
-            # Initialize analyzer with job configuration
-            analyzer = MetricsAnalyzer(
-                job_path=job_path,
-                metrics_file_name=metrics_file_name,
-                metrics_relative_path=metrics_relative_path
-            )
-            
-            # Add reasoning class if requested
-            if add_reasoning_class and reasoning_json_path:
-                df_with_reasoning = analyzer.get_dataframe(
-                    add_reasoning_class=True, 
-                    reasoning_json_path=reasoning_json_path
-                )
-                
-                # Extract metrics comparison results (with reasoning class analysis and proper statistical testing)
-                analysis_results = analyzer.extract_metric_pairs(target_columns, segment_column='reasoning_class', paired_test=paired_test, use_enhanced_df=df_with_reasoning, switching_json_path=switching_json_path)
-            else:
-                # Extract metrics comparison results (with segment 2 analysis and proper statistical testing)
-                analysis_results = analyzer.extract_metric_pairs(target_columns, segment_column='segment 2', paired_test=paired_test, switching_json_path=switching_json_path)
-            
-            # Generate markdown report
-            if add_reasoning_class and reasoning_json_path:
-                report_title = "CiteDCG Metrics by Reasoning Class"
-            else:
-                report_title = "CiteDCG Metrics by Segment"
-                
-            markdown_generator = MetricsComparisonMarkdownGenerator(
-                analysis_results, 
-                report_title=report_title
-            )
-            report_content = markdown_generator.generate_report()
-            
-            # Save to file with job-specific name
-            job_base_name = job_name.replace('_metrics', '') if job_name.endswith('_metrics') else job_name
-            output_file = Path(job_path).parent / f"{job_base_name}_CiteDCG_Report.md"
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(report_content)
-            
-            print(f"✅ CiteDCG report saved to: {output_file}")
-            if add_reasoning_class and reasoning_json_path:
-                print(f"📊 Report contains {analysis_results['metrics_count']} specific CiteDCG metrics across {len(analysis_results['segments'])} reasoning classes")
-            else:
-                print(f"📊 Report contains {analysis_results['metrics_count']} specific CiteDCG metrics across {len(analysis_results['segments'])} segments")
-            
-            # Generate optimal switching JSON output if requested
-            if output_optimal_switching and add_reasoning_class and reasoning_json_path:
-                optimal_switching_output = generate_optimal_switching_json(analysis_results)
-                json_output_file = Path(job_path).parent / f"{job_base_name}_Optimal_Switching.json"
-                with open(json_output_file, 'w', encoding='utf-8') as f:
-                    json.dump(optimal_switching_output, f, indent=2)
-                print(f"📄 Optimal switching JSON saved to: {json_output_file}")
-            
-            # Print performance summary to console
-            print(f"\nPerformance Summary (sorted by gain):")
-            for rank, metric_data in enumerate(analysis_results['metric_performance'][:5], 1):  # Top 5
-                metric_name = metric_data['metric_name'].upper()
-                change = metric_data['percent_change']
-                direction = "🔼" if change > 0 else "🔽" if change < 0 else "➡️"
-                print(f"  {rank}. {metric_name}: {change:+.1f}% {direction}")
-            
-            if analysis_results['metrics_count'] > 5:
-                print(f"  ... and {analysis_results['metrics_count'] - 5} more metrics")
-            
-            return
-
-        
-        # Generate summary option
-        if summary:
-            print(f"\n=== Comprehensive Summary for {job_name} ===")
-            
-            # Use analyzer to get enhanced summary
-            analyzer = MetricsAnalyzer(
-                job_path=job_path,
-                metrics_file_name=metrics_file_name,
-                metrics_relative_path=metrics_relative_path
-            )
-            
-            df = analyzer.get_dataframe(
-                add_reasoning_class=add_reasoning_class,
-                reasoning_json_path=reasoning_json_path
-            )
-            
-            print(f"Total rows: {len(df)}")
-            print(f"Total columns: {len(df.columns)}")
-            
-            if 'utterance' in df.columns:
-                print(f"Unique utterances: {df['utterance'].nunique()}")
-            
-            # Show reasoning class info if added
-            if add_reasoning_class and 'reasoning_class' in df.columns:
-                mapped_count = (df['reasoning_class'] != '').sum()
-                unique_classes = df[df['reasoning_class'] != '']['reasoning_class'].nunique()
-                print(f"Reasoning classes: {mapped_count}/{len(df)} utterances mapped to {unique_classes} unique classes")
-            
-            missing_values_total = df.isnull().sum().sum()
-            print(f"Missing values (total): {missing_values_total}")
-            
-            # Show data types
-            type_counts = {}
-            for dtype in df.dtypes.values:
-                type_name = str(dtype)
-                type_counts[type_name] = type_counts.get(type_name, 0) + 1
-            
-            print(f"Data types: {dict(type_counts)}")
-            return
-        
-        # Default: Read main metrics file
+        # Initialize analyzer with job configuration
         analyzer = MetricsAnalyzer(
             job_path=job_path,
             metrics_file_name=metrics_file_name,
             metrics_relative_path=metrics_relative_path
         )
         
-        # Get dataframe with optional reasoning class column
+        # Add reasoning class if requested
+        if add_reasoning_class and reasoning_json_path:
+            df_with_reasoning = analyzer.get_dataframe(
+                add_reasoning_class=True,
+                reasoning_json_path=reasoning_json_path
+            )
+            
+            # Extract metrics comparison results
+            analysis_results = analyzer.extract_metric_pairs(
+                target_columns,
+                segment_column='reasoning_class',
+                paired_test=paired_test,
+                use_enhanced_df=df_with_reasoning,
+                switching_json_path=switching_json_path
+            )
+        else:
+            # Extract metrics comparison results with segment 2 analysis
+            analysis_results = analyzer.extract_metric_pairs(
+                target_columns,
+                segment_column='segment 2',
+                paired_test=paired_test,
+                switching_json_path=switching_json_path
+            )
+        
+        # Generate markdown report
+        if add_reasoning_class and reasoning_json_path:
+            report_title = "CiteDCG Metrics by Reasoning Class"
+        else:
+            report_title = "CiteDCG Metrics by Segment"
+        
+        markdown_generator = MetricsComparisonMarkdownGenerator(
+            analysis_results,
+            report_title=report_title
+        )
+        report_content = markdown_generator.generate_report()
+        
+        # Save to file with job-specific name
+        job_base_name = job_name.replace('_metrics', '') if job_name.endswith('_metrics') else job_name
+        output_file = Path(job_path).parent / f"{job_base_name}_CiteDCG_Report.md"
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(report_content)
+        
+        print(f"✅ CiteDCG report saved to: {output_file}")
+        if add_reasoning_class and reasoning_json_path:
+            print(f"📊 Report contains {analysis_results['metrics_count']} specific CiteDCG metrics across {len(analysis_results['segments'])} reasoning classes")
+        else:
+            print(f"📊 Report contains {analysis_results['metrics_count']} specific CiteDCG metrics across {len(analysis_results['segments'])} segments")
+        
+        # Generate optimal switching JSON output if requested
+        if output_optimal_switching and add_reasoning_class and reasoning_json_path:
+            optimal_switching_output = generate_optimal_switching_json(analysis_results)
+            json_output_file = Path(job_path).parent / f"{job_base_name}_Optimal_Switching.json"
+            with open(json_output_file, 'w', encoding='utf-8') as f:
+                json.dump(optimal_switching_output, f, indent=2)
+            print(f"📄 Optimal switching JSON saved to: {json_output_file}")
+        
+        # Print performance summary to console
+        print(f"\nPerformance Summary (sorted by gain):")
+        for rank, metric_data in enumerate(analysis_results['metric_performance'][:5], 1):
+            metric_name = metric_data['metric_name'].upper()
+            change = metric_data['percent_change']
+            direction = "🔼" if change > 0 else "🔽" if change < 0 else "➡️"
+            print(f"  {rank}. {metric_name}: {change:+.1f}% {direction}")
+        
+        if analysis_results['metrics_count'] > 5:
+            print(f"  ... and {analysis_results['metrics_count'] - 5} more metrics")
+            
+    except Exception as e:
+        logger.error(f"Error generating CiteDCG report for {job_path}: {e}")
+        sys.exit(1)
+
+
+def read_metrics(
+    job_path: str,
+    add_reasoning_class: bool = False,
+    reasoning_json_path: Optional[str] = None,
+    metrics_file_name: str = "all_metrics_paired.csv",
+    metrics_relative_path: str = "offline_scorecard_generator_output"
+) -> None:
+    """
+    Read and display basic information about the metrics data.
+    
+    Args:
+        job_path: Full path to the job folder (e.g., "/path/to/100335_metrics")
+        add_reasoning_class: Add reasoning class column based on utterance matching
+        reasoning_json_path: Path to JSON file containing reasoning class mappings
+        metrics_file_name: Name of the main metrics CSV file
+        metrics_relative_path: Relative path from job folder to metrics files
+    
+    Example:
+        python -m projects.seval.get_seval_metrics read_metrics \\
+            --job_path="c:/path/to/100335_metrics"
+    """
+    try:
+        analyzer = MetricsAnalyzer(
+            job_path=job_path,
+            metrics_file_name=metrics_file_name,
+            metrics_relative_path=metrics_relative_path
+        )
+        
         df = analyzer.get_dataframe(
             add_reasoning_class=add_reasoning_class,
             reasoning_json_path=reasoning_json_path
         )
         
-        # Display basic information
+        job_name = Path(job_path).name
         print(f"\n=== Metrics Summary for {job_name} ===")
         print(f"Dataset shape: {df.shape}")
         print(f"Columns: {len(df.columns)}")
         
-        # Show reasoning class info if added
         if add_reasoning_class and 'reasoning_class' in df.columns:
             mapped_count = (df['reasoning_class'] != '').sum()
             unique_classes = df[df['reasoning_class'] != '']['reasoning_class'].nunique()
@@ -1316,7 +1759,6 @@ def main(
         if len(df.columns) > 10:
             print(f"  ... and {len(df.columns) - 10} more columns")
         
-        # Show available files
         print(f"\n=== Available Files in {job_name} ===")
         reader = MetricsDataReader(
             job_path=job_path,
@@ -1333,14 +1775,81 @@ def main(
             print(f"  ... and {len(available_files) - 10} more files")
             
     except Exception as e:
-        logger.error(f"Error processing {job_path}: {e}")
+        logger.error(f"Error reading metrics from {job_path}: {e}")
+        sys.exit(1)
+
+
+def extract_per_result_citedcg(
+    metrics_folder: str,
+    experiment: str,
+    output_file: str,
+    utterance: Optional[str] = None
+) -> None:
+    """
+    Extract per-result CiteDCG scores from SEVAL results.json.
+    
+    Extracts individual search result scores (as opposed to aggregated CSV metrics).
+    
+    This function reads CiteDCG scores from the consolidated results file
+    and outputs them in JSON format. Provides per-result scores
+    with optional filtering by utterance.
+    
+    Args:
+        metrics_folder: Metrics folder name (e.g., "130949_metrics")
+        experiment: Experiment name - "control" or "treatment"
+        output_file: Path for output JSON file
+        utterance: Optional - filter results by utterance substring
+    
+    Example usage:
+        # Extract all per-result CiteDCG scores for control experiment (module calling - preferred)
+        python -m projects.seval.get_seval_metrics extract_per_result_citedcg \\
+            --metrics_folder="130949_metrics" \\
+            --experiment="control" \\
+            --output_file="scores.json"
+        
+        # Or direct file execution (also works)
+        python get_seval_metrics.py extract_per_result_citedcg \\
+            --metrics_folder="130949_metrics" \\
+            --experiment="control" \\
+            --output_file="scores.json"
+        
+        # Extract for treatment experiment
+        python -m projects.seval.get_seval_metrics extract_per_result_citedcg \\
+            --metrics_folder="130949_metrics" \\
+            --experiment="treatment" \\
+            --output_file="scores.json"
+        
+        # Filter by specific utterance
+        python -m projects.seval.get_seval_metrics extract_per_result_citedcg \\
+            --metrics_folder="130949_metrics" \\
+            --experiment="control" \\
+            --utterance="scorecard" \\
+            --output_file="scorecard_scores.json"
+    """
+    try:
+        extractor = PerResultCiteDCGExtractor()
+        extractor.extract(
+            metrics_folder=metrics_folder,
+            experiment=experiment,
+            output_file=output_file,
+            utterance=utterance
+        )
+    except Exception as e:
+        logger.error(f"Error extracting CiteDCG scores: {e}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
     # Use fire for command line arguments
+    # Exposes all modular functions as commands
     try:
-        fire.Fire(main)
+        fire.Fire({
+            'list_csv_files': list_csv_files,
+            'get_metrics_summary': get_metrics_summary,
+            'generate_citedcg_report': generate_citedcg_report,
+            'read_metrics': read_metrics,
+            'extract_per_result_citedcg': extract_per_result_citedcg
+        })
     except FireExit as e:
         # Handle Fire's exit (including --help) gracefully in debug mode
         # FireExit with code 0 means successful exit (like --help)

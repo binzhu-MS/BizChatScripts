@@ -51,7 +51,7 @@
             }
         },
         {
-            "name": "� Example: Simple Scorer (RSP)",
+            "name": "📚 Example: Simple Scorer (RSP)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/using_llms/example_simple_scorer.py",
@@ -108,7 +108,7 @@
             }
         },
         {
-            "name": "�📚 Example: Direct API Usage",
+            "name": "📚 Example: Direct API Usage",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/using_llms/example_direct_api.py",
@@ -282,7 +282,7 @@
         // PRODUCTION APPLICATIONS
         // ============================================
         {
-            "name": "Utterance Complexity Classifier",
+            "name": "⚙️ Utterance Complexity Classifier",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/using_llms/utterance_complexity_classifier.py",
@@ -302,7 +302,7 @@
             }
         },
         {
-            "name": "Extract Utterance Templates",
+            "name": "⚙️ Extract Utterance Templates",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/personalization/extract_templates.py",
@@ -317,7 +317,7 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "Utterance Personalizer (Test)",
+            "name": "⚙️ Utterance Personalizer (Test)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/using_llms/utterance_personalizer.py",
@@ -335,7 +335,7 @@
             }
         },
         {
-            "name": "Utterance Personalizer (Full)",
+            "name": "⚙️ Utterance Personalizer (Full)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/using_llms/utterance_personalizer.py",
@@ -353,7 +353,7 @@
             }
         },
         {
-            "name": "Run Example Text Summarizer",
+            "name": "⚙️ Run Example Text Summarizer",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/using_llms/example_text_summarizer.py",
@@ -365,7 +365,7 @@
             }
         },
         {
-            "name": "Run Custom Applier",
+            "name": "⚙️ Run Custom Applier",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/using_llms/example_custom_applier.py",
@@ -377,7 +377,7 @@
             }
         },
         {
-            "name": "Analyze Complexity Statistics",
+            "name": "⚙️ Analyze Complexity Statistics",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/complexity_statistics.py",
@@ -396,7 +396,7 @@
             }
         },
         {
-            "name": "Extract CoT Data to Playground Format",
+            "name": "⚙️ Extract CoT Data to Playground Format",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/extract_data_to_playground_format.py",
@@ -415,7 +415,7 @@
             }
         },
         {
-            "name": "Extract Chat Data to Playground Format",
+            "name": "⚙️ Extract Chat Data to Playground Format",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/extract_data_to_playground_format.py",
@@ -434,7 +434,7 @@
             }
         },
         {
-            "name": "Extract All Data to Playground Format",
+            "name": "⚙️ Extract All Data to Playground Format",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/extract_data_to_playground_format.py",
@@ -453,7 +453,7 @@
             }
         },
         {
-            "name": "Parse Playground Results",
+            "name": "⚙️ Parse Playground Results",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/parse_playground_results.py",
@@ -470,7 +470,7 @@
             }
         },
         {
-            "name": "Analyze Playground Results Statistics",
+            "name": "⚙️ Analyze Playground Results Statistics",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/playground_results_statistics.py",
@@ -489,7 +489,7 @@
             }
         },
         {
-            "name": "Filter Optimal Switching Utterances",
+            "name": "⚙️ Filter Optimal Switching Utterances",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/filter_optimal_switching.py",
@@ -507,7 +507,7 @@
             }
         },
         {
-            "name": "Create Test Data for Utterance Selector",
+            "name": "⚙️ Create Test Data for Utterance Selector",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/testdata_for_utterance_selector.py",
@@ -524,7 +524,7 @@
             }
         },
         {
-            "name": "Utterance Selector (Test Data)",
+            "name": "⚙️ Utterance Selector (Test Data)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/using_llms/utterance_selector.py",
@@ -542,7 +542,7 @@
             }
         },
         {
-            "name": "Utterance Selector (Full Production)",
+            "name": "⚙️ Utterance Selector (Full Production)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/using_llms/utterance_selector.py",
@@ -560,7 +560,7 @@
             }
         },
         {
-            "name": "Analyze Statistics of Selected Utterances",
+            "name": "⚙️ Analyze Statistics of Selected Utterances",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/selected_utterance_statistics.py",
@@ -576,7 +576,7 @@
             }
         },
         {
-            "name": "Remove Duplicates from Selected Utterances",
+            "name": "⚙️ Remove Duplicates from Selected Utterances",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_select_complex_utterances/deduplicate_selected_utterances.py",
@@ -592,7 +592,7 @@
             }
         },
         {
-            "name": "Excel to TSV File",
+            "name": "⚙️ Excel to TSV File",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/tools/excel_to_tsv.py",
@@ -688,7 +688,7 @@
             }
         },
         {
-            "name": "📊 Convert Playground JSON to TSV (SEVAL Format)",
+            "name": "🔄 Convert Playground JSON to TSV (SEVAL Format)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/tools/data_conversion_toolkit.py",
@@ -1100,7 +1100,7 @@
         // Files Processing
         // ============================================
         {
-            "name": "📁 Files Extractor",
+            "name": "📁 File Extractor - Analyze Folder",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/gpt5_gen_complex_utterances/synthetic_tenants/files_extractor.py",
@@ -1392,17 +1392,24 @@
             }
         },
         // ============================================
-        // SEVAL Job Processing
+        // SEVAL ANALYSIS - Complete Test Suite
         // ============================================
+        // Organized by Python file for easier navigation:
+        // 1. seval_analysis_toolkit.py - Query search, mappings, conversation details
+        // 2. get_seval_metrics.py - Metrics reading, CiteDCG extraction, reports  
+        // 3. merge_seval_results.py - Merge conversation details with metrics
+        // 4. seval_metrics_analysis.py - Statistical analysis and comparisons
+        // ============================================
+        // --- seval_analysis_toolkit.py: Query & Conversation Analysis ---
         {
-            "name": "🔍 Search Query to Find Matching Raw Seval Files",
+            "name": "🔬 SEVAL - Search Query to Find Matching Raw Files",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
             "args": [
                 "search_query",
                 "--query=Search my Sent Items for \"DB_Migration_Test_",
-                "--search_dir=seval_data/232361_scraping_raw_data_output",
+                "--search_dir=seval_data/130949_scraping_raw_data_output",
                 "--exp=both",
                 "--threads=16"
             ],
@@ -1414,15 +1421,15 @@
             }
         },
         {
-            "name": "📋 Generate Query Mappings (SEVAL)",
+            "name": "🔬 SEVAL - Generate Query Mappings",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
             "args": [
                 "extract_query_mappings",
                 "--threads=16",
-                "--search_dir=seval_data/232361_scraping_raw_data_output",
-                "--output_file=results/query_file_mappings.tsv"
+                "--search_dir=seval_data/130949_scraping_raw_data_output",
+                "--output_file=results/130949_query_file_mappings.tsv"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/seval",
@@ -1432,7 +1439,7 @@
             }
         },
         {
-            "name": "⚡ Fast Search Using Mappings (SEVAL)",
+            "name": "🔬 SEVAL - Fast Search Using Mappings",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
@@ -1450,7 +1457,7 @@
             }
         },
         {
-            "name": "🔍 Search with Console Stats & File Output (SEVAL)",
+            "name": "🔬 SEVAL - Search with Console Stats & File Output",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
@@ -1458,7 +1465,7 @@
                 "analyze_search_results",
                 "--mappings_file=results/query_file_mappings.tsv",
                 "--output_file=results/search_stats_with_console.tsv",
-                "--search_dir=seval_data/232361_scraping_raw_data_output",
+                "--search_dir=seval_data/130949_scraping_raw_data_output",
                 "--threads=8",
                 "--max_queries=20"
             ],
@@ -1470,7 +1477,7 @@
             }
         },
         {
-            "name": "📊 Extract Model Statistics (SEVAL)",
+            "name": "🔬 SEVAL - Extract Model Statistics",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
@@ -1489,7 +1496,7 @@
             }
         },
         {
-            "name": "🔍 Search Results Analysis (SEVAL) -- Debugging",
+            "name": "🔬 SEVAL - Search Results Analysis (Debugging)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
@@ -1497,7 +1504,7 @@
                 "analyze_search_results",
                 "--mappings_file=results/query_file_mappings.tsv",
                 "--output_file=results/search_results_analysis.tsv",
-                "--search_dir=seval_data/232361_scraping_raw_data_output",
+                "--search_dir=seval_data/130949_scraping_raw_data_output",
                 "--threads=8",
                 "--max_queries=50"
             ],
@@ -1509,15 +1516,15 @@
             }
         },
         {
-            "name": "🔍 Search Results Analysis - Full (SEVAL)",
+            "name": "🔬 SEVAL - Search Results Analysis (Full)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
             "args": [
                 "analyze_search_results",
                 "--mappings_file=results/query_file_mappings.tsv",
-                "--search_dir=seval_data/232361_scraping_raw_data_output",
-                "--output_file=results/232361_search_results_analysis_full.tsv",
+                "--search_dir=seval_data/130949_scraping_raw_data_output",
+                "--output_file=results/130949_search_results_analysis_full.tsv",
                 "--threads=16"
             ],
             "console": "integratedTerminal",
@@ -1528,7 +1535,7 @@
             }
         },
         {
-            "name": "📋 SEVAL - Extract Query Mappings",
+            "name": "🔬 SEVAL - Extract Query Mappings",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
@@ -1556,20 +1563,187 @@
         // - Markdown report generation
         // ============================================
         {
-            "name": "Extract Conversation Details From A Seval Control/Experiment File",
+            "name": "🔬 SEVAL - Extract Conversation Details",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
             "args": [
                 "extract_conversation_details",
                 "--input_file",
-                "${workspaceFolder}/projects/seval/seval_data/232361_scraping_raw_data_output/experiment_sydney_response_4151ee7d-951f-4110-8b32-798fee21f56a_235d8666-86cf-4c10-ad21-2f82f15542b4.json",
+                "${workspaceFolder}/projects/seval/seval_data/130949_scraping_raw_data_output/control_sydney_response_6e243d6f-6f56-453e-a33e-6762be80bc4d_8e6f4a58-62e8-4557-becd-98523020147c.json",
                 "--output_file",
-                "${workspaceFolder}/projects/seval/results/232361_experiment_4151ee7d_conv_details.md"
+                "${workspaceFolder}/projects/seval/results/130949_control_6e243d6f_conv_details.json"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
+        // SEVAL METRICS READER - Modular Functions
+        // ============================================
+        // New modular architecture for get_seval_metrics.py
+        // Each function can be called independently:
+        // 1. list_csv_files - List available CSV files
+        // 2. get_metrics_summary - Comprehensive metrics summary
+        // 3. generate_citedcg_report - Generate CiteDCG markdown report
+        // 4. read_metrics - Read and display basic metrics info
+        // 5. extract_per_result_citedcg - Extract per-result CiteDCG scores
+        // ============================================
+        {
+            "name": "🔬 SEVAL - List CSV Files",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "list_csv_files",
+                "--job_path=seval_data/130949_metrics"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Get Metrics Summary",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "get_metrics_summary",
+                "--job_path=seval_data/130949_metrics"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Read Metrics",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "read_metrics",
+                "--job_path=seval_data/130949_metrics"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Generate CiteDCG Report (by Segment)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "generate_citedcg_report",
+                "--job_path=seval_data/130949_metrics"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Generate CiteDCG Report (by Reasoning Class)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "generate_citedcg_report",
+                "--job_path=seval_data/130949_metrics",
+                "--add_reasoning_class=True",
+                "--reasoning_json_path=../../data/complex_queries_selected_fr_1k_golden_set.tsv"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Extract Per-Result CiteDCG (Control)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "extract_per_result_citedcg",
+                "--metrics_folder=130949_metrics",
+                "--experiment=control",
+                "--output_file=results/130949_citedcg_scores_control.json"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Extract Per-Result CiteDCG (Treatment)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "extract_per_result_citedcg",
+                "--metrics_folder=130949_metrics",
+                "--experiment=treatment",
+                "--output_file=results/130949_citedcg_scores_treatment.json"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Extract Per-Result CiteDCG (Filter by Utterance)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "extract_per_result_citedcg",
+                "--metrics_folder=130949_metrics",
+                "--experiment=control",
+                "--utterance=scorecard",
+                "--output_file=results/130949_citedcg_scores_scorecard.json"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Merge Per-Result CiteDCG Scores and Calculate Stats",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/merge_seval_results.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "merge_citedcg_and_calculate_stats",
+                "--conversation_file=results/130949_control_6e243d6f_conv_details.json",
+                "--citedcg_file=results/130949_citedcg_scores_control.json",
+                "--output_file=results/130949_merged_control.json",
+                "--stats_file=results/130949_statistics_control.json"
+            ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }
@@ -1586,7 +1760,7 @@
         // python seval_metrics_analysis.py <function_name> <arguments>
         // ============================================
         {
-            "name": "SEVAL Comprehensive Analysis (sbsleov3_score)",
+            "name": "🔬 SEVAL Comprehensive Analysis (sbsleov3_score)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
@@ -1606,7 +1780,7 @@
             }
         },
         {
-            "name": "SEVAL Comprehensive Analysis (citedcg_one_centric)",
+            "name": "🔬 SEVAL Comprehensive Analysis (citedcg_one_centric)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
@@ -1626,7 +1800,7 @@
             }
         },
         {
-            "name": "SEVAL Paired Analysis Only (sbsleov3_score)",
+            "name": "🔬 SEVAL Paired Analysis Only (sbsleov3_score)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
@@ -1645,7 +1819,7 @@
             }
         },
         {
-            "name": "SEVAL Paired Analysis Only (citedcg_one_centric)",
+            "name": "🔬 SEVAL Paired Analysis Only (citedcg_one_centric)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
@@ -1664,7 +1838,7 @@
             }
         },
         {
-            "name": "SEVAL Export Win/Loss Utterances (citedcg_one_centric)",
+            "name": "🔬 SEVAL Export Win/Loss Utterances (citedcg_one_centric)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
@@ -1684,7 +1858,7 @@
             }
         },
         {
-            "name": "SEVAL Export Win/Loss Utterances (sbsleov3_score)",
+            "name": "🔬 SEVAL Export Win/Loss Utterances (sbsleov3_score)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
@@ -1704,7 +1878,7 @@
             }
         },
         {
-            "name": "SEVAL Export Two Jobs Utterances - Single File (123665 + 232361)",
+            "name": "🔬 SEVAL Export Two Jobs Utterances - Single File (123665 + 232361)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
@@ -1723,7 +1897,7 @@
             }
         },
         {
-            "name": "SEVAL List All Available Metrics",
+            "name": "🔬 SEVAL List All Available Metrics",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_metrics_analysis.py",
