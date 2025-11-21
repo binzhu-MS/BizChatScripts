@@ -491,22 +491,10 @@ def _add_citedcg_scores_to_conversation(
     )
     avg_msg = overall_avg if total_results_with_scores > 0 else 'N/A'
     logger.info(f"  Overall average CiteDCG score: {avg_msg}")
-    logger.info("")
-    logger.info("  Query-Level Matching:")
-    logger.info(
-        f"    Total queries: {total_queries_processed}"
-    )
-    logger.info(
-        f"    ✓ Matched (domain + query text): "
-        f"{total_queries_matched}"
-    )
-    logger.info(
-        f"    ✗ No matches found: {total_queries_no_match}"
-    )
     
-    # Add result-level breakdown
+    # Result-level breakdown
     logger.info("")
-    logger.info("  Result-Level Matching:")
+    logger.info("  Search Result Matching Details:")
     logger.info(
         f"    Total search results: {total_results}"
     )
@@ -517,20 +505,18 @@ def _add_citedcg_scores_to_conversation(
         f"    ✗ Not matched: {total_results_without_scores}"
     )
     
-    # Determine overall matching status
-    if total_queries_no_match == 0:
+    # Determine overall matching status based on search RESULTS
+    if total_results_without_scores == 0 and total_results > 0:
         status_icon = "✅"
         status_msg = "ALL SEARCH RESULTS MATCHED"
+    elif total_results == 0:
+        status_icon = "⚠️"
+        status_msg = "NO SEARCH RESULTS TO MATCH"
     else:
-        status_icon = "❌"
-        match_rate = (
-            100.0 * total_queries_matched
-            / max(1, total_queries_processed)
-        )
+        status_icon = "✅" if result_match_pct >= 95.0 else "⚠️"
         status_msg = (
-            f"PARTIAL MATCHING "
-            f"({match_rate:.1f}% queries matched, "
-            f"{total_queries_no_match} queries unmatched)"
+            f"RESULT MATCHING COMPLETE "
+            f"({result_match_pct:.1f}% of {total_results} results matched)"
         )
     
     logger.info("")

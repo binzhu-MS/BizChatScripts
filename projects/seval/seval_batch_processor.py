@@ -1043,14 +1043,15 @@ def process_seval_job_multihop_citedcg(
         print(f"STEP 1/{len(experiments)}: Extracting CiteDCG scores ({exp})...")
         citedcg_file = f"{citedcg_dir}/{job_id}_citedcg_scores_{exp}.json"
         
-        extract_per_result_citedcg(
+        count = extract_per_result_citedcg(
             metrics_folder=metrics_dir,  # Pass just folder name, not full path
             experiment=exp,
             output_file=citedcg_file
         )
         
         citedcg_files[exp] = citedcg_file
-        print(f"✓ CiteDCG scores saved to: {citedcg_file}")
+        print(f"  → Extracted {count} utterances from CiteDCG results")
+        print(f"  → Saved to: {citedcg_file}")
         print("")
     
     # Step 2: Extract conversation details

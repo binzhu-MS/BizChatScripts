@@ -135,53 +135,37 @@ class PerResultCiteDCGExtractor:
         
         if not results_path.exists():
             logger.error(f"Results file not found: {results_path}")
-            return
+            return 0
         
         logger.info(f"Reading CiteDCG data from: {results_path}")
         logger.info(f"  Metrics folder: {metrics_folder}, Experiment: {experiment}")
         if utterance:
             logger.info(f"  Filtering by utterance: '{utterance}'")
         
-        # Load and parse JSON (handles single or concatenated objects)
+        # Load and parse JSONL (newline-delimited JSON, one object per line)
         all_data = []
         try:
             with open(results_path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-            
-            # Try standard JSON first
-            try:
-                data = json.loads(content)
-                all_data = [data] if isinstance(data, dict) else data
-            except json.JSONDecodeError as e:
-                # Standard parsing failed, try concatenated JSON objects
-                logger.warning(
-                    "Standard JSON parsing failed, "
-                    "attempting concatenated objects"
-                )
-                decoder = json.JSONDecoder()
-                idx = 0
-                while idx < len(content):
-                    try:
-                        obj, end_idx = decoder.raw_decode(content, idx)
-                        if isinstance(obj, dict):
-                            all_data.append(obj)
-                        idx = end_idx
-                        # Skip whitespace between objects
-                        while idx < len(content) and content[idx].isspace():
-                            idx += 1
-                    except json.JSONDecodeError:
-                        break
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if line:  # Skip empty lines
+                        try:
+                            obj = json.loads(line)
+                            if isinstance(obj, dict):
+                                all_data.append(obj)
+                        except json.JSONDecodeError as e:
+                            logger.warning(
+                                f"Skipping invalid JSON on line {line_num}: {e}"
+                            )
                 
                 if not all_data:
-                    logger.error(f"Failed to load results.json: {e}")
-                    return
-                else:
-                    logger.info(
-                        f"Parsed {len(all_data)} concatenated JSON objects"
+                    logger.error(
+                        "Failed to parse any valid JSON objects from JSONL file"
                     )
+                    return 0
         except Exception as e:
             logger.error(f"Failed to load results.json: {e}")
-            return
+            return 0
         
         # Extract CiteDCG data from all JSON objects
         extracted_data = []
@@ -190,7 +174,7 @@ class PerResultCiteDCGExtractor:
         
         if not extracted_data:
             logger.warning("No CiteDCG data found in results file")
-            return
+            return 0
         
         logger.info(f"Extracted {len(extracted_data)} results")
         
@@ -209,7 +193,11 @@ class PerResultCiteDCGExtractor:
         # Group by query and write JSON output
         grouped_data = self._group_by_query(extracted_data)
         self._write_json_output(grouped_data, output_file)
-        logger.info(f"Wrote {len(grouped_data)} queries to {output_file}")
+        logger.info(
+            f"Wrote {len(grouped_data)} utterances "
+            f"(JSONL rows) to {output_file}"
+        )
+        return len(grouped_data)
     
     def _extract_cite_dcg_data(self, data: dict) -> list:
         """Extract CiteDCG scores from JSON structure."""
@@ -1801,7 +1789,7 @@ def extract_per_result_citedcg(
     experiment: str,
     output_file: str,
     utterance: Optional[str] = None
-) -> None:
+) -> int:
     """
     Extract per-result CiteDCG scores from SEVAL results.json.
     
@@ -1845,12 +1833,13 @@ def extract_per_result_citedcg(
     """
     try:
         extractor = PerResultCiteDCGExtractor()
-        extractor.extract(
+        count = extractor.extract(
             metrics_folder=metrics_folder,
             experiment=experiment,
             output_file=output_file,
             utterance=utterance
         )
+        return count
     except Exception as e:
         logger.error(f"Error extracting CiteDCG scores: {e}")
         sys.exit(1)
