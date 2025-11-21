@@ -84,11 +84,20 @@ def _merge_citedcg_into_conversation(
         logger.error(f"Failed to load conversation file: {e}")
         raise
     
-    # Load CiteDCG scores
+    # Load CiteDCG scores from JSONL format (one JSON object per line)
     logger.info("Loading CiteDCG scores...")
     try:
+        citedcg_data = []
         with open(citedcg_file, 'r', encoding='utf-8') as f:
-            citedcg_data = json.load(f)
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if line:
+                    try:
+                        citedcg_data.append(json.loads(line))
+                    except json.JSONDecodeError as e:
+                        logger.warning(
+                            f"Skipping invalid JSON on line {line_num}: {e}"
+                        )
         
         # Build query -> results mapping
         query_map = _build_citedcg_query_map(citedcg_data)
@@ -236,6 +245,12 @@ def _add_citedcg_scores_to_conversation(
                 
                 # Process each query in the invocation
                 for query in invocation.get('queries', []):
+                    # MATCHING HIERARCHY:
+                    # 1. Utterance: Match by user_input (turn_index=1)
+                    # 2. Turn/Hop/Invocation: Implicit via nested loop order
+                    # 3. Search: Match by domain + query_string
+                    # 4. Results: Match by position/index in results array
+                    
                     total_queries_processed += 1
                     
                     # Get CiteDCG search data for this utterance
@@ -313,7 +328,7 @@ def _add_citedcg_scores_to_conversation(
                     invocation_stats.append({
                         'invocation_number': invocation.get('invocation_number'),
                         'avg_score': avg,
-                        'count': inv_results_with_scores
+                        'results_with_scores': inv_results_with_scores
                     })
             
             # Add hop-level statistics
@@ -339,13 +354,13 @@ def _add_citedcg_scores_to_conversation(
                     'avg_score': hop_avg,
                     f'avg_top_{top_k}_score': hop_top_k_avg,
                     f'top_{top_k}_count': len(top_scores) if hop_top_k_avg else 0,
-                    'count': hop_results_with_scores,
+                    'results_with_scores': hop_results_with_scores,
                     'invocations': invocation_stats
                 })
         
         # Add turn-level statistics (averaged across non-empty hops)
         total_hops = len(turn.get('hops', []))
-        nonempty_hops = [h for h in hop_stats if h.get('count', 0) > 0]
+        nonempty_hops = [h for h in hop_stats if h.get('results_with_scores', 0) > 0]
         nonempty_hop_count = len(nonempty_hops)
         total_nonempty_hops += nonempty_hop_count
         
@@ -387,7 +402,7 @@ def _add_citedcg_scores_to_conversation(
             'turn_number': turn.get('turn_number'),
             'total_hops': total_hops,
             'nonempty_hops': nonempty_hop_count,
-            'count': turn_results_with_scores,
+            'results_with_scores': turn_results_with_scores,
             'hops': hop_stats
         }
         

@@ -42,15 +42,16 @@ Input Requirements:
 - Optional segment column for breakdown analysis
 """
 
-import pandas as pd
+import json
+import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any, List
-import logging
+from typing import Any, Dict, List, Optional
+
 import fire
+import pandas as pd
 from fire.core import FireExit
-import json
 
 # Add parent directory to path to import utils
 current_dir = Path(__file__).parent
@@ -408,6 +409,8 @@ class MetricsComparison:
                     query_info["query_text"] = f"Index: {idx}"
 
                 # Also keep ID info for reference
+                if "turn_index" in row:
+                    query_info["turn_index"] = str(row["turn_index"])
                 if "query_id" in row:
                     query_info["query_id"] = str(row["query_id"])
                 if "id" in row:
@@ -1130,7 +1133,7 @@ def export_win_loss_utterances(
             break
 
     # Add ID columns if available
-    for id_col in ["query_id", "id", "ID"]:
+    for id_col in ["turn_index", "query_id", "id", "ID"]:
         if id_col in df_valid.columns and id_col not in export_columns:
             export_columns.append(id_col)
 

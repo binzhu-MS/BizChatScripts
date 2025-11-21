@@ -6,19 +6,32 @@ Provides batch processing utilities for SEVAL data analysis with
 extensible modular design.
 
 Available Commands:
-    extract     - Extract conversation details from control files
-    merge       - Merge conversations with CiteDCG scores  
-    analyze     - Run statistical analysis on merged results
+    extract_conversations           - Extract conversation details from SEVAL raw data files
+    merge_citescg_scores            - Merge conversations with CiteDCG scores
+    process_seval_job_multihop_citedcg - Complete end-to-end multi-hop CiteDCG processing
 
 Usage Examples:
-    # Extract conversations
-    python seval_batch_processor_modular.py extract \
-        --input_dir "seval_data/raw" --threads 16
+    # Complete multi-hop CiteDCG processing (recommended - runs all 3 steps)
+    python seval_batch_processor.py process_seval_job_multihop_citedcg --job_id=130949
+    
+    # Extract conversations only
+    python seval_batch_processor.py extract_conversations \
+        --input_dir "seval_data/130949_scraping_raw_data_output" \
+        --output_dir "results/conversation_details" \
+        --experiment control --threads 8
 
-    # Merge with CiteDCG scores
-    python seval_batch_processor_modular.py merge \
-        --conv_dir "results/conversations" \
-        --citedcg_dir "results/citedcg"
+    # Merge with CiteDCG scores only
+    python seval_batch_processor.py merge_citescg_scores \
+        --conv_dir "results/conversation_details" \
+        --citedcg_control_file "results/130949_citedcg_scores_control.json" \
+        --output_dir "results/merged" --top_k 5
+
+Three-Step Workflow:
+    1. Extract CiteDCG scores from metrics (via get_seval_metrics.py)
+    2. Extract conversation details from raw SEVAL data
+    3. Merge CiteDCG scores with conversation details
+    
+    The process_seval_job_multihop_citedcg command automates all three steps.
 """
 
 import json
@@ -510,7 +523,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
         
         self._validate_path(output_path, create=True)
         
-        # Load CiteDCG files (if provided)
+        # Load CiteDCG files (if provided) - now in JSONL format
         citedcg_control_count = 0
         citedcg_treatment_count = 0
         
@@ -519,7 +532,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
             if control_path.exists():
                 logger.info(f"Loading control CiteDCG: {citedcg_control_file}")
                 with open(control_path, "r", encoding="utf-8") as f:
-                    citedcg_control_count = len(json.load(f))
+                    citedcg_control_count = sum(1 for line in f if line.strip())
                 logger.info(
                     f"  Loaded {citedcg_control_count} control utterances"
                 )
@@ -535,7 +548,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
                     f"Loading treatment CiteDCG: {citedcg_treatment_file}"
                 )
                 with open(treatment_path, "r", encoding="utf-8") as f:
-                    citedcg_treatment_count = len(json.load(f))
+                    citedcg_treatment_count = sum(1 for line in f if line.strip())
                 logger.info(
                     f"  Loaded {citedcg_treatment_count} treatment utterances"
                 )
@@ -954,6 +967,123 @@ def merge_citescg_scores(
     )
 
 
+def process_seval_job_multihop_citedcg(
+    job_id: str = "130949",
+    raw_data_dir: str = None,
+    metrics_dir: str = None,
+    output_base_dir: str = "results",
+    experiment: str = "control",
+    top_k: int = 5,
+    threads: int = 8,
+    verbose: bool = False
+):
+    """
+    Complete end-to-end multi-hop CiteDCG processing for a SEVAL job in one command.
+    
+    Runs all three steps automatically:
+    1. Extract CiteDCG scores from metrics
+    2. Extract conversation details from raw data
+    3. Merge CiteDCG scores with conversation details
+    
+    Args:
+        job_id: SEVAL job ID (e.g., "130949")
+        raw_data_dir: Raw data directory (default: seval_data/{job_id}_scraping_raw_data_output)
+        metrics_dir: Metrics folder name only (default: {job_id}_metrics, NOT full path)
+        output_base_dir: Base output directory (default: "results")
+        experiment: Experiment type: 'control', 'treatment', or 'both'
+        top_k: Top-k value for CiteDCG calculation
+        threads: Number of parallel threads
+        verbose: Enable verbose logging
+        
+    Example:
+        # Process job 130949 (control only)
+        python seval_batch_processor.py process_seval_job_multihop_citedcg --job_id=130949
+        
+        # Process both control and treatment with 16 threads
+        python seval_batch_processor.py process_seval_job_multihop_citedcg \\
+            --job_id=130949 --experiment=both --threads=16
+    """
+    from get_seval_metrics import extract_per_result_citedcg
+
+    # Set default paths if not provided
+    if raw_data_dir is None:
+        raw_data_dir = f"seval_data/{job_id}_scraping_raw_data_output"
+    if metrics_dir is None:
+        metrics_dir = f"{job_id}_metrics"  # Just folder name, not full path
+    
+    # Create output directories
+    citedcg_dir = f"{output_base_dir}/{job_id}_citedcg"
+    conv_dir = f"{output_base_dir}/{job_id}_conversation_details"
+    merged_dir = f"{output_base_dir}/{job_id}_merged"
+    
+    Path(citedcg_dir).mkdir(parents=True, exist_ok=True)
+    
+    print("=" * 80)
+    print(f"SEVAL JOB PROCESSING: {job_id}")
+    print("=" * 80)
+    print(f"Raw data:      {raw_data_dir}")
+    print(f"Metrics:       seval_data/{metrics_dir}")
+    print(f"Experiment:    {experiment}")
+    print(f"Top-k:         {top_k}")
+    print(f"Threads:       {threads}")
+    print("=" * 80)
+    print("")
+    
+    # Determine which experiments to process
+    experiments = []
+    if experiment.lower() in ["control", "both"]:
+        experiments.append("control")
+    if experiment.lower() in ["treatment", "both"]:
+        experiments.append("treatment")
+    
+    citedcg_files = {}
+    
+    # Step 1: Extract CiteDCG scores for each experiment
+    for exp in experiments:
+        print(f"STEP 1/{len(experiments)}: Extracting CiteDCG scores ({exp})...")
+        citedcg_file = f"{citedcg_dir}/{job_id}_citedcg_scores_{exp}.json"
+        
+        extract_per_result_citedcg(
+            metrics_folder=metrics_dir,  # Pass just folder name, not full path
+            experiment=exp,
+            output_file=citedcg_file
+        )
+        
+        citedcg_files[exp] = citedcg_file
+        print(f"✓ CiteDCG scores saved to: {citedcg_file}")
+        print("")
+    
+    # Step 2: Extract conversation details
+    print(f"STEP 2: Extracting conversation details...")
+    extract_conversations(
+        input_dir=raw_data_dir,
+        output_dir=conv_dir,
+        experiment=experiment,
+        threads=threads,
+        verbose=verbose
+    )
+    print("")
+    
+    # Step 3: Merge CiteDCG with conversations
+    print(f"STEP 3: Merging CiteDCG scores with conversations...")
+    merge_citescg_scores(
+        conv_dir=conv_dir,
+        citedcg_control_file=citedcg_files.get("control"),
+        citedcg_treatment_file=citedcg_files.get("treatment"),
+        output_dir=merged_dir,
+        threads=threads,
+        top_k=top_k,
+        verbose=verbose
+    )
+    print("")
+    
+    print("=" * 80)
+    print("✓ SEVAL JOB PROCESSING COMPLETE")
+    print("=" * 80)
+    print(f"Merged results: {merged_dir}")
+    print("=" * 80)
+
+
 # ==========================================================================
 # CLI Entry Point
 # ==========================================================================
@@ -964,4 +1094,5 @@ if __name__ == "__main__":
     fire.Fire({
         'extract_conversations': extract_conversations,
         'merge_citescg_scores': merge_citescg_scores,
+        'process_seval_job_multihop_citedcg': process_seval_job_multihop_citedcg,
     })

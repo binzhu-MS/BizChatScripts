@@ -28,6 +28,64 @@
             },
             "postDebugTask": "Open File Reader Results"
         },
+        {
+            "name": "✅ Validate: JSON File (Multi-Format)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/file_validator.py",
+            "args": [
+                "validate_json",
+                "--input_file=${workspaceFolder}/temp/validation_results.json",
+                "--verbose=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
+        {
+            "name": "✅ Validate: JSONL File (Line-by-Line)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/file_validator.py",
+            "args": [
+                "validate_jsonl",
+                "--input_file=${workspaceFolder}/projects/seval/results/130949_citedcg_scores_control.json",
+                "--verbose=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
+        {
+            "name": "✅ Validate: Auto-Detect Format",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/file_validator.py",
+            "args": [
+                "validate_auto",
+                "--input_file=${file}",
+                "--verbose=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
+        {
+            "name": "✅ Validate: JSON with Output File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/file_validator.py",
+            "args": [
+                "validate_json",
+                "--input_file=${file}",
+                "--output_file=${workspaceFolder}/temp/validation_output.json",
+                "--save_parsed=True",
+                "--verbose=True"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
         // ============================================
         // EXAMPLES - Framework Demonstrations
         // ============================================
@@ -1684,7 +1742,7 @@
             "justMyCode": true,
             "args": [
                 "extract_per_result_citedcg",
-                "--metrics_folder=130949_metrics",
+                "--metrics_folder=130949_metrics", //132951_metrics", 
                 "--experiment=control",
                 "--output_file=results/130949_citedcg_scores_control.json"
             ],
@@ -1782,6 +1840,26 @@
                 "--conv_dir=results/conversation_details",
                 "--citedcg_control_file=results/130949_citedcg_scores_control.json",
                 "--output_dir=results/merged",
+                "--top_k=5",
+                "--threads=8",
+                "--verbose=False"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🚀 SEVAL - Complete Seval Job Processing for Multihop CiteDCG",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "process_seval_job_multihop_citedcg",
+                "--job_id=130949", // 132951
+                "--experiment=control",
                 "--top_k=5",
                 "--threads=8",
                 "--verbose=False"

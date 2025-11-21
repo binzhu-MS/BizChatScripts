@@ -142,27 +142,43 @@ class PerResultCiteDCGExtractor:
         if utterance:
             logger.info(f"  Filtering by utterance: '{utterance}'")
         
-        # Load and parse JSON/JSONL
-        # File may contain multiple JSON objects (one per line)
+        # Load and parse JSON (handles single or concatenated objects)
         all_data = []
         try:
             with open(results_path, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
-                # Try to parse as single JSON first
-                try:
-                    data = json.loads(content)
-                    all_data = [data] if isinstance(data, dict) else data
-                except json.JSONDecodeError:
-                    # Fall back to JSONL (one JSON object per line)
-                    for line_num, line in enumerate(content.split('\n'), 1):
-                        line = line.strip()
-                        if line:
-                            try:
-                                all_data.append(json.loads(line))
-                            except json.JSONDecodeError as e:
-                                logger.warning(
-                                    f"Skipping invalid JSON on line {line_num}: {e}"
-                                )
+            
+            # Try standard JSON first
+            try:
+                data = json.loads(content)
+                all_data = [data] if isinstance(data, dict) else data
+            except json.JSONDecodeError as e:
+                # Standard parsing failed, try concatenated JSON objects
+                logger.warning(
+                    "Standard JSON parsing failed, "
+                    "attempting concatenated objects"
+                )
+                decoder = json.JSONDecoder()
+                idx = 0
+                while idx < len(content):
+                    try:
+                        obj, end_idx = decoder.raw_decode(content, idx)
+                        if isinstance(obj, dict):
+                            all_data.append(obj)
+                        idx = end_idx
+                        # Skip whitespace between objects
+                        while idx < len(content) and content[idx].isspace():
+                            idx += 1
+                    except json.JSONDecodeError:
+                        break
+                
+                if not all_data:
+                    logger.error(f"Failed to load results.json: {e}")
+                    return
+                else:
+                    logger.info(
+                        f"Parsed {len(all_data)} concatenated JSON objects"
+                    )
         except Exception as e:
             logger.error(f"Failed to load results.json: {e}")
             return
@@ -200,7 +216,7 @@ class PerResultCiteDCGExtractor:
         results = []
         all_search_results = data.get("AllSearchResults", {})
         
-        for query_id, query_data in all_search_results.items():
+        for turn_index, query_data in all_search_results.items():
             if not query_data:
                 continue
             
@@ -226,7 +242,7 @@ class PerResultCiteDCGExtractor:
                         
                         extracted = self._extract_single_result(
                             result,
-                            query_id,
+                            turn_index,
                             search_domain,
                             plugin_name,
                             query_string,
@@ -260,14 +276,14 @@ class PerResultCiteDCGExtractor:
     def _extract_single_result(
         self,
         result: dict,
-        query_id: str,
+        turn_index: str,
         search_domain: str,
         plugin_name: str = "",
         query_string: str = "",
     ) -> dict:
         """Extract relevant fields from a single result."""
         extracted = {
-            "query_id": query_id,
+            "turn_index": turn_index,
             "search_domain": search_domain,
             "plugin_name": plugin_name,
             "query_string": query_string,
@@ -335,12 +351,12 @@ class PerResultCiteDCGExtractor:
         
         for item in data:
             utterance = item.get("utterance", "")
-            query_id = item.get("query_id", "")
+            turn_index = item.get("turn_index", "")
             
             key = utterance
             
-            if not query_groups[key].get("query_id"):
-                query_groups[key]["query_id"] = query_id
+            if not query_groups[key].get("turn_index"):
+                query_groups[key]["turn_index"] = turn_index
                 query_groups[key]["utterance"] = utterance
                 query_groups[key]["timestamp"] = item.get("timestamp", "")
             
@@ -364,7 +380,7 @@ class PerResultCiteDCGExtractor:
                     k: v
                     for k, v in result.items()
                     if k not in [
-                        "query_id",
+                        "turn_index",
                         "utterance",
                         "timestamp",
                         "search_domain",
@@ -427,7 +443,7 @@ class PerResultCiteDCGExtractor:
                 )
             
             ordered_group = {
-                "query_id": group_data.get("query_id", ""),
+                "turn_index": group_data.get("turn_index", ""),
                 "utterance": group_data.get("utterance", ""),
                 "timestamp": group_data.get("timestamp", ""),
                 "total_results": total_results,
@@ -437,14 +453,15 @@ class PerResultCiteDCGExtractor:
             }
             grouped_list.append(ordered_group)
         
-        # Sort by query_id
-        grouped_list.sort(key=lambda x: int(x.get("query_id", 0)))
+        # Sort by turn_index
+        grouped_list.sort(key=lambda x: int(x.get("turn_index", 0)))
         return grouped_list
     
     def _write_json_output(self, data: list, output_file: str):
-        """Write data to JSON file."""
+        """Write data to JSONL file (one JSON object per line)."""
         with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            for item in data:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
 
 
 class ReasoningClassExtractor:
@@ -1791,13 +1808,13 @@ def extract_per_result_citedcg(
     Extracts individual search result scores (as opposed to aggregated CSV metrics).
     
     This function reads CiteDCG scores from the consolidated results file
-    and outputs them in JSON format. Provides per-result scores
-    with optional filtering by utterance.
+    and outputs them in JSONL format (one JSON object per line).
+    Provides per-result scores with optional filtering by utterance.
     
     Args:
         metrics_folder: Metrics folder name (e.g., "130949_metrics")
         experiment: Experiment name - "control" or "treatment"
-        output_file: Path for output JSON file
+        output_file: Path for output JSONL file (one JSON object per line)
         utterance: Optional - filter results by utterance substring
     
     Example usage:
