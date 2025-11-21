@@ -10,6 +10,25 @@
     ],
     "configurations": [
         // ============================================
+        // TESTING - Utility Tests and Validation
+        // ============================================
+        {
+            "name": "🧪 Test: File Reader - Complete Analysis (All Files)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/test_file_reader.py",
+            "args": [
+                "--full"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "postDebugTask": "Open File Reader Results"
+        },
+        // ============================================
         // EXAMPLES - Framework Demonstrations
         // ============================================
         {
@@ -258,25 +277,6 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }
-        },
-        // ============================================
-        // TESTING - Utility Tests and Validation
-        // ============================================
-        {
-            "name": "🧪 Test: File Reader - Complete Analysis (All Files)",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/tests/test_file_reader.py",
-            "args": [
-                "--full"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "postDebugTask": "Open File Reader Results"
         },
         // ============================================
         // PRODUCTION APPLICATIONS
@@ -1408,7 +1408,7 @@
             "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
             "args": [
                 "search_query",
-                "--query=Search my Sent Items for \"DB_Migration_Test_",
+                "--query=Analyze my recent messages",
                 "--search_dir=seval_data/130949_scraping_raw_data_output",
                 "--exp=both",
                 "--threads=16"
@@ -1570,9 +1570,9 @@
             "args": [
                 "extract_conversation_details",
                 "--input_file",
-                "${workspaceFolder}/projects/seval/seval_data/130949_scraping_raw_data_output/control_sydney_response_6e243d6f-6f56-453e-a33e-6762be80bc4d_8e6f4a58-62e8-4557-becd-98523020147c.json",
+                "${workspaceFolder}/projects/seval/seval_data/130949_scraping_raw_data_output/control_sydney_response_67beb1dc-175c-4e32-99b7-096571a1638b_f398f395-76f9-49fd-a6dd-0295c666cdfd.json",
                 "--output_file",
-                "${workspaceFolder}/projects/seval/results/130949_control_6e243d6f_conv_details.json"
+                "${workspaceFolder}/projects/seval/results/130949_control_67beb1dc_conv_details.json"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/seval",
@@ -1739,10 +1739,52 @@
             "justMyCode": true,
             "args": [
                 "merge_citedcg_and_calculate_stats",
-                "--conversation_file=results/130949_control_6e243d6f_conv_details.json",
+                "--conversation_file=results/130949_control_67beb1dc_conv_details.json",
                 "--citedcg_file=results/130949_citedcg_scores_control.json",
                 "--output_file=results/130949_merged_control.json",
-                "--stats_file=results/130949_statistics_control.json"
+                "--stats_file=results/130949_statistics_control.json",
+                "--top_k=5"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Batch Processing - Extract Conversations",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "extract_conversations",
+                "--input_dir=seval_data/130949_scraping_raw_data_output",
+                "--output_dir=results/conversation_details",
+                "--experiment=control",
+                "--verbose=False",
+                "--threads=8"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - Batch Processing - Merge CiteDCG Scores",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "merge_citescg_scores",
+                "--conv_dir=results/conversation_details",
+                "--citedcg_control_file=results/130949_citedcg_scores_control.json",
+                "--output_dir=results/merged",
+                "--top_k=5",
+                "--threads=8",
+                "--verbose=False"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"

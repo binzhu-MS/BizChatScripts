@@ -52,7 +52,8 @@ logger = logging.getLogger(__name__)
 def _merge_citedcg_into_conversation(
     conversation_file: str,
     citedcg_file: str,
-    output_file: str
+    output_file: str,
+    top_k: int = 5
 ) -> Dict:
     """
     Internal: Merge CiteDCG scores into conversation details structure.
@@ -63,6 +64,7 @@ def _merge_citedcg_into_conversation(
         citedcg_file: Path to CiteDCG scores JSON
             (from get_seval_metrics.py extract_citedcg)
         output_file: Path for merged output JSON
+        top_k: Number of top results to consider for top-k average (default: 5)
     """
     logger.info("Starting merge operation...")
     logger.info(f"  Conversation file: {conversation_file}")
@@ -104,7 +106,7 @@ def _merge_citedcg_into_conversation(
     # Merge scores into conversation data
     logger.info("Merging scores into conversation data...")
     merged_data = _add_citedcg_scores_to_conversation(
-        conversation_data, query_map
+        conversation_data, query_map, top_k=top_k
     )
     
     # Write output
@@ -164,7 +166,8 @@ def _build_citedcg_query_map(
 
 def _add_citedcg_scores_to_conversation(
     conversation_data: Dict,
-    query_map: Dict[str, Dict]
+    query_map: Dict[str, Dict],
+    top_k: int = 5
 ) -> Dict:
     """
     Add CiteDCG scores to conversation data structure.
@@ -174,6 +177,11 @@ def _add_citedcg_scores_to_conversation(
     2. Search domain (e.g., 'office365_search_files')
     3. Query string (the actual search query)
     4. Position in results list
+
+    Args:
+        conversation_data: Conversation details data structure
+        query_map: Map from utterance to CiteDCG search data
+        top_k: Number of top results to consider for top-k average (default: 5)
 
     Updates:
     - Adds 'citedcg_score' field to each search result
@@ -193,6 +201,7 @@ def _add_citedcg_scores_to_conversation(
     total_results_with_scores = 0
     total_results_without_scores = 0
     total_score_sum = 0
+    total_nonempty_hops = 0
     turn_stats = []
     
     # Track matching statistics for debugging
@@ -207,113 +216,211 @@ def _add_citedcg_scores_to_conversation(
     for turn in turns:
         turn_score_sum = 0
         turn_results_with_scores = 0
-        invocation_stats = []
+        turn_all_scores = []  # Collect all scores for top-k calculation
+        hop_stats = []
         
         # Get user input for this turn (this is the query text)
         user_input = turn.get('user_input', '').strip().lower()
         
-        # Process each invocation in the turn
-        for invocation in turn.get('invocations', []):
-            inv_score_sum = 0
-            inv_results_with_scores = 0
+        # Process each hop in the turn
+        for hop in turn.get('hops', []):
+            hop_score_sum = 0
+            hop_results_with_scores = 0
+            hop_all_scores = []  # Collect all scores for hop-level top-k
+            invocation_stats = []
             
-            # Process each query in the invocation
-            for query in invocation.get('queries', []):
-                total_queries_processed += 1
+            # Process each invocation in the hop
+            for invocation in hop.get('invocations', []):
+                inv_score_sum = 0
+                inv_results_with_scores = 0
                 
-                # Get CiteDCG search data for this utterance
-                citedcg_data = query_map.get(user_input, {})
-                searches = citedcg_data.get('searches', [])
-                
-                # Get query metadata
-                query_domain = query.get('domain', '')
-                query_text = query.get('query', '')
-                
-                # Normalize query for matching
-                normalized_query = query_text.strip().lower()
-                
-                # Find matching search by domain and query string (exact match only)
-                matched_search = None
-                search_domain_key = f"office365_search_{query_domain}"
-                
-                for search in searches:
-                    search_domain = search.get('search_domain', '')
-                    search_query = search.get(
-                        'query_string', ''
-                    ).strip().lower()
+                # Process each query in the invocation
+                for query in invocation.get('queries', []):
+                    total_queries_processed += 1
                     
-                    # Match by domain and query string
-                    if (search_domain == search_domain_key and
-                            search_query == normalized_query):
-                        matched_search = search
-                        break
-                
-                # Track matching stats
-                if matched_search:
-                    total_queries_matched += 1
-                else:
-                    total_queries_no_match += 1
-                
-                # Add scores to each result by matching position
-                if matched_search:
-                    search_results = matched_search.get('results', [])
-                    for idx, result in enumerate(
-                        query.get('results', [])
-                    ):
-                        # Match by position in the search's results
-                        if idx < len(search_results):
-                            score = search_results[idx].get(
-                                'CiteDCGLLMLabel'
-                            )
-                            if score is not None:
-                                result['citedcg_score'] = score
-                                
-                                inv_score_sum += score
-                                inv_results_with_scores += 1
-                                turn_score_sum += score
-                                turn_results_with_scores += 1
-                                total_score_sum += score
-                                total_results_with_scores += 1
+                    # Get CiteDCG search data for this utterance
+                    citedcg_data = query_map.get(user_input, {})
+                    searches = citedcg_data.get('searches', [])
+                    
+                    # Get query metadata
+                    query_domain = query.get('domain', '')
+                    query_text = query.get('query', '')
+                    
+                    # Normalize query for matching
+                    normalized_query = query_text.strip().lower()
+                    
+                    # Find matching search by domain and query string (exact match only)
+                    matched_search = None
+                    search_domain_key = f"office365_search_{query_domain}"
+                    
+                    for search in searches:
+                        search_domain = search.get('search_domain', '')
+                        search_query = search.get(
+                            'query_string', ''
+                        ).strip().lower()
+                        
+                        # Match by domain and query string
+                        if (search_domain == search_domain_key and
+                                search_query == normalized_query):
+                            matched_search = search
+                            break
+                    
+                    # Track matching stats
+                    if matched_search:
+                        total_queries_matched += 1
+                    else:
+                        total_queries_no_match += 1
+                    
+                    # Add scores to each result by matching position
+                    if matched_search:
+                        search_results = matched_search.get('results', [])
+                        for idx, result in enumerate(
+                            query.get('results', [])
+                        ):
+                            # Match by position in the search's results
+                            if idx < len(search_results):
+                                score = search_results[idx].get(
+                                    'CiteDCGLLMLabel'
+                                )
+                                if score is not None:
+                                    result['citedcg_score'] = score
+                                    
+                                    inv_score_sum += score
+                                    inv_results_with_scores += 1
+                                    hop_score_sum += score
+                                    hop_results_with_scores += 1
+                                    hop_all_scores.append(score)  # For hop-level top-k
+                                    turn_score_sum += score
+                                    turn_results_with_scores += 1
+                                    turn_all_scores.append(score)  # For turn-level top-k
+                                    total_score_sum += score
+                                    total_results_with_scores += 1
+                                else:
+                                    total_results_without_scores += 1
                             else:
                                 total_results_without_scores += 1
-                        else:
-                            total_results_without_scores += 1
-                else:
-                    # Query didn't match - count all results as unmatched
-                    total_results_without_scores += len(
-                        query.get('results', [])
-                    )
+                    else:
+                        # Query didn't match - count all results as unmatched
+                        total_results_without_scores += len(
+                            query.get('results', [])
+                        )
+                
+                # Add invocation-level statistics
+                if inv_results_with_scores > 0:
+                    avg = round(inv_score_sum / inv_results_with_scores, 3)
+                    invocation['results_with_scores'] = inv_results_with_scores
+                    invocation['avg_citedcg_score'] = avg
+                    invocation_stats.append({
+                        'invocation_number': invocation.get('invocation_number'),
+                        'avg_score': avg,
+                        'count': inv_results_with_scores
+                    })
             
-            # Add invocation-level statistics
-            if inv_results_with_scores > 0:
-                avg = round(inv_score_sum / inv_results_with_scores, 3)
-                invocation['avg_citedcg_score'] = avg
-                invocation['results_with_scores'] = inv_results_with_scores
-                invocation_stats.append({
-                    'invocation_number': invocation.get('invocation_number'),
-                    'avg_score': avg,
-                    'count': inv_results_with_scores
+            # Add hop-level statistics
+            if hop_results_with_scores > 0:
+                hop_avg = round(hop_score_sum / hop_results_with_scores, 3)
+                hop['results_with_scores'] = hop_results_with_scores
+                hop['avg_citedcg_score'] = hop_avg
+                
+                # Calculate hop-level top-k average
+                hop_top_k_avg = None
+                if hop_all_scores:
+                    # Sort scores in descending order and take top k
+                    sorted_scores = sorted(hop_all_scores, reverse=True)
+                    top_scores = sorted_scores[:min(top_k, len(sorted_scores))]
+                    if top_scores:
+                        hop_top_k_avg = round(sum(top_scores) / len(top_scores), 3)
+                
+                hop[f'avg_top_{top_k}_citedcg_score'] = hop_top_k_avg
+                hop[f'top_{top_k}_count'] = len(top_scores) if hop_top_k_avg else 0
+                
+                hop_stats.append({
+                    'hop_number': hop.get('hop_number'),
+                    'avg_score': hop_avg,
+                    f'avg_top_{top_k}_score': hop_top_k_avg,
+                    f'top_{top_k}_count': len(top_scores) if hop_top_k_avg else 0,
+                    'count': hop_results_with_scores,
+                    'invocations': invocation_stats
                 })
         
-        # Add turn-level statistics
-        if turn_results_with_scores > 0:
-            avg = round(turn_score_sum / turn_results_with_scores, 3)
-            turn['avg_citedcg_score'] = avg
-            turn['results_with_scores'] = turn_results_with_scores
-            turn_stats.append({
-                'turn_number': turn.get('turn_number'),
-                'avg_score': avg,
-                'count': turn_results_with_scores,
-                'invocations': invocation_stats
-            })
+        # Add turn-level statistics (averaged across non-empty hops)
+        total_hops = len(turn.get('hops', []))
+        nonempty_hops = [h for h in hop_stats if h.get('count', 0) > 0]
+        nonempty_hop_count = len(nonempty_hops)
+        total_nonempty_hops += nonempty_hop_count
+        
+        # Calculate total results across all hops
+        total_turn_results = sum(
+            h.get('total_results', 0) for h in turn.get('hops', [])
+        )
+        
+        turn['total_results'] = total_turn_results
+        turn['results_with_scores'] = turn_results_with_scores
+        turn['total_hops'] = total_hops
+        turn['nonempty_hops'] = nonempty_hop_count
+        
+        # Calculate hop-level averages (average of hop averages, excluding empty hops)
+        nonempty_hop_stats = {}
+        
+        if nonempty_hop_count > 0:
+            # Get avg_citedcg_score from each non-empty hop
+            hop_avgs = []
+            hop_top_k_avgs = []
+            
+            for hop in turn.get('hops', []):
+                if hop.get('results_with_scores', 0) > 0:
+                    if 'avg_citedcg_score' in hop:
+                        hop_avgs.append(hop['avg_citedcg_score'])
+                    if f'avg_top_{top_k}_citedcg_score' in hop:
+                        hop_top_k_avgs.append(hop[f'avg_top_{top_k}_citedcg_score'])
+            
+            # Average the hop averages
+            if hop_avgs:
+                nonempty_hop_stats['hop_avg_citedcg_score'] = round(sum(hop_avgs) / len(hop_avgs), 3)
+            if hop_top_k_avgs:
+                nonempty_hop_stats[f'hop_avg_top_{top_k}_citedcg_score'] = round(sum(hop_top_k_avgs) / len(hop_top_k_avgs), 3)
+        
+        if nonempty_hop_stats:
+            turn['nonempty_hop_stats'] = nonempty_hop_stats
+        
+        stats_entry = {
+            'turn_number': turn.get('turn_number'),
+            'total_hops': total_hops,
+            'nonempty_hops': nonempty_hop_count,
+            'count': turn_results_with_scores,
+            'hops': hop_stats
+        }
+        
+        if nonempty_hop_stats:
+            stats_entry['nonempty_hop_stats'] = nonempty_hop_stats
+        
+        turn_stats.append(stats_entry)
 
-    # Add overall statistics to summary
+    # Add overall statistics to summary (rebuild to control property order)
+    summary = eval_results.get('summary', {})
+    # Preserve existing properties in desired order
+    ordered_summary = {}
+    if 'total_turns' in summary:
+        ordered_summary['total_turns'] = summary['total_turns']
+    if 'total_hops' in summary:
+        ordered_summary['total_hops'] = summary['total_hops']
+    # Add nonempty_hops right after total_hops
+    ordered_summary['nonempty_hops'] = total_nonempty_hops
+    if 'total_tool_invocations_count' in summary:
+        ordered_summary['total_tool_invocations_count'] = summary['total_tool_invocations_count']
+    if 'total_queries' in summary:
+        ordered_summary['total_queries'] = summary['total_queries']
+    if 'total_search_results' in summary:
+        ordered_summary['total_search_results'] = summary['total_search_results']
+    if total_results_with_scores > 0:
+        ordered_summary['results_with_citedcg_scores'] = total_results_with_scores
+    # Replace summary with ordered version
+    eval_results['summary'] = ordered_summary
+
+    # Calculate overall average for metadata and logging (not added to summary)
+    overall_avg = None
     if total_results_with_scores > 0:
         overall_avg = round(total_score_sum / total_results_with_scores, 3)
-        eval_results['summary']['avg_citedcg_score'] = overall_avg
-        eval_results['summary']['results_with_citedcg_scores'] = (
-            total_results_with_scores
-        )
 
     # Add overall statistics to metadata
     if total_results_with_scores > 0:
@@ -321,6 +428,30 @@ def _add_citedcg_scores_to_conversation(
         merged['metadata']['results_with_citedcg_scores'] = (
             total_results_with_scores
         )
+
+    # Update cited_reference_ids with scores (before adding citedcg_statistics)
+    if 'cited_reference_ids' in merged:
+        # Build a map of reference_id -> citedcg_score from all results
+        ref_score_map = {}
+        for turn in turns:
+            for hop in turn.get('hops', []):
+                for invocation in hop.get('invocations', []):
+                    for query in invocation.get('queries', []):
+                        for result in query.get('results', []):
+                            ref_id = result.get('reference_id')
+                            score = result.get('citedcg_score')
+                            if ref_id and score is not None:
+                                ref_score_map[ref_id] = score
+        
+        # Enrich cited references with their scores
+        cited_refs = []
+        for ref_id in merged.get('cited_reference_ids', []):
+            ref_entry = {'reference_id': ref_id}
+            if ref_id in ref_score_map:
+                ref_entry['citedcg_score'] = ref_score_map[ref_id]
+            cited_refs.append(ref_entry)
+        
+        merged['cited_references_with_scores'] = cited_refs
 
     # Add detailed turn statistics
     if turn_stats:
@@ -332,29 +463,6 @@ def _add_citedcg_scores_to_conversation(
             'total_results_scored': total_results_with_scores,
             'turn_statistics': turn_stats
         }
-
-    # Update cited_reference_ids with scores
-    if 'cited_reference_ids' in merged:
-        # Build a map of reference_id -> citedcg_score from all results
-        ref_score_map = {}
-        for turn in turns:
-            for invocation in turn.get('invocations', []):
-                for query in invocation.get('queries', []):
-                    for result in query.get('results', []):
-                        ref_id = result.get('reference_id')
-                        score = result.get('citedcg_score')
-                        if ref_id and score is not None:
-                            ref_score_map[ref_id] = score
-        
-        # Enrich cited references with their scores
-        cited_refs = []
-        for ref_id in merged.get('cited_reference_ids', []):
-            ref_entry = {'reference_id': ref_id}
-            if ref_id in ref_score_map:
-                ref_entry['citedcg_score'] = ref_score_map[ref_id]
-            cited_refs.append(ref_entry)
-        
-        merged['cited_references_with_scores'] = cited_refs
     
     # Log matching statistics
     total_results = total_results_with_scores + total_results_without_scores
@@ -413,6 +521,26 @@ def _add_citedcg_scores_to_conversation(
     logger.info("")
     logger.info(f"  {status_icon} Status: {status_msg}")
     
+    # Reconstruct merged dict with proper key order:
+    # cited_references_with_scores right after cited_reference_ids
+    if 'cited_references_with_scores' in merged:
+        ordered_merged = {}
+        cited_refs_scores = merged['cited_references_with_scores']
+        
+        for key, value in merged.items():
+            if key == 'cited_references_with_scores':
+                continue  # Skip, will add after cited_reference_ids
+            
+            ordered_merged[key] = value
+            
+            # Add cited_references_with_scores right after this key
+            if key == 'cited_reference_ids':
+                ordered_merged['cited_references_with_scores'] = (
+                    cited_refs_scores
+                )
+        
+        return ordered_merged
+    
     return merged
 
 
@@ -463,6 +591,7 @@ def _calculate_citedcg_statistics(
         },
         'overall_statistics': {
             'total_turns': 0,
+            'total_hops': 0,
             'total_invocations': 0,
             'total_queries': 0,
             'total_search_results': 0,
@@ -482,58 +611,109 @@ def _calculate_citedcg_statistics(
     turns = eval_results.get('turns', [])
     stats['overall_statistics']['total_turns'] = len(turns)
     
+    # Detect top_k value from the first hop that has it
+    top_k = None
     for turn in turns:
+        for hop in turn.get('hops', []):
+            for key in hop.keys():
+                if key.startswith('avg_top_') and key.endswith('_citedcg_score'):
+                    top_k = int(key.replace('avg_top_', '').replace('_citedcg_score', ''))
+                    break
+            if top_k:
+                break
+        if top_k:
+            break
+    
+    for turn in turns:
+        # Build turn_stat with dynamic field names
         turn_stat = {
             'turn_number': turn.get('turn_number'),
             'user_input': turn.get('user_input', ''),
             'avg_citedcg_score': turn.get('avg_citedcg_score'),
             'results_with_scores': turn.get('results_with_scores', 0),
-            'invocations': []
+            'hops': []
         }
         
-        # Process invocations
-        for invocation in turn.get('invocations', []):
-            inv_stat = {
-                'invocation_number': invocation.get('invocation_number'),
-                'tool_name': invocation.get('tool_name'),
-                'avg_citedcg_score': invocation.get('avg_citedcg_score'),
-                'results_with_scores': invocation.get(
-                    'results_with_scores', 0
-                ),
-                'queries_count': len(invocation.get('queries', []))
+        # Add top_k fields if they exist
+        if top_k:
+            top_k_score_key = f'avg_top_{top_k}_citedcg_score'
+            top_k_count_key = f'top_{top_k}_count'
+            if top_k_score_key in turn:
+                turn_stat[top_k_score_key] = turn.get(top_k_score_key)
+            if top_k_count_key in turn:
+                turn_stat[top_k_count_key] = turn.get(top_k_count_key, 0)
+        
+        # Process hops
+        for hop in turn.get('hops', []):
+            hop_stat = {
+                'hop_number': hop.get('hop_number'),
+                'avg_citedcg_score': hop.get('avg_citedcg_score'),
+                'results_with_scores': hop.get('results_with_scores', 0),
+                'invocations': []
             }
             
-            turn_stat['invocations'].append(inv_stat)
-            overall = stats['overall_statistics']
-            overall['total_invocations'] += 1
-            overall['total_queries'] += inv_stat['queries_count']
+            # Add top_k fields if they exist
+            if top_k:
+                top_k_score_key = f'avg_top_{top_k}_citedcg_score'
+                top_k_count_key = f'top_{top_k}_count'
+                if top_k_score_key in hop:
+                    hop_stat[top_k_score_key] = hop.get(top_k_score_key)
+                if top_k_count_key in hop:
+                    hop_stat[top_k_count_key] = hop.get(top_k_count_key, 0)
             
-            # Collect all individual scores for distribution
-            for query in invocation.get('queries', []):
-                for result in query.get('results', []):
-                    overall['total_search_results'] += 1
-                    
-                    score = result.get('citedcg_score')
-                    if score is not None:
-                        overall['results_with_citedcg'] += 1
-                        all_scores.append(score)
+            stats['overall_statistics']['total_hops'] += 1
+            
+            # Process invocations in this hop
+            for invocation in hop.get('invocations', []):
+                inv_stat = {
+                    'invocation_number': invocation.get('invocation_number'),
+                    'tool_name': invocation.get('tool_name'),
+                    'avg_citedcg_score': invocation.get('avg_citedcg_score'),
+                    'results_with_scores': invocation.get(
+                        'results_with_scores', 0
+                    ),
+                    'queries_count': len(invocation.get('queries', []))
+                }
+                
+                hop_stat['invocations'].append(inv_stat)
+                overall = stats['overall_statistics']
+                overall['total_invocations'] += 1
+                overall['total_queries'] += inv_stat['queries_count']
+                
+                # Collect all individual scores for distribution
+                for query in invocation.get('queries', []):
+                    for result in query.get('results', []):
+                        overall['total_search_results'] += 1
                         
-                        # Count score distribution
-                        score_key = f"{score:.1f}"
-                        score_counts[score_key] = (
-                            score_counts.get(score_key, 0) + 1
-                        )
+                        score = result.get('citedcg_score')
+                        if score is not None:
+                            overall['results_with_citedcg'] += 1
+                            all_scores.append(score)
+                            
+                            # Count score distribution
+                            score_key = f"{score:.1f}"
+                            score_counts[score_key] = (
+                                score_counts.get(score_key, 0) + 1
+                            )
+            
+            turn_stat['hops'].append(hop_stat)
         
         stats['turn_statistics'].append(turn_stat)
+    
+    # Get overall_stats reference
+    overall_stats = stats['overall_statistics']
     
     # Calculate overall average
     if all_scores:
         avg_score = round(sum(all_scores) / len(all_scores), 3)
-        overall_stats = stats['overall_statistics']
         overall_stats['avg_citedcg_overall'] = avg_score
         overall_stats['score_distribution'] = dict(
             sorted(score_counts.items())
         )
+    else:
+        # No scores available
+        overall_stats['avg_citedcg_overall'] = 0.0
+        overall_stats['score_distribution'] = {}
     
     # Round statistics (multi-turn conversations group turns into rounds)
     # For now, each turn is a round.
@@ -572,6 +752,31 @@ def _calculate_citedcg_statistics(
     logger.info(f"Coverage: {coverage:.1f}%")
     logger.info("-"*70)
     logger.info(f"Average CiteDCG Score: {overall['avg_citedcg_overall']}")
+    
+    # Display per-turn statistics with top-k
+    if stats['turn_statistics']:
+        logger.info("\nPer-Turn Statistics:")
+        for turn_stat in stats['turn_statistics']:
+            turn_num = turn_stat['turn_number']
+            avg_score = turn_stat['avg_citedcg_score']
+            
+            # Find top_k fields dynamically
+            top_k_avg = None
+            top_k_cnt = 0
+            top_k_val = None
+            for key in turn_stat.keys():
+                if key.startswith('avg_top_') and key.endswith('_citedcg_score'):
+                    top_k_avg = turn_stat[key]
+                    top_k_val = int(key.replace('avg_top_', '').replace('_citedcg_score', ''))
+                elif key.startswith('top_') and key.endswith('_count'):
+                    top_k_cnt = turn_stat[key]
+            
+            logger.info(f"  Turn {turn_num}:")
+            logger.info(f"    Average: {avg_score}")
+            if top_k_avg is not None:
+                logger.info(f"    Top-{top_k_val} Average: {top_k_avg} (from {top_k_cnt} results)")
+    
+    logger.info("-"*70)
     logger.info("\nScore Distribution:")
     
     for score, count in overall['score_distribution'].items():
@@ -595,7 +800,8 @@ def merge_citedcg_and_calculate_stats(
     conversation_file: str,
     citedcg_file: str,
     output_file: str,
-    stats_file: Optional[str] = None
+    stats_file: Optional[str] = None,
+    top_k: int = 5
 ) -> tuple[Dict, Dict[str, Any]]:
     """
     Merge CiteDCG scores into conversation and calculate comprehensive
@@ -613,6 +819,7 @@ def merge_citedcg_and_calculate_stats(
         output_file: Path for merged output JSON
         stats_file: Optional path to save statistics JSON.
             If None, statistics are returned but not saved.
+        top_k: Number of top results to consider for top-k average (default: 5)
     
     Returns:
         Tuple of (merged_data, statistics)
@@ -622,7 +829,8 @@ def merge_citedcg_and_calculate_stats(
             conversation_file="130949_control_conv_details.json",
             citedcg_file="130949_citedcg_scores_control.json",
             output_file="130949_merged_control.json",
-            stats_file="130949_statistics_control.json"
+            stats_file="130949_statistics_control.json",
+            top_k=5
         )
     """
     logger.info("="*70)
@@ -630,11 +838,12 @@ def merge_citedcg_and_calculate_stats(
     logger.info("="*70)
     
     # Step 1: Merge conversation with CiteDCG scores
-    logger.info("\nStep 1/2: Merging conversation with CiteDCG scores...")
+    logger.info(f"\nStep 1/2: Merging conversation with CiteDCG scores (top-k={top_k})...")
     merged_data = _merge_citedcg_into_conversation(
         conversation_file=conversation_file,
         citedcg_file=citedcg_file,
-        output_file=output_file
+        output_file=output_file,
+        top_k=top_k
     )
     
     # Step 2: Calculate CiteDCG statistics from merged data

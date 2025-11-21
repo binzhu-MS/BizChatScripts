@@ -83,16 +83,18 @@ import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import fire
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+# Configure logging only if not already configured
+if not logging.getLogger().hasHandlers():
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
 logger = logging.getLogger(__name__)
 
 
@@ -3647,10 +3649,6 @@ class SEVALAnalysisToolkit:
             4. JSON file with complete structured data
 
         """
-        import json
-        import re
-        from datetime import datetime
-        from pathlib import Path
 
         logger.info(f"Extracting conversation details from: {input_file}")
         logger.info(f"Output JSON file: {output_file}")
@@ -3765,6 +3763,7 @@ class SEVALAnalysisToolkit:
             },
             "evaluation_data_results": evaluation_results,
             "user_visible_messages": [],
+            "cited_reference_ids": [],
             "rounds": [],
         }
 
@@ -3838,7 +3837,7 @@ class SEVALAnalysisToolkit:
                     ref_id = result.get("reference_id", "")
                     result["was_cited"] = ref_id in cited_ref_ids
 
-        # Store cited reference IDs in analysis for later use
+        # Update cited reference IDs in analysis (already initialized in correct position)
         analysis["cited_reference_ids"] = sorted(list(cited_ref_ids))
 
         return analysis
@@ -4045,36 +4044,44 @@ class SEVALAnalysisToolkit:
           {
             "turns": [                               # One entry per conversation turn
               {
-                "turn_number": 1,                    # Turn/hop identifier (1-indexed)
+                "turn_number": 1,                    # Turn identifier (1-indexed)
                 "user_input": "user's query",        # The user's question for this turn
-                "invocations": [                     # One entry per tool invocation in this turn
+                "hops": [                            # Orchestration iterations (reasoning steps)
                   {
-                    "invocation_number": 1,          # Invocation counter within turn
-                    "queries": [                     # Batched queries in this invocation
+                    "hop_number": 1,                 # Hop identifier within turn (1-indexed)
+                    "invocations": [                 # Tool invocations in this hop
                       {
-                        "query_number": 1,           # Query counter within invocation
-                        "domain": "emails",          # Search domain (emails, files, chats, people)
-                        "query": "search text",      # Actual query text sent to search API
-                        "result_count": 10,          # Number of results returned
-                        "results": [                 # Array of search results
+                        "invocation_number": 1,      # Invocation counter within hop
+                        "tool_name": "...",          # Name of tool invoked
+                        "queries": [                 # Batched queries in this invocation
                           {
-                            "reference_id": "turn1search1",  # Unique ID for CiteDCG mapping
-                            "type": "Email|File|Chat|Person",
-                            "title": "...",
-                            "snippet": "...",
-                            "author": "...",
-                            # ... additional metadata fields
+                            "query_number": 1,       # Query counter within invocation
+                            "domain": "emails",      # Search domain (emails, files, chats, people)
+                            "query": "search text",  # Actual query text sent to search API
+                            "result_count": 10,      # Number of results returned
+                            "results": [             # Array of search results
+                              {
+                                "reference_id": "turn1search1",  # Unique ID for CiteDCG mapping
+                                "type": "Email|File|Chat|Person",
+                                "title": "...",
+                                "snippet": "...",
+                                "author": "...",
+                                # ... additional metadata fields
+                              }
+                            ]
                           }
-                        ]
+                        ],
+                        "total_results": 67          # Total results in this invocation
                       }
                     ],
-                    "total_results": 67              # Total results in this invocation
+                    "total_results": 67              # Total results in this hop
                   }
                 ],
                 "total_results": 67                  # Total results in this turn
               }
             ],
             "total_results": 67,                     # Total results across all turns
+            "total_hops": 1,                         # Total hops across all turns
             "total_invocations": 1                   # Total invocations across all turns
           }
 
@@ -4099,18 +4106,27 @@ class SEVALAnalysisToolkit:
         total_results = 0
         total_tool_invocations_count = 0
         total_queries = 0
+        total_hops = 0
 
         for turn_idx, turn_data in enumerate(turn_data_list):
             turn_results = {
                 "turn_number": turn_idx + 1,
                 "user_input": turn_data.get("userInput", ""),
-                "invocations": [],
+                "hops": [],  # Changed from "invocations" to "hops"
                 "total_results": 0,
             }
 
             iterations = turn_data.get("orchestrationIterations", [])
 
-            for iteration in iterations:
+            for hop_idx, iteration in enumerate(iterations):
+                total_hops += 1
+                # Create hop structure
+                hop_results = {
+                    "hop_number": hop_idx + 1,
+                    "invocations": [],  # Invocations now nested under hops
+                    "total_results": 0,
+                }
+
                 model_actions = iteration.get("modelActions", [])
 
                 for model_action in model_actions:
@@ -4127,13 +4143,18 @@ class SEVALAnalysisToolkit:
 
                         total_tool_invocations_count += 1
                         invocation_results = {
-                            "invocation_number": len(turn_results["invocations"]) + 1,
+                            "invocation_number": len(
+                                hop_results["invocations"]
+                            )
+                            + 1,
                             "tool_name": tool_name,
                             "queries": [],
                             "total_results": 0,
                         }
 
-                        for query_idx, batched_query in enumerate(batched_queries):
+                        for query_idx, batched_query in enumerate(
+                            batched_queries
+                        ):
                             total_queries += 1
                             # Parse arguments to get query details
                             arguments_str = batched_query.get("arguments", "")
@@ -4145,7 +4166,7 @@ class SEVALAnalysisToolkit:
                                     arguments = json.loads(arguments_str)
                                     domain = arguments.get("domain", "unknown")
                                     query_text = arguments.get("query", "")
-                                except:
+                                except Exception:
                                     pass
 
                             # Parse processedResult to get results
@@ -4156,9 +4177,11 @@ class SEVALAnalysisToolkit:
 
                             if processed_result_str:
                                 try:
-                                    processed_data = json.loads(processed_result_str)
+                                    processed_data = json.loads(
+                                        processed_result_str
+                                    )
                                     results = processed_data.get("results", [])
-                                except:
+                                except Exception:
                                     pass
 
                             query_results = {
@@ -4176,7 +4199,9 @@ class SEVALAnalysisToolkit:
                                 # Handle PeopleInferenceAnswer differently
                                 if result_type == "PeopleInferenceAnswer":
                                     # Extract & clean displayName
-                                    display_name = result.get("displayName", "")
+                                    display_name = result.get(
+                                        "displayName", ""
+                                    )
                                     if display_name:
                                         display_name = display_name.replace(
                                             "<Person>", ""
@@ -4229,6 +4254,8 @@ class SEVALAnalysisToolkit:
                                     }
                                 elif result_type == "EmailMessage":
                                     # Handle EmailMessage type-specific fields
+                                    # Use dateTimeReceived for received emails, dateTimeSent for sent emails
+                                    date_time = result.get("dateTimeReceived") or result.get("dateTimeSent", "")
                                     result_data = {
                                         "reference_id": result.get(
                                             "reference_id", ""
@@ -4239,9 +4266,7 @@ class SEVALAnalysisToolkit:
                                             "snippet", ""
                                         )[:200],
                                         "author": result.get("from", ""),
-                                        "lastModifiedTime": result.get(
-                                            "dateTimeReceived", ""
-                                        ),
+                                        "lastModifiedTime": date_time,
                                         "fileName": "",
                                         "fileType": "",
                                     }
@@ -4272,16 +4297,22 @@ class SEVALAnalysisToolkit:
 
                             invocation_results["queries"].append(query_results)
                             invocation_results["total_results"] += len(results)
+                            hop_results["total_results"] += len(results)
                             turn_results["total_results"] += len(results)
                             total_results += len(results)
 
-                        turn_results["invocations"].append(invocation_results)
+                        hop_results["invocations"].append(invocation_results)
+
+                # Always add hop to preserve complete iteration structure
+                # (even if empty - shows reasoning steps without tool calls)
+                turn_results["hops"].append(hop_results)
 
             results_by_turn.append(turn_results)
 
         return {
             "summary": {
                 "total_turns": len(results_by_turn),
+                "total_hops": total_hops,
                 "total_tool_invocations_count": total_tool_invocations_count,
                 "total_queries": total_queries,
                 "total_search_results": total_results,
