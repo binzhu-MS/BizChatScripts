@@ -9,9 +9,13 @@ Available Commands:
     extract_conversations           - Extract conversation details from SEVAL raw data files
     merge_citescg_scores            - Merge conversations with CiteDCG scores
     process_seval_job_multihop_citedcg - Complete end-to-end multi-hop CiteDCG processing
+    process_seval_job_with_plots    - Multi-hop processing with multiple top-k values and plots
 
 Usage Examples:
-    # Complete multi-hop CiteDCG processing (recommended - runs all 3 steps)
+    # Process with multiple top-k values and generate plots (recommended)
+    python seval_batch_processor.py process_seval_job_with_plots --job_id=130949 --top_k_list=1,3,5
+    
+    # Complete multi-hop CiteDCG processing (runs all 3 steps, single top-k)
     python seval_batch_processor.py process_seval_job_multihop_citedcg --job_id=130949
     
     # Extract conversations only
@@ -36,6 +40,7 @@ Three-Step Workflow:
 
 import json
 import logging
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -78,6 +83,23 @@ class BaseProcessor:
         
         level = logging.DEBUG if verbose else logging.WARNING
         logging.getLogger().setLevel(level)
+    
+    def _clean_directory(self, directory: Path, description: str = "directory"):
+        """Clean all files in a directory.
+        
+        Args:
+            directory: Path to directory to clean
+            description: Human-readable description for logging
+        """
+        if directory.exists():
+            file_count = len(list(directory.rglob('*')))
+            if file_count > 0:
+                print(f"  Cleaning {description}: {directory}")
+                print(f"  → Removing {file_count} items...")
+                shutil.rmtree(directory)
+                directory.mkdir(parents=True, exist_ok=True)
+                print(f"  ✓ Cleaned")
+            # Skip message if directory is already empty
     
     def _validate_path(
         self,
@@ -1085,6 +1107,424 @@ def process_seval_job_multihop_citedcg(
     print("=" * 80)
 
 
+def process_seval_job_with_plots(
+    job_id: str,
+    experiment: str = "control",
+    top_k_list: str = "1,3,5",
+    threads: int = 8,
+    raw_data_dir: str = None,
+    metrics_dir: str = None,
+    output_base_dir: str = "results",
+    clean: bool = False,
+    verbose: bool = False
+):
+    """
+    Process a SEVAL job with multiple top-k values and generate plots.
+    
+    This function is fully self-sufficient and will:
+    1. Extract CiteDCG scores from metrics (or reuse if already exists)
+    2. Extract conversation details from raw data (or reuse if already exists)
+    3. Merge conversations with CiteDCG scores for each top-k value
+    4. Generate visualization plots comparing the different top-k values
+    
+    No prerequisite commands needed - this function generates all required files.
+    
+    Workflow Details:
+    - Step 1: CiteDCG extraction is shared across all top-k values (done once)
+    - Step 2: Conversation extraction is shared across all top-k values (done once)
+    - Step 3: Merge operation is performed separately for each top-k value
+    - Step 4: Plots are generated using the merged results (always cleans plot dir)
+    
+    Args:
+        job_id: SEVAL job ID (e.g., "130949")
+        experiment: Which experiment to process ("control", "treatment", or "both")
+        top_k_list: Comma-separated list of top-k values (e.g., "1,3,5")
+            Note: Can be passed as string "1,3,5" or Fire will parse as (1,3,5)
+        threads: Number of parallel threads for processing (default: 8)
+        raw_data_dir: Directory with raw SEVAL data (default: seval_data/{job_id}_scraping_raw_data_output)
+        metrics_dir: Directory with metrics data (default: {job_id}_metrics)
+        output_base_dir: Base directory for outputs (default: "results")
+        clean: Force regeneration of ALL processing steps (default: False)
+            When True, cleans and regenerates:
+            - Step 1: CiteDCG scores from metrics (shared across all k values)
+            - Step 2: Conversation details from raw data (shared across all k values)
+            - Step 3: Merged results for each top-k value (k-specific directories)
+            Note: Plot output folder is always cleaned regardless of this setting
+        verbose: Enable verbose output (default: False)
+    
+    Example:
+        # Process job with default top-k values [1, 3, 5]
+        python seval_batch_processor.py process_seval_job_with_plots \\
+            --job_id=130949
+        
+        # Process with custom top-k values
+        python seval_batch_processor.py process_seval_job_with_plots \\
+            --job_id=130949 \\
+            --top_k_list="1,2,3,5,10" \\
+            --threads=16
+        
+        # Force full regeneration of all steps
+        python seval_batch_processor.py process_seval_job_with_plots \\
+            --job_id=130949 \\
+            --clean=True
+    
+    Note:
+        This function automatically generates CiteDCG scores and conversation details
+        if they don't exist. You do NOT need to run process_seval_job_multihop_citedcg first.
+        
+        Use --clean=True to force complete regeneration of all processing steps:
+        - Re-extracts CiteDCG scores from metrics
+        - Re-extracts conversation details from raw SEVAL data
+        - Re-merges CiteDCG with conversations for all top-k values
+        
+        Without --clean, the function intelligently reuses existing results when available,
+        only regenerating what's missing.
+    """
+    import sys
+
+    from get_seval_metrics import extract_per_result_citedcg
+
+    # Parse top-k list - handle both string and tuple/list from Fire
+    try:
+        if isinstance(top_k_list, (list, tuple)):
+            # Fire parsed as multiple arguments
+            k_values = [int(k) for k in top_k_list]
+        elif isinstance(top_k_list, str):
+            # String format "1,3,5"
+            k_values = [int(k.strip()) for k in top_k_list.split(",")]
+        else:
+            # Single integer
+            k_values = [int(top_k_list)]
+        
+        k_values = sorted(set(k_values))  # Remove duplicates and sort
+    except (ValueError, AttributeError) as e:
+        print(f"Error: Invalid top_k_list format: {top_k_list}")
+        print(f"Expected comma-separated integers like '1,3,5' or list [1,3,5]")
+        print(f"Error details: {e}")
+        sys.exit(1)
+    
+    if len(k_values) < 1:
+        print("Error: At least one top-k value is required")
+        sys.exit(1)
+    
+    # Set default paths if not provided
+    if raw_data_dir is None:
+        raw_data_dir = f"seval_data/{job_id}_scraping_raw_data_output"
+    if metrics_dir is None:
+        metrics_dir = f"{job_id}_metrics"
+    
+    # Create base output directory
+    Path(output_base_dir).mkdir(parents=True, exist_ok=True)
+    
+    print("=" * 80)
+    print(f"SEVAL JOB PROCESSING WITH MULTIPLE TOP-K VALUES: {job_id}")
+    print("=" * 80)
+    print(f"Raw data:      {raw_data_dir}")
+    print(f"Metrics:       seval_data/{metrics_dir}")
+    print(f"Experiment:    {experiment}")
+    print(f"Top-k values:  {k_values}")
+    print(f"Threads:       {threads}")
+    print(f"Clean existing: {clean}")
+    print("=" * 80)
+    print("")
+    
+    # Store merged directories for each k
+    merged_dirs = {}
+    
+    # Determine which experiments to process
+    experiments = []
+    if experiment.lower() in ["control", "both"]:
+        experiments.append("control")
+    if experiment.lower() in ["treatment", "both"]:
+        experiments.append("treatment")
+    
+    # Check if we can reuse results from process_seval_job_multihop_citedcg
+    # Convention: that function creates {job_id}_citedcg and {job_id}_conversation_details
+    existing_citedcg_dir = f"{output_base_dir}/{job_id}_citedcg"
+    existing_conv_dir = f"{output_base_dir}/{job_id}_conversation_details"
+    
+    # Clean existing directories if requested
+    processor = BaseProcessor()  # For access to _clean_directory utility
+    if clean:
+        print("FORCING COMPLETE REGENERATION (--clean=True):")
+        print("  Cleaning all processing outputs...")
+        # Clean merge directories for each k
+        for k in k_values:
+            citedcg_k_dir = Path(f"{output_base_dir}/{job_id}_citedcg_k{k}")
+            processor._clean_directory(citedcg_k_dir, f"CiteDCG k={k}")
+            merged_k_dir = Path(f"{output_base_dir}/{job_id}_merged_k{k}")
+            processor._clean_directory(merged_k_dir, f"Merged k={k}")
+        
+        # Clean shared directories
+        processor._clean_directory(
+            Path(existing_citedcg_dir), "shared CiteDCG"
+        )
+        processor._clean_directory(
+            Path(existing_conv_dir), "conversation details"
+        )
+        print("")
+        can_reuse_citedcg = False
+        can_reuse_conv = False
+    else:
+        can_reuse_citedcg = Path(existing_citedcg_dir).exists()
+        
+        # Check if conversation directory exists AND contains files
+        conv_path = Path(existing_conv_dir)
+        if conv_path.exists():
+            # Verify it contains conversation detail files
+            conv_files = list(conv_path.glob("*_conv_details.json"))
+            can_reuse_conv = len(conv_files) > 0
+        else:
+            can_reuse_conv = False
+        
+        if can_reuse_citedcg or can_reuse_conv:
+            print("REUSING EXISTING RESULTS:")
+            if can_reuse_citedcg:
+                print(f"  ✓ Found CiteDCG scores: {existing_citedcg_dir}")
+            if can_reuse_conv:
+                conv_count = len(list(Path(existing_conv_dir).glob("*_conv_details.json")))
+                print(f"  ✓ Found {conv_count} conversation files: {existing_conv_dir}")
+            print("")
+    
+    # STEP 1: Extract CiteDCG scores ONCE (same for all top-k values)
+    citedcg_files = {}
+    
+    if can_reuse_citedcg:
+        print("=" * 80)
+        print("STEP 1: REUSING EXISTING CITEDCG SCORES")
+        print("=" * 80)
+        for exp in experiments:
+            citedcg_file = (
+                f"{existing_citedcg_dir}/{job_id}_citedcg_scores_{exp}.json"
+            )
+            if Path(citedcg_file).exists():
+                citedcg_files[exp] = citedcg_file
+                print(f"  ✓ {exp}: {citedcg_file}")
+            else:
+                print(f"  ✗ {exp}: Not found, will extract")
+        print("")
+    
+    # Extract CiteDCG if not reusing or if files missing
+    if not can_reuse_citedcg or len(citedcg_files) < len(experiments):
+        print("=" * 80)
+        print("STEP 1: EXTRACTING CITEDCG SCORES (once for all top-k)")
+        print("=" * 80)
+        citedcg_dir = Path(existing_citedcg_dir)
+        citedcg_dir.mkdir(parents=True, exist_ok=True)
+        
+        for exp in experiments:
+            if exp in citedcg_files:
+                print(f"  Skipping {exp} (already exists)")
+                continue
+                
+            print(f"  Extracting {exp}...")
+            citedcg_file = f"{citedcg_dir}/{job_id}_citedcg_scores_{exp}.json"
+            
+            count = extract_per_result_citedcg(
+                metrics_folder=metrics_dir,
+                experiment=exp,
+                output_file=citedcg_file
+            )
+            
+            citedcg_files[exp] = citedcg_file
+            print(f"    → Extracted {count} utterances")
+            print(f"    → Saved to: {citedcg_file}")
+        print("")
+    
+    # Validate that we have all required CiteDCG files
+    if len(citedcg_files) < len(experiments):
+        print("")
+        print("=" * 80)
+        print("✗ ERROR: Missing CiteDCG files")
+        print("=" * 80)
+        print(f"Expected {len(experiments)} experiment(s): {experiments}")
+        print(f"Found {len(citedcg_files)} file(s): {list(citedcg_files.keys())}")
+        print("")
+        print("Please run this command first to extract CiteDCG scores:")
+        print(f"  python seval_batch_processor.py process_seval_job_multihop_citedcg \\")
+        print(f"    --job_id={job_id} --experiment={experiment}")
+        print("=" * 80)
+        sys.exit(1)
+    
+    # STEP 2: Extract conversation details ONCE (same for all top-k values)
+    conv_dir = existing_conv_dir
+    
+    if can_reuse_conv:
+        print("=" * 80)
+        print("STEP 2: REUSING EXISTING CONVERSATION DETAILS")
+        print("=" * 80)
+        print(f"  Location: {existing_conv_dir}")
+        print("")
+    else:
+        print("=" * 80)
+        print("STEP 2: EXTRACTING CONVERSATION DETAILS (once for all top-k)")
+        print("=" * 80)
+        print(f"  Input:  {raw_data_dir}")
+        print(f"  Output: {conv_dir}")
+        print(f"  Experiment: {experiment}")
+        print(f"  Threads: {threads}")
+        print("")
+        
+        extract_conversations(
+            input_dir=raw_data_dir,
+            output_dir=conv_dir,
+            experiment=experiment,
+            threads=threads,
+            verbose=verbose
+        )
+        print("")
+    
+    # Validate that conversation files exist
+    conv_path = Path(conv_dir)
+    if not conv_path.exists():
+        print("")
+        print("=" * 80)
+        print("✗ ERROR: Conversation directory not found")
+        print("=" * 80)
+        print(f"Expected directory: {conv_dir}")
+        print("")
+        print("Please run this command first to extract conversations:")
+        print(f"  python seval_batch_processor.py process_seval_job_multihop_citedcg \\")
+        print(f"    --job_id={job_id} --experiment={experiment}")
+        print("=" * 80)
+        sys.exit(1)
+    
+    conv_files = list(conv_path.glob("*_conv_details.json"))
+    if len(conv_files) == 0:
+        print("")
+        print("=" * 80)
+        print("✗ ERROR: No conversation files found")
+        print("=" * 80)
+        print(f"Directory exists but is empty: {conv_dir}")
+        print("")
+        print("Please run this command first to extract conversations:")
+        print(f"  python seval_batch_processor.py process_seval_job_multihop_citedcg \\")
+        print(f"    --job_id={job_id} --experiment={experiment}")
+        print("=" * 80)
+        sys.exit(1)
+    
+    # STEP 3: Process each top-k value (merge CiteDCG with conversations)
+    for idx, k in enumerate(k_values, 1):
+        print("")
+        print("=" * 80)
+        print(f"STEP 3: MERGING WITH TOP-K={k} ({idx}/{len(k_values)})")
+        print("=" * 80)
+        print("")
+        
+        # Create k-specific output directory
+        merged_dir = f"{output_base_dir}/{job_id}_merged_k{k}"
+        merged_dirs[k] = merged_dir
+        
+        # Check if merged results already exist for this k
+        merged_path = Path(merged_dir)
+        if not clean and merged_path.exists():
+            # Count existing stats files to verify completeness
+            exp_dirs = []
+            if experiment.lower() in ["control", "both"]:
+                exp_dirs.append(merged_path / "control")
+            if experiment.lower() in ["treatment", "both"]:
+                exp_dirs.append(merged_path / "treatment")
+            
+            stats_count = sum(
+                len(list(d.glob("*_stats.json")))
+                for d in exp_dirs
+                if d.exists()
+            )
+            
+            if stats_count > 0:
+                print(f"REUSING EXISTING MERGED RESULTS for k={k}")
+                print(f"  Found {stats_count} stats files in: {merged_dir}")
+                print("  Skipping merge step")
+                print("")
+                print(f"✓ Using existing results for top-k={k}")
+                print(f"  Results location: {merged_dir}")
+                continue
+        
+        # Merge CiteDCG with conversations using current top-k
+        print(f"Merging CiteDCG scores with conversations (top-k={k})...")
+        merge_citescg_scores(
+            conv_dir=conv_dir,
+            citedcg_control_file=citedcg_files.get("control"),
+            citedcg_treatment_file=citedcg_files.get("treatment"),
+            output_dir=merged_dir,
+            threads=threads,
+            top_k=k,
+            verbose=verbose
+        )
+        print("")
+        print(f"✓ Completed processing for top-k={k}")
+        print(f"  Results saved to: {merged_dir}")
+    
+    # Step 4: Generate plots
+    if len(k_values) >= 3:
+        # Find k=1, k=3, k=5 for plotting (or closest available)
+        k1 = min(k_values, key=lambda x: abs(x - 1))
+        k3 = min(k_values, key=lambda x: abs(x - 3))
+        k5 = min(k_values, key=lambda x: abs(x - 5))
+        
+        # Always clean plot output folder to avoid old/new plot mixture
+        plots_dir = Path(f"{output_base_dir}/{job_id}_plots")
+        if plots_dir.exists():
+            print("")
+            print("CLEANING PLOT OUTPUT DIRECTORY:")
+            processor._clean_directory(plots_dir, "plots")
+        
+        print("")
+        print("=" * 80)
+        print(f"GENERATING PLOTS (using k={k1}, k={k3}, k={k5})")
+        print("=" * 80)
+        print("")
+        
+        try:
+            # Import plot module
+            sys.path.insert(0, str(Path(__file__).parent))
+            from plot_seval_metrics import plot_seval_metrics
+
+            # Generate plots using new flexible API
+            merged_dir_list = [
+                merged_dirs[k1],
+                merged_dirs[k3],
+                merged_dirs[k5]
+            ]
+            
+            plot_seval_metrics(
+                merged_dirs=merged_dir_list,
+                experiment=experiment if experiment != "both" else "control",
+                output_dir=f"{output_base_dir}/{job_id}_plots"
+            )
+            
+            print("")
+            print(f"✓ Plots generated successfully")
+            print(f"  Plots saved to: {output_base_dir}/{job_id}_plots")
+            
+        except Exception as e:
+            print(f"⚠ Warning: Failed to generate plots: {e}")
+            print(f"  You can generate plots manually using plot_seval_metrics.py")
+            import traceback
+            traceback.print_exc()
+    
+    else:
+        print("")
+        print("⚠ Note: Plotting requires at least 3 different top-k values")
+        print(f"  You provided: {k_values}")
+        print(f"  Plots will not be generated")
+    
+    # Final summary
+    print("")
+    print("=" * 80)
+    print("✓ COMPLETE: SEVAL JOB PROCESSING WITH MULTIPLE TOP-K")
+    print("=" * 80)
+    print(f"Job ID: {job_id}")
+    print(f"Processed top-k values: {k_values}")
+    print("")
+    print("Output directories:")
+    for k, merged_dir in merged_dirs.items():
+        print(f"  k={k}: {merged_dir}")
+    if len(k_values) >= 3:
+        print(f"  Plots: {output_base_dir}/{job_id}_plots")
+    print("=" * 80)
+
+
 # ==========================================================================
 # CLI Entry Point
 # ==========================================================================
@@ -1096,4 +1536,5 @@ if __name__ == "__main__":
         'extract_conversations': extract_conversations,
         'merge_citescg_scores': merge_citescg_scores,
         'process_seval_job_multihop_citedcg': process_seval_job_multihop_citedcg,
+        'process_seval_job_with_plots': process_seval_job_with_plots,
     })

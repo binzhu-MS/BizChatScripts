@@ -11,6 +11,12 @@ The merger creates a unified JSON output with:
 - Scores attached to each search result
 - Aggregated statistics in metadata and summary sections
 
+MATCHING STRATEGY:
+CiteDCG data is organized by utterance only (no turn/hop/invocation markers).
+Conversation data has nested structure: turns → hops → invocations → queries.
+Matching relies on processing searches in order within each utterance to
+maintain correct turn/hop/invocation alignment.
+
 USAGE:
 
 Command line:
@@ -99,14 +105,18 @@ def _merge_citedcg_into_conversation(
                             f"Skipping invalid JSON on line {line_num}: {e}"
                         )
         
-        # Build query -> results mapping
+        # Build query mapping (preserves search order for correct matching)
+        logger.info("Building CiteDCG query map...")
         query_map = _build_citedcg_query_map(citedcg_data)
-        # Count total results
-        total_cit_results = sum(
-            len(results) for results in query_map.values()
+        
+        # Count total searches
+        total_searches = sum(
+            len(data.get('searches', []))
+            for data in query_map.values()
         )
         logger.info(
-            f"  Loaded {total_cit_results} results with CiteDCG scores"
+            f"  Built map for {len(query_map)} utterances "
+            f"with {total_searches} total searches"
         )
     except Exception as e:
         logger.error(f"Failed to load CiteDCG file: {e}")
@@ -135,18 +145,18 @@ def _build_citedcg_query_map(
     citedcg_data: List[Dict]
 ) -> Dict[str, Dict]:
     """
-    Build hierarchical mapping from query text to search data.
+    Build mapping from utterance to search data with preserved order.
     
-    New structure uses the enhanced CiteDCG extraction that groups by:
-    1. Utterance (user question)
-    2. Search domain + query string (each specific search)
-    3. Position in results list
+    IMPORTANT: Maintains search order for correct turn/hop/invocation matching.
+    The conversation structure has turns/hops/invocations, but CiteDCG data
+    only has searches grouped by utterance. Matching relies on processing
+    searches in the same order they appear in both structures.
     
     Args:
         citedcg_data: List of query groups with hierarchical search data
         
     Returns:
-        Dictionary mapping normalized query text to search structure:
+        Dictionary mapping normalized utterance to search structure:
         {
             utterance: {
                 'searches': [
@@ -181,25 +191,31 @@ def _add_citedcg_scores_to_conversation(
     """
     Add CiteDCG scores to conversation data structure.
     
-    Matches results by:
-    1. Utterance (normalized user question)
-    2. Search domain (e.g., 'office365_search_files')
-    3. Query string (the actual search query)
-    4. Position in results list
-
-    Args:
-        conversation_data: Conversation details data structure
-        query_map: Map from utterance to CiteDCG search data
-        top_k: Number of top results to consider for top-k average (default: 5)
+    MATCHING STRATEGY:
+    CiteDCG data lacks turn/hop/invocation markers - only has searches
+    grouped by utterance. Correct matching requires processing searches
+    in the same order they appear in conversation structure.
+    
+    Cannot use simple (utterance, domain, query) lookup because:
+    - Same query can appear in multiple turns/hops
+    - Order of searches matters for correct turn/hop alignment
+    - Must iterate through searches to maintain implicit ordering
+    
+    Matching process:
+    1. Match by utterance (normalized user input from first turn)
+    2. Iterate through queries in conversation order
+    3. Find matching search by domain + query string
+    4. Match results by position/index
 
     Updates:
     - Adds 'citedcg_score' field to each search result
-    - Adds average scores to turn/invocation level
+    - Adds average scores at turn/hop/invocation levels
     - Adds overall statistics to metadata and summary
     
     Args:
         conversation_data: Conversation analysis data
-        query_map: Hierarchical mapping from query text to search data
+        query_map: Map from utterance to ordered list of searches
+        top_k: Number of top results for top-k average (default: 5)
         
     Returns:
         Updated conversation data with scores
@@ -245,11 +261,9 @@ def _add_citedcg_scores_to_conversation(
                 
                 # Process each query in the invocation
                 for query in invocation.get('queries', []):
-                    # MATCHING HIERARCHY:
-                    # 1. Utterance: Match by user_input (turn_index=1)
-                    # 2. Turn/Hop/Invocation: Implicit via nested loop order
-                    # 3. Search: Match by domain + query_string
-                    # 4. Results: Match by position/index in results array
+                    # IMPORTANT: Order-based matching preserves turn/hop context
+                    # CiteDCG data has no explicit turn/hop/invocation markers.
+                    # We match by processing searches in order within each utterance.
                     
                     total_queries_processed += 1
                     
@@ -259,12 +273,10 @@ def _add_citedcg_scores_to_conversation(
                     
                     # Get query metadata
                     query_domain = query.get('domain', '')
-                    query_text = query.get('query', '')
+                    query_text = query.get('query', '').strip().lower()
                     
-                    # Normalize query for matching
-                    normalized_query = query_text.strip().lower()
-                    
-                    # Find matching search by domain and query string (exact match only)
+                    # Find matching search by domain and query string
+                    # OPTIMIZATION: Store match to avoid re-searching
                     matched_search = None
                     search_domain_key = f"office365_search_{query_domain}"
                     
@@ -276,7 +288,7 @@ def _add_citedcg_scores_to_conversation(
                         
                         # Match by domain and query string
                         if (search_domain == search_domain_key and
-                                search_query == normalized_query):
+                                search_query == query_text):
                             matched_search = search
                             break
                     
@@ -304,10 +316,10 @@ def _add_citedcg_scores_to_conversation(
                                     inv_results_with_scores += 1
                                     hop_score_sum += score
                                     hop_results_with_scores += 1
-                                    hop_all_scores.append(score)  # For hop-level top-k
+                                    hop_all_scores.append(score)
                                     turn_score_sum += score
                                     turn_results_with_scores += 1
-                                    turn_all_scores.append(score)  # For turn-level top-k
+                                    turn_all_scores.append(score)
                                     total_score_sum += score
                                     total_results_with_scores += 1
                                 else:
