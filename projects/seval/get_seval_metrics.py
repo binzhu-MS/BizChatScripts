@@ -176,7 +176,48 @@ class PerResultCiteDCGExtractor:
             logger.warning("No CiteDCG data found in results file")
             return 0
         
-        logger.info(f"Extracted {len(extracted_data)} results")
+        # Verify multi-turn hop pattern
+        print("")
+        print("=" * 60)
+        print("MULTI-TURN HOP PATTERN VERIFICATION")
+        print("=" * 60)
+        verification = self._verify_multiturn_hop_pattern(all_data)
+        
+        print(
+            f"Total multi-turn conversations: "
+            f"{verification['total_multi_turn']}"
+        )
+        print(
+            f"  Last turn has hops: "
+            f"{verification['last_turn_has_hops']} "
+            f"({verification['last_turn_has_hops'] / max(1, verification['total_multi_turn']) * 100:.1f}%)"
+        )
+        print(
+            f"  First turn has hops: "
+            f"{verification['first_turn_has_hops']}"
+        )
+        print(
+            f"  Middle turn has hops: "
+            f"{verification['middle_turn_has_hops']}"
+        )
+        print(
+            f"  Multiple turns with hops: "
+            f"{verification['multiple_turns_with_hops']}"
+        )
+        
+        if verification['pattern_by_turns']:
+            print("")
+            print("Pattern breakdown by # of turns:")
+            for turns_key in sorted(verification['pattern_by_turns'].keys()):
+                patterns = verification['pattern_by_turns'][turns_key]
+                print(f"  {turns_key}:")
+                for pattern, count in sorted(
+                    patterns.items(), key=lambda x: -x[1]
+                ):
+                    print(f"    {pattern}: {count}")
+        
+        print("=" * 60)
+        print("")
         
         # Filter by utterance if specified
         if utterance:
@@ -192,6 +233,86 @@ class PerResultCiteDCGExtractor:
         
         # Group by query and write JSON output
         grouped_data = self._group_by_query(extracted_data)
+        
+        # Calculate statistics from grouped data (utterances)
+        stats = self._calculate_utterance_stats(grouped_data)
+        
+        print("=" * 60)
+        print("EXTRACTION STATISTICS:")
+        total = stats["total"]
+        print(f"  Total utterances: {total}")
+        
+        with_scores = stats["with_scores"]
+        with_scores_pct = (with_scores / total * 100) if total > 0 else 0
+        print(
+            f"  Utterances with CiteDCG scores: "
+            f"{with_scores} ({with_scores_pct:.1f}%)"
+        )
+        
+        empty = stats["empty_results"]
+        empty_pct = (empty / total * 100) if total > 0 else 0
+        print(
+            f"  Utterances without scores (empty search results): "
+            f"{empty} ({empty_pct:.1f}%)"
+        )
+        
+        no_searches = stats["no_searches"]
+        no_searches_pct = (no_searches / total * 100) if total > 0 else 0
+        print(
+            f"  Utterances without scores (no searches): "
+            f"{no_searches} ({no_searches_pct:.1f}%)"
+        )
+        
+        errors = stats["errors_count"]
+        errors_pct = (errors / total * 100) if total > 0 else 0
+        print(
+            f"  Utterances with errors (non-empty results, no labels): "
+            f"{errors} ({errors_pct:.1f}%)"
+        )
+        
+        # Output turn statistics
+        if stats['turn_stats']:
+            print("")
+            print("  Utterance breakdown by # of turns:")
+            total = stats['total']
+            for num_turns in sorted(stats['turn_stats'].keys()):
+                count = stats['turn_stats'][num_turns]
+                ratio = (count / total * 100) if total > 0 else 0
+                if num_turns == 1:
+                    print(
+                        f"    {num_turns} turn: {count} ({ratio:.1f}%)"
+                    )
+                else:
+                    # Multi-turn = retries, always 1 non-empty turn
+                    print(
+                        f"    {num_turns} turns (1 non-empty turn): "
+                        f"{count} ({ratio:.1f}%)"
+                    )
+        
+        if stats['error_examples']:
+            print("")
+            print("  Error case examples:")
+            for err in stats['error_examples'][:5]:  # Show first 5
+                print(f"    - {err}")
+            if len(stats['error_examples']) > 5:
+                print(
+                    f"    ... and {len(stats['error_examples']) - 5} more"
+                )
+            
+            # Show which plugins have no DCG labels
+            if stats['error_plugins']:
+                print("")
+                print("  Plugins without CiteDCG labels (error cases):")
+                sorted_plugins = sorted(
+                    stats['error_plugins'].items(),
+                    key=lambda x: x[1],
+                    reverse=True
+                )
+                for plugin, count in sorted_plugins:
+                    print(f"    - {plugin}: {count} results")
+        
+        print("=" * 60)
+        
         self._write_json_output(grouped_data, output_file)
         logger.info(
             f"Wrote {len(grouped_data)} utterances "
@@ -199,14 +320,244 @@ class PerResultCiteDCGExtractor:
         )
         return len(grouped_data)
     
+    def _calculate_utterance_stats(self, grouped_data: list) -> dict:
+        """
+        Calculate statistics about utterances from grouped data.
+        
+        Returns:
+            dict with keys:
+                - total: total number of utterances
+                - with_scores: utterances with CiteDCG scores
+                - empty_results: utterances with searches but empty results
+                - no_searches: utterances without any searches
+                - errors_count: utterances with results but no labels
+                - error_examples: list of error utterance texts
+                - error_plugins: dict mapping plugin_name -> count of results without labels
+                - turn_stats: dict mapping num_turns -> count
+                - multi_turn_with_hops: count of multi-turn utterances with hops
+        """
+        stats = {
+            'total': len(grouped_data),
+            'with_scores': 0,
+            'empty_results': 0,
+            'no_searches': 0,
+            'errors_count': 0,
+            'error_examples': [],
+            'error_plugins': {},
+            'turn_stats': {},
+            'multi_turn_with_hops': 0
+        }
+        
+        for utterance_data in grouped_data:
+            has_scores = utterance_data.get('has_cite_dcg_scores', True)
+            num_turns = utterance_data.get('num_turns', 1)
+            non_empty_turns = utterance_data.get('non_empty_turns', 0)
+            
+            # Track turn statistics
+            if num_turns not in stats['turn_stats']:
+                stats['turn_stats'][num_turns] = 0
+            stats['turn_stats'][num_turns] += 1
+            
+            # Track multi-turn utterances with hops
+            if num_turns > 1 and non_empty_turns > 0:
+                stats['multi_turn_with_hops'] += 1
+            
+            if has_scores:
+                # Normal case: has scores
+                stats['with_scores'] += 1
+            else:
+                # No scores - check reason
+                reason = utterance_data.get('reason', '')
+                
+                if reason == 'no_search_results':
+                    # Searches executed but returned empty results
+                    stats['empty_results'] += 1
+                elif reason == 'no_searches_executed':
+                    # No searches performed
+                    stats['no_searches'] += 1
+                else:
+                    # Check if any search has results (error case)
+                    searches = utterance_data.get('searches', [])
+                    has_results = any(
+                        search.get('result_count', 0) > 0
+                        for search in searches
+                    )
+                    if has_results:
+                        # Error: has results but no scores
+                        stats['errors_count'] += 1
+                        utterance = utterance_data.get('utterance', 'Unknown')
+                        stats['error_examples'].append(utterance)
+                        
+                        # Collect plugin names for error cases
+                        for search in searches:
+                            if search.get('result_count', 0) > 0:
+                                plugin = search.get('plugin_name', 'Unknown')
+                                if plugin not in stats['error_plugins']:
+                                    stats['error_plugins'][plugin] = 0
+                                stats['error_plugins'][plugin] += 1
+        
+        return stats
+    
+    def _calculate_extraction_stats(self, data: list) -> dict:
+        """
+        Calculate statistics about extracted data.
+        
+        Returns:
+            dict with keys:
+                - with_scores: count of results with CiteDCG scores
+                - no_results: count without scores (empty search results)
+                - no_searches: count without scores (no searches)
+                - errors: list of utterances with non-empty results
+                          but no CiteDCG labels
+        """
+        stats = {
+            'with_scores': 0,
+            'no_results': 0,
+            'no_searches': 0,
+            'errors': []
+        }
+        
+        for item in data:
+            has_scores = item.get('has_cite_dcg_scores', True)
+            
+            if has_scores:
+                stats['with_scores'] += 1
+            else:
+                reason = item.get('reason', '')
+                is_error = item.get('is_error', False)
+                
+                if is_error:
+                    # Non-empty results but no CiteDCG labels - ERROR!
+                    utterance = item.get('utterance', 'Unknown')
+                    stats['errors'].append(utterance)
+                elif reason == 'no_search_results':
+                    stats['no_results'] += 1
+                elif reason == 'no_searches_executed':
+                    stats['no_searches'] += 1
+        
+        return stats
+    
+    def _verify_multiturn_hop_pattern(
+        self, data_list: list
+    ) -> dict:
+        """
+        Verify which turns have hops in multi-turn conversations.
+        
+        This checks the hypothesis that in multi-turn conversations,
+        only the LAST turn has hops (orchestrationIterations),
+        while previous turns are failed attempts.
+        
+        Args:
+            data_list: List of raw DCG data entries
+            
+        Returns:
+            dict with verification statistics
+        """
+        verification = {
+            'total_multi_turn': 0,
+            'last_turn_has_hops': 0,
+            'first_turn_has_hops': 0,
+            'middle_turn_has_hops': 0,
+            'multiple_turns_with_hops': 0,
+            'pattern_by_turns': {},  # num_turns -> pattern description
+            'examples': []  # Store some examples for review
+        }
+        
+        for data in data_list:
+            evaluation_data = data.get("EvaluationData", {})
+            turn_data = evaluation_data.get("turnData", [])
+            num_turns = len(turn_data) if turn_data else 0
+            
+            # Only analyze multi-turn conversations
+            if num_turns <= 1:
+                continue
+            
+            verification['total_multi_turn'] += 1
+            
+            # Check which turns have orchestrationIterations (hops)
+            turns_with_hops = []
+            for turn_idx, turn in enumerate(turn_data):
+                orchestration_iterations = turn.get(
+                    "orchestrationIterations", []
+                )
+                if orchestration_iterations and len(
+                    orchestration_iterations
+                ) > 0:
+                    turns_with_hops.append(turn_idx + 1)  # 1-indexed
+            
+            # Categorize the pattern
+            num_turns_with_hops = len(turns_with_hops)
+            
+            if num_turns_with_hops == 0:
+                pattern = "no_hops"
+            elif num_turns_with_hops == 1:
+                hop_turn = turns_with_hops[0]
+                if hop_turn == num_turns:  # Last turn
+                    verification['last_turn_has_hops'] += 1
+                    pattern = "last_turn_only"
+                elif hop_turn == 1:  # First turn
+                    verification['first_turn_has_hops'] += 1
+                    pattern = "first_turn_only"
+                else:  # Middle turn
+                    verification['middle_turn_has_hops'] += 1
+                    pattern = f"turn_{hop_turn}_only"
+            else:  # Multiple turns with hops
+                verification['multiple_turns_with_hops'] += 1
+                pattern = f"turns_{','.join(map(str, turns_with_hops))}"
+            
+            # Track pattern by number of turns
+            key = f"{num_turns}_turns"
+            if key not in verification['pattern_by_turns']:
+                verification['pattern_by_turns'][key] = {}
+            if pattern not in verification['pattern_by_turns'][key]:
+                verification['pattern_by_turns'][key][pattern] = 0
+            verification['pattern_by_turns'][key][pattern] += 1
+            
+            # Store examples (first 5 of each unusual pattern)
+            if pattern != "last_turn_only" and len(
+                verification['examples']
+            ) < 10:
+                verification['examples'].append({
+                    'utterance': data.get("Utterance", "")[:80],
+                    'num_turns': num_turns,
+                    'turns_with_hops': turns_with_hops,
+                    'pattern': pattern
+                })
+        
+        return verification
+    
     def _extract_cite_dcg_data(self, data: dict) -> list:
-        """Extract CiteDCG scores from JSON structure."""
+        """
+        Extract CiteDCG scores from JSON structure.
+        If no results with CiteDCG labels found, return placeholder entry
+        to preserve utterance in output.
+        """
         results = []
         all_search_results = data.get("AllSearchResults", {})
+        utterance = data.get("Utterance", "")
+        
+        # Extract num_turns from EvaluationData
+        evaluation_data = data.get("EvaluationData", {})
+        turn_data = evaluation_data.get("turnData", [])
+        num_turns = len(turn_data) if turn_data else 1
+        
+        # If no utterance, skip this entry entirely
+        if not utterance:
+            return results
+        
+        # Track if we found any searches and scoreable results
+        has_any_searches = False
+        has_results_with_scores = False
+        has_non_empty_results = False  # Track if ANY Results list is non-empty
+        
+        # Also collect results without scores for error cases
+        results_without_scores = []
         
         for turn_index, query_data in all_search_results.items():
             if not query_data:
                 continue
+            
+            has_any_searches = True
             
             for search_domain, domain_data in query_data.items():
                 if not isinstance(domain_data, list):
@@ -218,16 +569,44 @@ class PerResultCiteDCGExtractor:
                     plugin_invocation = domain_item.get(
                         "PluginInvocation", ""
                     )
-                    query_string = self._extract_query_from_invocation(
-                        plugin_invocation
+                    
+                    # Only extract queries from search plugins
+                    # Skip non-search plugins (record_memory, fetch_*, etc.)
+                    is_search_plugin = any(
+                        search_type in plugin_name.lower()
+                        for search_type in ['search', 'bing', 'office365']
+                    ) and not any(
+                        fetch_type in plugin_name.lower()
+                        for fetch_type in ['fetch_', 'record_']
                     )
+                    
+                    query_string = ""
+                    if is_search_plugin:
+                        query_string = self._extract_query_from_invocation(
+                            plugin_invocation, plugin_name
+                        )
                     
                     results_list = domain_item.get("Results", [])
                     
+                    # Track if this search has non-empty results
+                    if results_list:
+                        has_non_empty_results = True
+                    
                     for result in results_list:
                         if "CiteDCGLLMLabel" not in result:
+                            # Collect results without scores for error tracking
+                            extracted = self._extract_single_result(
+                                result,
+                                turn_index,
+                                search_domain,
+                                plugin_name,
+                                query_string,
+                                include_null_score=True
+                            )
+                            results_without_scores.append(extracted)
                             continue
                         
+                        has_results_with_scores = True
                         extracted = self._extract_single_result(
                             result,
                             turn_index,
@@ -235,29 +614,146 @@ class PerResultCiteDCGExtractor:
                             plugin_name,
                             query_string,
                         )
+                        extracted["num_turns"] = num_turns
                         results.append(extracted)
+        
+        # If no scoreable results found, add placeholder
+        # This includes: searches with empty results, or no searches at all
+        if not has_results_with_scores:
+            reason = (
+                "no_search_results" if has_any_searches
+                else "no_searches_executed"
+            )
+            
+            # ERROR: Non-empty results but no CiteDCG labels
+            is_error = has_non_empty_results
+            
+            # For error cases, include the results without scores
+            if is_error and results_without_scores:
+                # Include actual results but mark as having no scores
+                for item in results_without_scores:
+                    item["is_error"] = True
+                    item["has_cite_dcg_scores"] = False
+                    item["num_turns"] = num_turns
+                    # Ensure utterance is set from parent data if missing
+                    if not item.get("utterance"):
+                        item["utterance"] = utterance
+                return results_without_scores
+            else:
+                # Empty results or no searches - return placeholder
+                results.append({
+                    "utterance": utterance,
+                    "num_turns": num_turns,
+                    "has_cite_dcg_scores": False,
+                    "reason": reason,
+                    "searches": [],
+                    "is_error": is_error
+                })
         
         return results
     
-    def _extract_query_from_invocation(self, invocation_str: str) -> str:
-        """Extract query string from PluginInvocation field."""
+    def _extract_query_from_invocation(
+        self, invocation_str: str, plugin_name: str = ""
+    ) -> str:
+        """Extract query string from PluginInvocation field.
+        
+        Handles both simple string queries and complex structured queries.
+        For web search, the query might be a dict with 'search_query' field.
+        
+        Args:
+            invocation_str: The PluginInvocation string
+            plugin_name: Name of the plugin (for logging)
+        
+        Examples:
+            office365_search({'domain': 'files', 'query': 'my query'})
+            bing_search({'search_query': 'my search', 'market': 'en-US'})
+        """
         if not invocation_str:
             return ""
         
         try:
-            # Extract the 'query' parameter value from invocation string
-            # Example: "office365_search({'domain': 'files', ...})"
+            # First try to parse as eval (safe for dict literals)
+            # Extract the part inside parentheses
+            import ast
             import re
+
+            # Find the dict/parameter part: function_name({...})
+            match = re.search(r'\(({[^)]+})\)', invocation_str)
+            if match:
+                dict_str = match.group(1)
+                try:
+                    # Safely parse the dict literal
+                    params = ast.literal_eval(dict_str)
+                    if isinstance(params, dict):
+                        # Try 'query' first (office365_search)
+                        if 'query' in params:
+                            query_val = params['query']
+                            # Handle nested dict (web search case)
+                            if isinstance(query_val, dict):
+                                # Try common web search fields
+                                return (
+                                    query_val.get('search_query') or
+                                    query_val.get('query') or
+                                    str(query_val)
+                                )
+                            return str(query_val)
+                        
+                        # Try 'search_query' (bing_search)
+                        if 'search_query' in params:
+                            return str(params['search_query'])
+                except (ValueError, SyntaxError):
+                    pass
+            
+            # Fallback: regex extraction for simple string queries
+            # Try single quotes: 'query': 'value'
             match = re.search(r"'query':\s*'([^']+)'", invocation_str)
             if match:
                 return match.group(1)
             
-            # Try double quotes
+            # Try double quotes: "query": "value"
             match = re.search(r'"query":\s*"([^"]+)"', invocation_str)
             if match:
                 return match.group(1)
+            
+            # Try search_query field
+            match = re.search(r"'search_query':\s*'([^']+)'", invocation_str)
+            if match:
+                return match.group(1)
+            
+            match = re.search(r'"search_query":\s*"([^"]+)"', invocation_str)
+            if match:
+                return match.group(1)
+            
+            # Try querykeywords field (enterprise connectors)
+            match = re.search(r"'querykeywords':\s*'([^']*)'", invocation_str)
+            if match:
+                return match.group(1)  # May be empty string for searches with no keywords
+            
+            match = re.search(r'"querykeywords":\s*"([^"]*)"', invocation_str)
+            if match:
+                return match.group(1)  # May be empty string for searches with no keywords
+            
+            # Handle queries with escaped quotes or nested quotes
+            # Pattern: 'query': "value with 'quotes'"
+            match = re.search(r"'query':\s*\"([^\"]+)\"", invocation_str)
+            if match:
+                return match.group(1)
+            
+            # Pattern: "query": 'value with "quotes"'
+            match = re.search(r'"query":\s*\'([^\']+)\'', invocation_str)
+            if match:
+                return match.group(1)
+                
         except Exception as e:
             logger.debug(f"Error extracting query from invocation: {e}")
+        
+        # If we reach here for a search plugin, log debug info
+        # (not a warning since some searches legitimately have empty queries)
+        if invocation_str and plugin_name:
+            logger.debug(
+                f"Could not extract query from search plugin "
+                f"'{plugin_name}': {invocation_str[:100]}"
+            )
         
         return ""
     
@@ -268,15 +764,19 @@ class PerResultCiteDCGExtractor:
         search_domain: str,
         plugin_name: str = "",
         query_string: str = "",
+        include_null_score: bool = False,
     ) -> dict:
         """Extract relevant fields from a single result."""
+        # Set default CiteDCG label based on whether we're including nulls
+        default_label = None if include_null_score else ""
+        
         extracted = {
             "turn_index": turn_index,
             "search_domain": search_domain,
             "plugin_name": plugin_name,
             "query_string": query_string,
             "ReferenceId": result.get("ReferenceId", ""),
-            "CiteDCGLLMLabel": result.get("CiteDCGLLMLabel", ""),
+            "CiteDCGLLMLabel": result.get("CiteDCGLLMLabel", default_label),
             "ResultType": result.get("ResultType", ""),
             "Type": result.get("Type", ""),
         }
@@ -339,14 +839,19 @@ class PerResultCiteDCGExtractor:
         
         for item in data:
             utterance = item.get("utterance", "")
-            turn_index = item.get("turn_index", "")
+            num_turns = item.get("num_turns", 1)
             
             key = utterance
             
-            if not query_groups[key].get("turn_index"):
-                query_groups[key]["turn_index"] = turn_index
+            if not query_groups[key].get("utterance"):
                 query_groups[key]["utterance"] = utterance
                 query_groups[key]["timestamp"] = item.get("timestamp", "")
+                query_groups[key]["num_turns"] = num_turns
+                # Track if this is a placeholder entry
+                query_groups[key]["has_cite_dcg_scores"] = item.get(
+                    "has_cite_dcg_scores", True
+                )
+                query_groups[key]["reason"] = item.get("reason", "")
             
             query_groups[key]["results"].append(item)
         
@@ -355,25 +860,53 @@ class PerResultCiteDCGExtractor:
         for group_data in query_groups.values():
             results = group_data["results"]
             
-            # Group by (domain, query_string) for search-level grouping
+            # Check if this is a placeholder entry (no DCG scores)
+            has_dcg = group_data.get("has_cite_dcg_scores", True)
+            
+            # Check if any result has search_domain (indicating actual search data)
+            has_search_data = any(
+                "search_domain" in result for result in results
+            )
+            
+            if not has_dcg and not has_search_data:
+                # Create simplified entry for utterances without searches
+                # or empty search results
+                ordered_group = {
+                    "utterance": group_data.get("utterance", ""),
+                    "timestamp": group_data.get("timestamp", ""),
+                    "num_turns": group_data.get("num_turns", 1),
+                    "num_hops": 0,
+                    "non_empty_turns": 0,
+                    "has_cite_dcg_scores": False,
+                    "reason": group_data.get("reason", ""),
+                    "total_results": 0,
+                    "results_by_domain": {},
+                    "searches": [],
+                }
+                grouped_list.append(ordered_group)
+                continue
+            
+            # Process results with search data (normal or error cases)
             search_groups = defaultdict(list)
             for result in results:
                 domain = result.get("search_domain", "unknown")
                 query_string = result.get("query_string", "")
                 plugin_name = result.get("plugin_name", "")
-                key = (domain, query_string, plugin_name)
+                hop = result.get("turn_index", "")
+                key = (hop, domain, query_string, plugin_name)
                 
                 # Remove redundant fields for result item
                 result_item = {
                     k: v
                     for k, v in result.items()
                     if k not in [
-                        "turn_index",
+                        "turn_index",  # Now at search level as "hop"
                         "utterance",
                         "timestamp",
                         "search_domain",
                         "plugin_name",
                         "query_string",
+                        "is_error",  # Remove internal tracking field
                     ]
                 }
                 search_groups[key].append(result_item)
@@ -381,45 +914,26 @@ class PerResultCiteDCGExtractor:
             # Create search entries
             searches = []
             total_results = 0
-            all_scores = []
             
-            for (domain, query_string, plugin_name), search_results in (
+            for (hop, domain, query_string, plugin_name), search_results in (
                 search_groups.items()
             ):
-                # Calculate stats for this search
-                scores = [
-                    r.get("CiteDCGLLMLabel", 0)
-                    for r in search_results
-                    if r.get("CiteDCGLLMLabel")
-                ]
-                avg_score = (
-                    round(sum(scores) / len(scores), 2) if scores else None
-                )
-                
                 searches.append(
                     {
+                        "hop": hop,
                         "search_domain": domain,
                         "plugin_name": plugin_name,
                         "query_string": query_string,
                         "result_count": len(search_results),
-                        "avg_cite_dcg_label": avg_score,
                         "results": search_results,
                     }
                 )
                 
                 total_results += len(search_results)
-                all_scores.extend(scores)
             
-            # Sort searches by domain then query_string
+            # Sort searches by hop, then domain, then query_string
             searches.sort(
-                key=lambda x: (x["search_domain"], x["query_string"])
-            )
-            
-            # Calculate overall average
-            overall_avg = (
-                round(sum(all_scores) / len(all_scores), 2)
-                if all_scores
-                else None
+                key=lambda x: (x["hop"], x["search_domain"], x["query_string"])
             )
             
             # Count results by domain
@@ -430,12 +944,22 @@ class PerResultCiteDCGExtractor:
                     domain_counts.get(domain, 0) + search["result_count"]
                 )
             
+            # Calculate num_hops (unique hop numbers)
+            unique_hops = set(search["hop"] for search in searches)
+            num_hops = len(unique_hops)
+            
+            # For current data: always 1 non-empty turn (the successful one)
+            # Future: can track multiple turns with hops if pattern changes
+            non_empty_turns = 1 if num_hops > 0 else 0
+            
             ordered_group = {
-                "turn_index": group_data.get("turn_index", ""),
                 "utterance": group_data.get("utterance", ""),
                 "timestamp": group_data.get("timestamp", ""),
+                "num_turns": group_data.get("num_turns", 1),
+                "num_hops": num_hops,
+                "non_empty_turns": non_empty_turns,
+                "has_cite_dcg_scores": has_dcg,
                 "total_results": total_results,
-                "avg_cite_dcg_label": overall_avg,
                 "results_by_domain": domain_counts,
                 "searches": searches,
             }

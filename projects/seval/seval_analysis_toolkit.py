@@ -4103,6 +4103,33 @@ class SEVALAnalysisToolkit:
         eval_data = eval_message.get("evaluationData", {})
         turn_data_list = eval_data.get("turnData", [])
 
+        # Verify multi-turn hop pattern
+        if len(turn_data_list) > 1:
+            verification = self._verify_multiturn_hop_pattern_for_conversation(turn_data_list)
+            logger.info("")
+            logger.info("MULTI-TURN HOP PATTERN VERIFICATION (Conversation Extraction)")
+            logger.info(f"Total multi-turn conversations: {verification['total_multi_turn']}")
+            logger.info(
+                f"  Last turn has hops: "
+                f"{verification['last_turn_has_hops']} "
+                f"({verification['last_turn_has_hops'] / max(1, verification['total_multi_turn']) * 100:.1f}%)"
+            )
+            logger.info(f"  First turn has hops: {verification['first_turn_has_hops']}")
+            logger.info(f"  Middle turn has hops: {verification['middle_turn_has_hops']}")
+            logger.info(f"  Multiple turns with hops: {verification['multiple_turns_with_hops']}")
+            
+            if verification['pattern_by_turns']:
+                logger.info("")
+                logger.info("Pattern breakdown by # of turns:")
+                for turns_key in sorted(verification['pattern_by_turns'].keys()):
+                    patterns = verification['pattern_by_turns'][turns_key]
+                    logger.info(f"  {turns_key}:")
+                    for pattern, count in sorted(patterns.items(), key=lambda x: -x[1]):
+                        logger.info(f"    {pattern}: {count}")
+            
+            logger.info("=" * 60)
+            logger.info("")
+
         total_results = 0
         total_tool_invocations_count = 0
         total_queries = 0
@@ -4319,6 +4346,68 @@ class SEVALAnalysisToolkit:
             },
             "turns": results_by_turn,
         }
+
+    def _verify_multiturn_hop_pattern_for_conversation(self, turn_data_list: list) -> dict:
+        """Verify which turns have hops in multi-turn conversations (conversation extraction).
+        
+        Args:
+            turn_data_list: List of turn data from evaluationData.turnData
+            
+        Returns:
+            Dictionary with verification statistics
+        """
+        verification = {
+            'total_multi_turn': 0,
+            'last_turn_has_hops': 0,
+            'first_turn_has_hops': 0,
+            'middle_turn_has_hops': 0,
+            'multiple_turns_with_hops': 0,
+            'pattern_by_turns': {},
+            'examples': []
+        }
+        
+        # We only have one conversation in this method, check if it's multi-turn
+        if len(turn_data_list) <= 1:
+            return verification
+        
+        verification['total_multi_turn'] = 1
+        num_turns = len(turn_data_list)
+        
+        # Check which turns have orchestrationIterations (hops)
+        turns_with_hops = []
+        for turn_idx, turn in enumerate(turn_data_list):
+            iterations = turn.get("orchestrationIterations", [])
+            if iterations:
+                turns_with_hops.append(turn_idx + 1)
+        
+        # Categorize the pattern
+        num_turns_with_hops = len(turns_with_hops)
+        pattern = "unknown"
+        
+        if num_turns_with_hops == 0:
+            pattern = "no_hops"
+        elif num_turns_with_hops == 1:
+            turn_num = turns_with_hops[0]
+            if turn_num == num_turns:
+                pattern = "last_turn_only"
+                verification['last_turn_has_hops'] = 1
+            elif turn_num == 1:
+                pattern = "first_turn_only"
+                verification['first_turn_has_hops'] = 1
+            else:
+                pattern = "middle_turn_only"
+                verification['middle_turn_has_hops'] = 1
+        else:
+            pattern = "multiple_turns"
+            verification['multiple_turns_with_hops'] = 1
+        
+        # Track pattern by number of turns
+        turns_key = f"{num_turns}_turns"
+        if turns_key not in verification['pattern_by_turns']:
+            verification['pattern_by_turns'][turns_key] = {}
+        verification['pattern_by_turns'][turns_key][pattern] = 1
+        
+        return verification
 
     def _extract_search_result_info(
         self, msg: Dict, msg_index: int, round_number: int = 1, invocation_ref: str = None

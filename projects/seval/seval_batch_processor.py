@@ -6,36 +6,39 @@ Provides batch processing utilities for SEVAL data analysis with
 extensible modular design.
 
 Available Commands:
-    extract_conversations           - Extract conversation details from SEVAL raw data files
+    extract_conversations           - Extract conversation details from SEVAL
     merge_citescg_scores            - Merge conversations with CiteDCG scores
-    process_seval_job_multihop_citedcg - Complete end-to-end multi-hop CiteDCG processing
-    process_seval_job_with_plots    - Multi-hop processing with multiple top-k values and plots
+    process_seval_job_multihop_citedcg - End-to-end CiteDCG processing
+    process_seval_job_with_statistics_plots - Calculate statistics for
+                                             multiple top-k and generate plots
 
 Usage Examples:
-    # Process with multiple top-k values and generate plots (recommended)
-    python seval_batch_processor.py process_seval_job_with_plots --job_id=130949 --top_k_list=1,3,5
+    # Process with multiple top-k values, calculate statistics, and plot
+    python seval_batch_processor.py process_seval_job_with_statistics_plots \\
+        --job_id=130949 --top_k_list=1,3,5
     
-    # Complete multi-hop CiteDCG processing (runs all 3 steps, single top-k)
-    python seval_batch_processor.py process_seval_job_multihop_citedcg --job_id=130949
+    # Complete multi-hop CiteDCG processing (single top-k)
+    python seval_batch_processor.py process_seval_job_multihop_citedcg \\
+        --job_id=130949
     
     # Extract conversations only
-    python seval_batch_processor.py extract_conversations \
-        --input_dir "seval_data/130949_scraping_raw_data_output" \
-        --output_dir "results/conversation_details" \
+    python seval_batch_processor.py extract_conversations \\
+        --input_dir "seval_data/130949_scraping_raw_data_output" \\
+        --output_dir "results/conversation_details" \\
         --experiment control --threads 8
 
     # Merge with CiteDCG scores only
-    python seval_batch_processor.py merge_citescg_scores \
-        --conv_dir "results/conversation_details" \
-        --citedcg_control_file "results/130949_citedcg_scores_control.json" \
-        --output_dir "results/merged" --top_k 5
+    python seval_batch_processor.py merge_citescg_scores \\
+        --conv_dir "results/conversation_details" \\
+        --citedcg_control_file "results/130949_citedcg_scores_control.json" \\
+        --output_dir "results/merged"
 
-Three-Step Workflow:
-    1. Extract CiteDCG scores from metrics (via get_seval_metrics.py)
-    2. Extract conversation details from raw SEVAL data
-    3. Merge CiteDCG scores with conversation details
-    
-    The process_seval_job_multihop_citedcg command automates all three steps.
+Workflow:
+    1. Extract CiteDCG scores from metrics
+    2. Extract conversation details from raw data
+    3. Merge conversations with CiteDCG scores (once, no statistics)
+    4. Calculate statistics for different top-k values
+    5. Generate comparison plots
 """
 
 import json
@@ -84,21 +87,29 @@ class BaseProcessor:
         level = logging.DEBUG if verbose else logging.WARNING
         logging.getLogger().setLevel(level)
     
-    def _clean_directory(self, directory: Path, description: str = "directory"):
+    def _clean_directory(
+        self,
+        directory: Path,
+        description: str = "directory",
+        silent: bool = False
+    ):
         """Clean all files in a directory.
         
         Args:
             directory: Path to directory to clean
             description: Human-readable description for logging
+            silent: If True, don't print cleaning messages
         """
         if directory.exists():
             file_count = len(list(directory.rglob('*')))
             if file_count > 0:
-                print(f"  Cleaning {description}: {directory}")
-                print(f"  → Removing {file_count} items...")
+                if not silent:
+                    print(f"  Cleaning {description}: {directory}")
+                    print(f"  → Removing {file_count} items...")
                 shutil.rmtree(directory)
                 directory.mkdir(parents=True, exist_ok=True)
-                print(f"  ✓ Cleaned")
+                if not silent:
+                    print(f"  ✓ Cleaned")
             # Skip message if directory is already empty
     
     def _validate_path(
@@ -173,7 +184,16 @@ class BaseProcessor:
 # ==========================================================================
 
 class ConversationExtractor(BaseProcessor):
-    """Extract conversation details from SEVAL files."""
+    """
+    Extract conversation details from SEVAL files.
+    
+    IMPORTANT - "Non-empty hop" definition in this phase:
+    A hop is considered "non-empty" if it EXISTS in the data structure,
+    regardless of whether it has invocations (search attempts) or results.
+    This counts hop data structures that may be empty placeholders.
+    
+    See MergeCiteDCGProcessor for a different definition used in merge phase.
+    """
     
     def __init__(self):
         super().__init__()
@@ -188,7 +208,8 @@ class ConversationExtractor(BaseProcessor):
         output_dir: str,
         experiment: str = "both",
         threads: int = 8,
-        verbose: bool = False
+        verbose: bool = False,
+        clean: bool = False
     ) -> Dict[str, Any]:
         """
         Extract conversation details from SEVAL files.
@@ -199,6 +220,7 @@ class ConversationExtractor(BaseProcessor):
             experiment: Experiment type: 'control', 'treatment', or 'both' (default: 'both')
             threads: Number of parallel threads
             verbose: Enable verbose logging
+            clean: If True, delete and recreate output directory
             
         Returns:
             Summary statistics
@@ -213,6 +235,12 @@ class ConversationExtractor(BaseProcessor):
         
         if not self._validate_path(input_path):
             return {}
+        
+        # Clean output directory if requested
+        if clean and output_path.exists():
+            import shutil
+            logger.info(f"Cleaning output directory: {output_path}")
+            shutil.rmtree(output_path)
         
         self._validate_path(output_path, create=True)
         
@@ -316,10 +344,12 @@ class ConversationExtractor(BaseProcessor):
             turn_total_hops = len(hops)
             turn_nonempty_hops = 0
             
+            # DEFINITION: "Non-empty hop" in extraction phase means the hop
+            # data structure exists, even if it's just a placeholder with no
+            # invocations or search results. We count every hop in the array.
+            # This is different from the merge phase which requires invocations.
             for hop in hops:
-                invocations = hop.get("invocations", [])
-                if invocations:  # Hop is non-empty if it has invocations
-                    turn_nonempty_hops += 1
+                turn_nonempty_hops += 1
             
             total_hops += turn_total_hops
             nonempty_hops += turn_nonempty_hops
@@ -328,6 +358,28 @@ class ConversationExtractor(BaseProcessor):
                 "total": turn_total_hops,
                 "nonempty": turn_nonempty_hops
             })
+        
+        # For multi-turn conversations, determine which turns have hops
+        multiturn_pattern = None
+        if len(turns) > 1:
+            turns_with_hops = [
+                i + 1 for i, stats in enumerate(hop_stats_per_turn)
+                if stats["nonempty"] > 0
+            ]
+            
+            num_turns_with_hops = len(turns_with_hops)
+            if num_turns_with_hops == 0:
+                multiturn_pattern = "no_hops"
+            elif num_turns_with_hops == 1:
+                turn_num = turns_with_hops[0]
+                if turn_num == len(turns):
+                    multiturn_pattern = "last_turn_only"
+                elif turn_num == 1:
+                    multiturn_pattern = "first_turn_only"
+                else:
+                    multiturn_pattern = "middle_turn_only"
+            else:
+                multiturn_pattern = "multiple_turns"
         
         result = {
             "file": filename,
@@ -339,6 +391,7 @@ class ConversationExtractor(BaseProcessor):
             "is_multi_turn": len(turns) > 1,
             "is_multi_hop": nonempty_hops > 1,
             "hop_stats_per_turn": hop_stats_per_turn,
+            "multiturn_pattern": multiturn_pattern,
             "output_file": output_file,
         }
         
@@ -358,24 +411,67 @@ class ConversationExtractor(BaseProcessor):
     def _calculate_statistics(self) -> Dict[str, Any]:
         """Calculate processing statistics."""
         total = len(self.results)
-        # Count conversations with multiple turns (turn_count > 1)
-        multi_turn = sum(1 for r in self.results if r.get("turn_count", 0) > 1)
-        # Count conversations with multiple non-empty hops (nonempty_hops > 1)
-        multi_hop = sum(1 for r in self.results if r.get("is_multi_hop"))
         
+        # Count utterances by turn count (matching DCG extraction output)
+        turn_dist = {}
+        multi_turn_with_hops = 0  # Multi-turn utterances that have hops
+        
+        # Multi-turn hop pattern tracking
+        multiturn_verification = {
+            'total_multi_turn': 0,
+            'last_turn_has_hops': 0,
+            'first_turn_has_hops': 0,
+            'middle_turn_has_hops': 0,
+            'multiple_turns_with_hops': 0,
+            'pattern_by_turns': {}
+        }
+        
+        for r in self.results:
+            turns = r["turn_count"]
+            nonempty_hops = r.get("nonempty_hops", 0)
+            
+            # Track turn distribution
+            turn_dist[turns] = turn_dist.get(turns, 0) + 1
+            
+            # Count multi-turn utterances with hops
+            if turns > 1 and nonempty_hops > 0:
+                multi_turn_with_hops += 1
+            
+            # Track multi-turn hop patterns
+            if turns > 1:
+                multiturn_verification['total_multi_turn'] += 1
+                pattern = r.get("multiturn_pattern")
+                
+                if pattern == "last_turn_only":
+                    multiturn_verification['last_turn_has_hops'] += 1
+                elif pattern == "first_turn_only":
+                    multiturn_verification['first_turn_has_hops'] += 1
+                elif pattern == "middle_turn_only":
+                    multiturn_verification['middle_turn_has_hops'] += 1
+                elif pattern == "multiple_turns":
+                    multiturn_verification['multiple_turns_with_hops'] += 1
+                
+                # Track pattern by number of turns
+                turns_key = f"{turns}_turns"
+                if turns_key not in multiturn_verification['pattern_by_turns']:
+                    multiturn_verification['pattern_by_turns'][turns_key] = {}
+                
+                if pattern:
+                    pattern_counts = multiturn_verification['pattern_by_turns'][turns_key]
+                    pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
+        
+        # Calculate totals
+        multi_turn = sum(1 for r in self.results if r.get("turn_count", 0) > 1)
         total_hops = sum(r.get("total_hops", 0) for r in self.results)
         total_nonempty = sum(r.get("nonempty_hops", 0) for r in self.results)
         
-        # Distributions
-        turn_dist = {}
+        # Hop distributions (for detailed analysis)
         total_hop_dist = {}  # Distribution of total_hops (including empty)
         nonempty_hop_dist = {}  # Distribution of nonempty_hops only
         for r in self.results:
-            turns = r["turn_count"]
             total_hops_count = r.get("total_hops", 0)
             nonempty_hops_count = r.get("nonempty_hops", 0)
             
-            turn_dist[turns] = turn_dist.get(turns, 0) + 1
             total_hop_dist[total_hops_count] = total_hop_dist.get(total_hops_count, 0) + 1
             nonempty_hop_dist[nonempty_hops_count] = nonempty_hop_dist.get(nonempty_hops_count, 0) + 1
         
@@ -383,7 +479,7 @@ class ConversationExtractor(BaseProcessor):
             "total_processed": total,
             "multi_turn": multi_turn,
             "single_turn": total - multi_turn,
-            "multi_hop_excl_empty": multi_hop,
+            "multi_turn_with_hops": multi_turn_with_hops,
             "errors": len(self.errors),
             "total_hops": total_hops,
             "total_nonempty_hops": total_nonempty,
@@ -392,6 +488,7 @@ class ConversationExtractor(BaseProcessor):
             "turn_distribution": turn_dist,
             "total_hop_distribution": total_hop_dist,
             "nonempty_hop_distribution": nonempty_hop_dist,
+            "multiturn_verification": multiturn_verification,
         }
     
     def _print_statistics(self, stats: Dict[str, Any], input_dir: str = None, output_dir: str = None):
@@ -405,43 +502,70 @@ class ConversationExtractor(BaseProcessor):
             print(f"Output dir: {output_dir}")
         if input_dir or output_dir:
             print("-" * 80)
-        print(f"Total processed:             {stats['total_processed']}")
-        print(f"Single-turn:                 {stats['single_turn']}")
-        print(f"Multi-turn:                  {stats['multi_turn']}")
-        print(f"Multi-hop (excl empty hops): {stats['multi_hop_excl_empty']}")
-        print(f"Errors:                      {stats['errors']}")
-        print("-" * 80)
-        print("Hop Statistics:")
-        print(f"  Total hops (incl empty): {stats['total_hops']}")
-        print(f"  Non-empty hops:          {stats['total_nonempty_hops']}")
-        print(f"  Avg total hops/conv:     {stats['avg_total_hops']:.2f}")
-        print(f"  Avg nonempty hops/conv:  {stats['avg_nonempty_hops']:.2f}")
+        print(f"Total processed: {stats['total_processed']}")
+        print(f"Errors:          {stats['errors']}")
         print("-" * 80)
         
-        # Turn distribution
-        print("Turn Distribution:")
+        # Utterance breakdown by # of turns (matching DCG extraction format)
+        print("Utterance breakdown by # of turns:")
+        total = stats['total_processed']
         for turns in sorted(stats['turn_distribution'].keys()):
             count = stats['turn_distribution'][turns]
-            pct = count / stats['total_processed'] * 100
-            print(f"  {turns} turn(s): {count} ({pct:.1f}%)")
+            pct = (count / total * 100) if total > 0 else 0
+            if turns == 0:
+                # No turns = failed/error conversations
+                print(f"  {turns} turns (no data): {count} ({pct:.1f}%)")
+            elif turns == 1:
+                print(f"  {turns} turn: {count} ({pct:.1f}%)")
+            else:
+                # Multi-turn = retries, always 1 non-empty turn
+                print(
+                    f"  {turns} turns (1 non-empty turn): "
+                    f"{count} ({pct:.1f}%)"
+                )
         
         print("-" * 80)
         
-        # Total hop distribution (including empty hops)
-        print("Total Hop Distribution (including empty):")
-        for hops in sorted(stats['total_hop_distribution'].keys()):
-            count = stats['total_hop_distribution'][hops]
-            pct = count / stats['total_processed'] * 100
-            print(f"  {hops} hop(s): {count} ({pct:.1f}%)")
+        # Hop statistics (aggregate metrics, not per-utterance)
+        print("Aggregate Hop Statistics:")
+        print(f"  Total hops across all conversations: {stats['total_hops']}")
+        print(f"  Non-empty hops across all conversations: {stats['total_nonempty_hops']}")
+        print(f"  Avg hops per conversation: {stats['avg_total_hops']:.2f}")
+        print(f"  Avg non-empty hops per conversation: {stats['avg_nonempty_hops']:.2f}")
         
         print("-" * 80)
         
-        # Nonempty hop distribution
-        print("Non-empty Hop Distribution:")
+        # Non-empty hop distribution (per utterance)
+        print("Non-empty Hop Distribution (per utterance):")
         for hops in sorted(stats['nonempty_hop_distribution'].keys()):
             count = stats['nonempty_hop_distribution'][hops]
-            pct = count / stats['total_processed'] * 100
+            pct = (count / total * 100) if total > 0 else 0
             print(f"  {hops} hop(s): {count} ({pct:.1f}%)")
+        
+        # Multi-turn hop pattern verification
+        verification = stats.get('multiturn_verification', {})
+        if verification.get('total_multi_turn', 0) > 0:
+            print("-" * 80)
+            print("Multi-Turn Hop Pattern Verification:")
+            total_mt = verification['total_multi_turn']
+            print(f"  Total multi-turn conversations: {total_mt}")
+            
+            last_turn = verification['last_turn_has_hops']
+            pct = (last_turn / total_mt * 100) if total_mt > 0 else 0
+            print(f"  Last turn has hops: {last_turn} ({pct:.1f}%)")
+            
+            print(f"  First turn has hops: {verification['first_turn_has_hops']}")
+            print(f"  Middle turn has hops: {verification['middle_turn_has_hops']}")
+            print(f"  Multiple turns with hops: {verification['multiple_turns_with_hops']}")
+            
+            if verification['pattern_by_turns']:
+                print("")
+                print("  Pattern breakdown by # of turns:")
+                for turns_key in sorted(verification['pattern_by_turns'].keys()):
+                    patterns = verification['pattern_by_turns'][turns_key]
+                    print(f"    {turns_key}:")
+                    for pattern, count in sorted(patterns.items(), key=lambda x: -x[1]):
+                        print(f"      {pattern}: {count}")
     
     def _save_reports(self, stats: Dict[str, Any], output_dir: Path):
         """Save detailed reports."""
@@ -501,7 +625,22 @@ class ConversationExtractor(BaseProcessor):
 # ==========================================================================
 
 class MergeCiteDCGProcessor(BaseProcessor):
-    """Merge conversation details with CiteDCG scores."""
+    """
+    Merge conversation details with CiteDCG scores.
+    
+    IMPORTANT - "Non-empty hop" definition in this phase:
+    A hop is considered "non-empty" ONLY if it has invocations (meaning
+    a search was actually attempted), not just an empty hop placeholder.
+    This is stricter than the extraction phase definition.
+    
+    Example data patterns:
+    - Hop with invocations: {"invocations": [{"queries": [...]}]} → non-empty
+    - Hop without invocations: {"invocations": []} → EMPTY (not counted)
+    - Multi-turn with no invocations: All retry turns have hop structures
+      but no actual search attempts (92% of multi-turn conversations)
+    
+    See ConversationExtractor for the different definition used there.
+    """
     
     def __init__(self):
         super().__init__()
@@ -511,6 +650,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
         self.all_hop_top_k_scores = []  # Track top-k scores
         self.top_k = 5  # Default value
         self.no_scores_count = 0  # Track files with no scores
+        self.utterances_not_in_dcg = 0  # Track utterances not in DCG data
     
     def process(
         self,
@@ -678,66 +818,54 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 top_k=top_k
             )
             
-            # Calculate hop-level statistics
-            # We need to load the merged file to get accurate hop counts and scores
+            # Load merged file to get statistics
             with open(merged_file, "r", encoding="utf-8") as f:
                 merged_content = json.load(f)
             
+            # Count hops and turns
             total_hops = 0
-            nonempty_hops = 0
-            hop_scores = []
-            hop_top_k_scores = []
+            nonempty_hops = 0  # Only hops WITH invocations (search attempted)
             
-            # Count and extract scores from merged data
             eval_results = merged_content.get("evaluation_data_results", {})
             total_turns = len(eval_results.get("turns", []))
+            
+            # Count results with scores
+            results_with_scores = 0
             for turn in eval_results.get("turns", []):
                 for hop in turn.get("hops", []):
                     total_hops += 1
                     invocations = hop.get("invocations", [])
+                    # DEFINITION: "Non-empty hop" here means has invocations
+                    # (search was attempted), not just hop structure exists
                     if invocations:
                         nonempty_hops += 1
-                        
-                        # Collect individual hop scores (not turn averages)
-                        hop_avg = hop.get("avg_citedcg_score")
-                        hop_top_k_avg = hop.get(f"avg_top_{top_k}_citedcg_score")
-                        
-                        if hop_avg is not None:
-                            hop_scores.append(hop_avg)
-                            self.all_hop_scores.append(hop_avg)
-                        if hop_top_k_avg is not None:
-                            hop_top_k_scores.append(hop_top_k_avg)
-                            self.all_hop_top_k_scores.append(hop_top_k_avg)
+                        # Count how many results have scores in this hop
+                        for inv in invocations:
+                            for query in inv.get("queries", []):
+                                for result in query.get("results", []):
+                                    if result.get("citedcg_score") is not None:
+                                        results_with_scores += 1
             
-            avg_hop_score = (
-                sum(hop_scores) / len(hop_scores) if hop_scores else 0.0
-            )
-            avg_hop_top_k_score = (
-                sum(hop_top_k_scores) / len(hop_top_k_scores)
-                if hop_top_k_scores else 0.0
-            )
-            
-            # Track if this file has no scores
-            has_scores = len(hop_scores) > 0
+            # Track if this file has any scores
+            has_scores = results_with_scores > 0
             if not has_scores:
                 self.no_scores_count += 1
+            
+            # Extract utterances_not_in_dcg from summary (NEW location)
+            summary = eval_results.get("summary", {})
+            utterances_not_in_dcg = summary.get("utterances_not_in_dcg", 0)
             
             return {
                 "file": conv_file.name,
                 "experiment": experiment_type,
                 "merged_file": str(merged_file),
                 "stats_file": str(stats_file),
-                "total_results": stats.get("overall_statistics", {}).get(
-                    "results_with_citedcg", 0
-                ),
+                "results_with_scores": results_with_scores,
                 "total_turns": total_turns,
                 "total_hops": total_hops,
                 "nonempty_hops": nonempty_hops,
-                "hop_scores": hop_scores,
-                "hop_top_k_scores": hop_top_k_scores,
-                "avg_hop_score": avg_hop_score,
-                "avg_hop_top_k_score": avg_hop_top_k_score,
                 "has_scores": has_scores,
+                "utterances_not_in_dcg": utterances_not_in_dcg,
             }
         
         except Exception as e:
@@ -752,16 +880,31 @@ class MergeCiteDCGProcessor(BaseProcessor):
         """Print merge summary."""
         total = len(self.results)
         
+        # Accumulate utterances_not_in_dcg from all results
+        self.utterances_not_in_dcg = sum(
+            r.get("utterances_not_in_dcg", 0) for r in self.results
+        )
+        
         print("")
         print("=" * 80)
         print("MERGE SUMMARY")
-        print("="* 80)
-        print(f"Total processed: {total}")
-        print(f"With scores:     {total - self.no_scores_count}")
-        print(f"No scores:       {self.no_scores_count}")
-        print(f"Errors:          {len(self.errors)}")
+        print("=" * 80)
+        
+        # SECTION 1: UTTERANCE-BASED SUMMARY (most important)
+        print("")
+        print("Utterance-Based Summary:")
+        print("-" * 80)
+        print(f"Total conversations processed: {total}")
+        print(f"  With CiteDCG scores:     {total - self.no_scores_count}")
+        print(f"  Without scores:          {self.no_scores_count}")
+        print(f"  Not in DCG data:         {self.utterances_not_in_dcg}")
+        print(
+            f"  Matching errors:         {len(self.errors)} "
+            f"(DCG exists but tools/queries/results don't match)"
+        )
         
         if total > 0:
+            # SECTION 2: EXPERIMENT BREAKDOWN
             control = sum(
                 1 for r in self.results if r.get("experiment") == "control"
             )
@@ -770,11 +913,15 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 if r.get("experiment") == "treatment"
             )
             
-            print(f"Control:         {control}")
-            print(f"Treatment:       {treatment}")
+            print("")
+            print("Experiment Breakdown:")
+            print("-" * 80)
+            print(f"Control conversations:   {control}")
+            print(f"Treatment conversations: {treatment}")
             
-            total_results = sum(
-                r.get("total_results", 0) for r in self.results
+            # SECTION 3: HOP AND TURN STATISTICS
+            total_results_scored = sum(
+                r.get("results_with_scores", 0) for r in self.results
             )
             total_hops = sum(
                 r.get("total_hops", 0) for r in self.results
@@ -783,107 +930,67 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 r.get("nonempty_hops", 0) for r in self.results
             )
             
-            print(f"Total scored results: {total_results}")
+            print("")
+            print("Hop and Turn Statistics:")
+            print("-" * 80)
+            print(f"Total search results with scores: {total_results_scored}")
             print(f"Total hops (incl empty): {total_hops}")
-            print(f"Non-empty hops:       {total_nonempty_hops}")
+            print(f"Non-empty hops:          {total_nonempty_hops}")
             
-            # Turn distribution across files
+            # Turn distribution with multi-turn breakdown
             turn_dist = {}
+            # NOTE: "nonempty_hops" in merge phase = hops with invocations
+            # (not just hop data structures, but actual search attempts)
+            multi_turn_with_invocations = 0  # Has hops with invocations (search attempted)
+            multi_turn_with_scores = 0  # Has invocations AND scores
+            multi_turn_no_invocations = 0  # Has hop structures but no invocations
+            
             for result in self.results:
                 turn_count = result.get("total_turns", 0)
                 turn_dist[turn_count] = turn_dist.get(turn_count, 0) + 1
+                
+                # Track multi-turn conversations
+                if turn_count > 1:
+                    # "nonempty_hops" = hops WITH invocations (stricter definition)
+                    nonempty_hops = result.get("nonempty_hops", 0)
+                    has_scores = result.get("has_scores", False)
+                    
+                    if nonempty_hops > 0:
+                        multi_turn_with_invocations += 1
+                        if has_scores:
+                            multi_turn_with_scores += 1
+                    else:
+                        multi_turn_no_invocations += 1
             
             if turn_dist:
-                print("Turn distribution:")
+                print("")
+                print("Turn Distribution:")
                 for turn_count in sorted(turn_dist.keys()):
                     file_count = turn_dist[turn_count]
-                    print(f"  {turn_count} turns: {file_count} files")
-            
-            # Calculate hop score statistics (only from nonempty hops)
-            if self.all_hop_scores:
-                avg_hop_score = (
-                    sum(self.all_hop_scores) / len(self.all_hop_scores)
-                )
-                avg_hop_top_k_score = (
-                    sum(self.all_hop_top_k_scores) / len(self.all_hop_top_k_scores)
-                    if self.all_hop_top_k_scores else 0.0
-                )
+                    pct = (file_count / total * 100) if total > 0 else 0
+                    
+                    if turn_count == 0:
+                        print(f"  {turn_count} turns: {file_count} conversations ({pct:.1f}%)")
+                    elif turn_count == 1:
+                        print(f"  {turn_count} turn:  {file_count} conversations ({pct:.1f}%)")
+                    else:
+                        print(f"  {turn_count} turns: {file_count} conversations ({pct:.1f}%)")
                 
-                # Build hop score distribution
-                hop_score_dist = {}
-                for score in self.all_hop_scores:
-                    rounded_score = round(score, 1)
-                    hop_score_dist[rounded_score] = (
-                        hop_score_dist.get(rounded_score, 0) + 1
-                    )
-                
-                # Build top-k hop score distribution
-                hop_top_k_score_dist = {}
-                for score in self.all_hop_top_k_scores:
-                    rounded_score = round(score, 1)
-                    hop_top_k_score_dist[rounded_score] = (
-                        hop_top_k_score_dist.get(rounded_score, 0) + 1
-                    )
-                
-                print(f"Avg hop CiteDCG:      {avg_hop_score:.4f}")
-                if self.all_hop_top_k_scores:
-                    print(f"Avg hop top-{self.top_k} CiteDCG: {avg_hop_top_k_score:.4f}")
-                print("-" * 80)
-                print(f"Hop-Average Score Distribution ({len(self.all_hop_scores)} non-empty hops):")
-                for score in sorted(hop_score_dist.keys()):
-                    count = hop_score_dist[score]
-                    pct = count / len(self.all_hop_scores) * 100
-                    print(f"  {score:.1f}: {count} hops ({pct:.1f}%)")
-                
-                if self.all_hop_top_k_scores:
-                    print(f"\nHop-Average Top-{self.top_k} Score Distribution ({len(self.all_hop_top_k_scores)} non-empty hops):")
-                    for score in sorted(hop_top_k_score_dist.keys()):
-                        count = hop_top_k_score_dist[score]
-                        pct = count / len(self.all_hop_top_k_scores) * 100
-                        print(f"  {score:.1f}: {count} hops ({pct:.1f}%)")
-                print("-" * 80)
-                
-                # File-based statistics
-                print("File-based Hop Statistics:")
-                
-                # Group by total/nonempty hop counts
-                hop_count_dist = {}
-                for result in self.results:
-                    total_h = result.get("total_hops", 0)
-                    nonempty_h = result.get("nonempty_hops", 0)
-                    key = f"{total_h} total, {nonempty_h} non-empty"
-                    if key not in hop_count_dist:
-                        hop_count_dist[key] = {
-                            "count": 0,
-                            "hop_scores": [],
-                            "hop_top_k_scores": []
-                        }
-                    hop_count_dist[key]["count"] += 1
-                    hop_count_dist[key]["hop_scores"].extend(
-                        result.get("hop_scores", [])
-                    )
-                    hop_count_dist[key]["hop_top_k_scores"].extend(
-                        result.get("hop_top_k_scores", [])
-                    )
-                
-                for hop_config in sorted(hop_count_dist.keys()):
-                    data = hop_count_dist[hop_config]
-                    file_count = data["count"]
-                    scores = data["hop_scores"]
-                    top_k_scores = data["hop_top_k_scores"]
-                    avg_score = (
-                        sum(scores) / len(scores) if scores else 0.0
-                    )
-                    avg_top_k_score = (
-                        sum(top_k_scores) / len(top_k_scores)
-                        if top_k_scores else 0.0
-                    )
-                    print(
-                        f"  {hop_config} hops: {file_count} files "
-                        f"(avg: {avg_score:.4f}, top-{self.top_k}: {avg_top_k_score:.4f})"
-                    )
-            else:
-                print("No hop scores available")
+                # Add detailed multi-turn summary
+                multi_turn_total = sum(turn_dist.get(k, 0) for k in turn_dist if k > 1)
+                if multi_turn_total > 0:
+                    print("")
+                    print("  Multi-turn breakdown (retry scenarios):")
+                    print(f"    Total: {multi_turn_total} conversations")
+                    pct_inv = (multi_turn_with_invocations / multi_turn_total * 100)
+                    print(f"    With invocations: {multi_turn_with_invocations} ({pct_inv:.1f}% - search attempted)")
+                    print(f"      → With CiteDCG scores: {multi_turn_with_scores}")
+                    no_scores = multi_turn_with_invocations - multi_turn_with_scores
+                    print(f"      → No scores: {no_scores} (not in DCG or no match)")
+                    pct_no_inv = (multi_turn_no_invocations / multi_turn_total * 100)
+                    print(f"    No invocations: {multi_turn_no_invocations} ({pct_no_inv:.1f}% - search not attempted)")
+        
+        print("=" * 80)
     
     def _print_header(self, title: str):
         """Print formatted section header."""
@@ -901,7 +1008,8 @@ def extract_conversations(
     output_dir: str = r"results\conversation_details",
     experiment: str = "both",
     threads: int = 8,
-    verbose: bool = False
+    verbose: bool = False,
+    clean: bool = False
 ):
     """
     Extract conversation details from SEVAL files.
@@ -912,15 +1020,17 @@ def extract_conversations(
         experiment: Experiment type: 'control', 'treatment', or 'both' (default: 'both')
         threads: Number of parallel threads (default: 8)
         verbose: Enable verbose logging
+        clean: Clean output directory before extraction (default: False)
         
     Example:
         python seval_batch_processor.py extract_conversations
         python seval_batch_processor.py extract_conversations --experiment control
         python seval_batch_processor.py extract_conversations --experiment treatment
         python seval_batch_processor.py extract_conversations --experiment both --threads 16
+        python seval_batch_processor.py extract_conversations --clean=True
     """
     extractor = ConversationExtractor()
-    return extractor.process(input_dir, output_dir, experiment, threads, verbose)
+    return extractor.process(input_dir, output_dir, experiment, threads, verbose, clean)
 
 
 def merge_citescg_scores(
@@ -978,6 +1088,17 @@ def merge_citescg_scores(
     print(f"Threads:               {threads}")
     print("=" * 80)
     
+    # Always clean output directory to avoid mixing old/new results
+    output_path = Path(output_dir)
+    if output_path.exists():
+        merged_files = list(output_path.rglob("*.json"))
+        if merged_files:
+            print(f"Output dir contains {len(merged_files)} files, deleting...")
+            import shutil
+            shutil.rmtree(output_path)
+            print("Done")
+            print("")
+    
     processor.process(
         conv_dir=conv_dir,
         citedcg_control_file=citedcg_control_file,
@@ -997,6 +1118,7 @@ def process_seval_job_multihop_citedcg(
     experiment: str = "control",
     top_k: int = 5,
     threads: int = 8,
+    clean: bool = False,
     verbose: bool = False
 ):
     """
@@ -1015,6 +1137,7 @@ def process_seval_job_multihop_citedcg(
         experiment: Experiment type: 'control', 'treatment', or 'both'
         top_k: Top-k value for CiteDCG calculation
         threads: Number of parallel threads
+        clean: If True, re-extract both CiteDCG and conversations. If False, reuse existing files
         verbose: Enable verbose logging
         
     Example:
@@ -1036,7 +1159,7 @@ def process_seval_job_multihop_citedcg(
     # Create output directories
     citedcg_dir = f"{output_base_dir}/{job_id}_citedcg"
     conv_dir = f"{output_base_dir}/{job_id}_conversation_details"
-    merged_dir = f"{output_base_dir}/{job_id}_merged"
+    merged_dir = f"{output_base_dir}/{job_id}_conversation_w_citedcg_details"
     
     Path(citedcg_dir).mkdir(parents=True, exist_ok=True)
     
@@ -1062,29 +1185,48 @@ def process_seval_job_multihop_citedcg(
     
     # Step 1: Extract CiteDCG scores for each experiment
     for exp in experiments:
-        print(f"STEP 1/{len(experiments)}: Extracting CiteDCG scores ({exp})...")
         citedcg_file = f"{citedcg_dir}/{job_id}_citedcg_scores_{exp}.json"
-        
-        count = extract_per_result_citedcg(
-            metrics_folder=metrics_dir,  # Pass just folder name, not full path
-            experiment=exp,
-            output_file=citedcg_file
-        )
-        
         citedcg_files[exp] = citedcg_file
-        print(f"  → Extracted {count} utterances from CiteDCG results")
-        print(f"  → Saved to: {citedcg_file}")
+        
+        # Check if file exists and clean=False
+        if not clean and Path(citedcg_file).exists():
+            print(f"STEP 1/{len(experiments)}: Reusing existing CiteDCG scores ({exp})...")
+            print(f"  → File: {citedcg_file}")
+            print(f"  → Use --clean=True to re-extract")
+        else:
+            print(f"STEP 1/{len(experiments)}: Extracting CiteDCG scores ({exp})...")
+            count = extract_per_result_citedcg(
+                metrics_folder=metrics_dir,
+                experiment=exp,
+                output_file=citedcg_file
+            )
+            print(f"  → Extracted {count} utterances")
+            print(f"  → Saved to: {citedcg_file}")
         print("")
     
     # Step 2: Extract conversation details
-    print(f"STEP 2: Extracting conversation details...")
-    extract_conversations(
-        input_dir=raw_data_dir,
-        output_dir=conv_dir,
-        experiment=experiment,
-        threads=threads,
-        verbose=verbose
+    # Check if output directory exists and has files
+    conv_dir_path = Path(conv_dir)
+    has_existing_convs = (
+        conv_dir_path.exists() and 
+        len(list(conv_dir_path.glob('*.json'))) > 0
     )
+    
+    if not clean and has_existing_convs:
+        print(f"STEP 2: Reusing existing conversation details...")
+        print(f"  → Directory: {conv_dir}")
+        print(f"  → Files: {len(list(conv_dir_path.glob('*.json')))}")
+        print(f"  → Use --clean=True to re-extract")
+    else:
+        print(f"STEP 2: Extracting conversation details...")
+        extract_conversations(
+            input_dir=raw_data_dir,
+            output_dir=conv_dir,
+            experiment=experiment,
+            threads=threads,
+            verbose=verbose,
+            clean=clean  # Pass clean parameter
+        )
     print("")
     
     # Step 3: Merge CiteDCG with conversations
@@ -1107,7 +1249,429 @@ def process_seval_job_multihop_citedcg(
     print("=" * 80)
 
 
-def process_seval_job_with_plots(
+def _generate_statistics_plots(
+    stats_files: Dict[int, str],
+    output_dir: Path,
+    job_id: str,
+    experiment: str = "control"
+):
+    """
+    Generate hop progression plots from statistics files.
+    
+    Shows how average CiteDCG scores change across hops for different k values.
+    
+    Args:
+        stats_files: Dictionary mapping k values to statistics file paths
+        output_dir: Directory to save plots
+        job_id: SEVAL job ID for plot titles
+        experiment: Experiment type (control/treatment) for labeling
+    """
+    import json
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Load all statistics
+    stats_data = {}
+    for k, stats_file in sorted(stats_files.items()):
+        with open(stats_file, 'r', encoding='utf-8') as f:
+            stats_data[k] = json.load(f)
+    
+    k_values = sorted(stats_data.keys())
+    
+    # Generate two separate plots: one for hop index, one for hop sequence
+    
+    # PLOT 1: Hop Index (includes empty hops)
+    hop_key = "per_hop"
+    all_hop_numbers = set()
+    for k in k_values:
+        per_hop = stats_data[k].get(hop_key, {})
+        all_hop_numbers.update(int(h) for h in per_hop.keys())
+    
+    if all_hop_numbers:
+        hop_numbers = sorted(all_hop_numbers)
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+        
+        # LEFT: CiteDCG scores
+        per_hop = stats_data[k_values[0]].get(hop_key, {})
+        hop_avgs = []
+        for hop_num in hop_numbers:
+            hop_data = per_hop.get(str(hop_num), {})
+            avg_all = hop_data.get("avg_all_scores")
+            hop_avgs.append(avg_all if avg_all is not None else np.nan)
+        
+        ax1.plot(hop_numbers, hop_avgs, marker='o', linewidth=3,
+                color='steelblue', label='All Results', markersize=8)
+        
+        for k in k_values:
+            per_hop = stats_data[k].get(hop_key, {})
+            hop_topk_avgs = []
+            for hop_num in hop_numbers:
+                hop_data = per_hop.get(str(hop_num), {})
+                avg_topk = hop_data.get("avg_topk_scores")
+                hop_topk_avgs.append(
+                    avg_topk if avg_topk is not None else np.nan
+                )
+            
+            ax1.plot(hop_numbers, hop_topk_avgs, marker='s', linewidth=2.5,
+                    linestyle='--', label=f'Top-{k}', markersize=7)
+        
+        ax1.set_xlabel('Hop Index', fontsize=13)
+        ax1.set_ylabel('Utterance-Average CiteDCG Score', fontsize=13)
+        ax1.set_title('CiteDCG Scores', fontsize=14, fontweight='bold')
+        ax1.set_xticks(hop_numbers)
+        ax1.legend(fontsize=11, loc='best')
+        ax1.grid(True, alpha=0.3)
+        
+        # RIGHT: Utterance counts
+        per_hop = stats_data[k_values[0]].get(hop_key, {})
+        total_utterances = []
+        utterances_with_scores = []
+        utterances_empty = []
+        
+        for hop_num in hop_numbers:
+            hop_data = per_hop.get(str(hop_num), {})
+            total_utterances.append(hop_data.get("total_utterances", 0))
+            utterances_with_scores.append(
+                hop_data.get("utterances_with_scores", 0)
+            )
+            utterances_empty.append(hop_data.get("utterances_empty", 0))
+        
+        ax2.plot(hop_numbers, total_utterances, marker='o', linewidth=2.5,
+                color='gray', label='Total Utterances', markersize=8)
+        ax2.plot(hop_numbers, utterances_with_scores, marker='s',
+                linewidth=2.5, color='green',
+                label='With Scores', markersize=8)
+        ax2.plot(hop_numbers, utterances_empty, marker='^', linewidth=2.5,
+                color='red', label='Empty Hops', markersize=8)
+        
+        ax2.set_xlabel('Hop Index', fontsize=13)
+        ax2.set_ylabel('Number of Utterances', fontsize=13)
+        ax2.set_title('Utterance Counts', fontsize=14, fontweight='bold')
+        ax2.set_xticks(hop_numbers)
+        ax2.legend(fontsize=11, loc='best')
+        ax2.grid(True, alpha=0.3)
+        
+        fig.suptitle(
+            f'Utterance-Averaged CiteDCG Score vs Hop Index '
+            f'(includes empty hops)\n'
+            f'Job: {job_id} | Experiment: {experiment}',
+            fontsize=15, fontweight='bold', y=0.98
+        )
+        
+        plt.tight_layout()
+        plot_file = output_dir / f"{job_id}_{experiment}_hop_index.png"
+        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved: {plot_file.name}")
+    
+    # PLOT 2: Hop Sequence (only non-empty hops)
+    hop_key = "per_hop_sequence"
+    all_hop_numbers = set()
+    for k in k_values:
+        per_hop = stats_data[k].get(hop_key, {})
+        all_hop_numbers.update(int(h) for h in per_hop.keys())
+    
+    if all_hop_numbers:
+        hop_numbers = sorted(all_hop_numbers)
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+        
+        # LEFT: CiteDCG scores
+        per_hop = stats_data[k_values[0]].get(hop_key, {})
+        hop_avgs = []
+        for hop_num in hop_numbers:
+            hop_data = per_hop.get(str(hop_num), {})
+            avg_all = hop_data.get("avg_all_scores")
+            hop_avgs.append(avg_all if avg_all is not None else np.nan)
+        
+        ax1.plot(hop_numbers, hop_avgs, marker='o', linewidth=3,
+                color='steelblue', label='All Results', markersize=8)
+        
+        for k in k_values:
+            per_hop = stats_data[k].get(hop_key, {})
+            hop_topk_avgs = []
+            for hop_num in hop_numbers:
+                hop_data = per_hop.get(str(hop_num), {})
+                avg_topk = hop_data.get("avg_topk_scores")
+                hop_topk_avgs.append(
+                    avg_topk if avg_topk is not None else np.nan
+                )
+            
+            ax1.plot(hop_numbers, hop_topk_avgs, marker='s', linewidth=2.5,
+                    linestyle='--', label=f'Top-{k}', markersize=7)
+        
+        ax1.set_xlabel('Hop Sequence', fontsize=13)
+        ax1.set_ylabel('Utterance-Average CiteDCG Score', fontsize=13)
+        ax1.set_title('CiteDCG Scores', fontsize=14, fontweight='bold')
+        ax1.set_xticks(hop_numbers)
+        ax1.legend(fontsize=11, loc='best')
+        ax1.grid(True, alpha=0.3)
+        
+        # RIGHT: Utterance counts (only one line since all are non-empty)
+        per_hop = stats_data[k_values[0]].get(hop_key, {})
+        utterances_with_scores = []
+        
+        for hop_num in hop_numbers:
+            hop_data = per_hop.get(str(hop_num), {})
+            utterances_with_scores.append(
+                hop_data.get("utterances_with_scores", 0)
+            )
+        
+        ax2.plot(hop_numbers, utterances_with_scores, marker='o',
+                linewidth=3, color='green',
+                label='Utterances with Scores', markersize=8)
+        
+        ax2.set_xlabel('Hop Sequence', fontsize=13)
+        ax2.set_ylabel('Number of Utterances', fontsize=13)
+        ax2.set_title('Utterance Counts', fontsize=14, fontweight='bold')
+        ax2.set_xticks(hop_numbers)
+        ax2.legend(fontsize=11, loc='best')
+        ax2.grid(True, alpha=0.3)
+        
+        fig.suptitle(
+            f'Utterance-Averaged CiteDCG Score vs Hop Sequence '
+            f'(only non-empty hops)\n'
+            f'Job: {job_id} | Experiment: {experiment}',
+            fontsize=15, fontweight='bold', y=0.98
+        )
+        
+        plt.tight_layout()
+        plot_file = output_dir / f"{job_id}_{experiment}_hop_sequence.png"
+        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved: {plot_file.name}")
+    
+    # PLOT 3: Single-hop vs Multi-hop comparison
+    single_hop_data = stats_data[k_values[0]].get("single_hop", {})
+    multi_hop_data = stats_data[k_values[0]].get("multi_hop", {})
+    
+    if single_hop_data or multi_hop_data:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+        
+        # Define markers for different metric types (same for both sets)
+        # Use colors to distinguish single-hop (green) vs multi-hop (blue)
+        # Use different line styles for different metrics
+        metric_styles = {
+            'all': {'marker': 'o', 'size': 12, 'linestyle': '-'},
+            1: {'marker': '^', 'size': 10, 'linestyle': '--'},
+            3: {'marker': 's', 'size': 9, 'linestyle': '-.'},
+            5: {'marker': 'D', 'size': 8, 'linestyle': ':'}
+        }
+        
+        single_hop_color = 'green'
+        multi_hop_color = 'blue'
+        
+        # LEFT: CiteDCG scores for both single-hop and multi-hop
+        # Determine the x-axis range
+        max_hop = 1
+        if multi_hop_data:
+            max_hop = max(max_hop, max([int(h) for h in multi_hop_data.keys()]))
+        
+        # Plot single-hop (only at hop 1) - "All Results" is k-independent
+        if single_hop_data:
+            hop_data = single_hop_data.get("1", {})
+            avg_all = hop_data.get("avg_all_scores")
+            
+            if avg_all is not None:
+                style = metric_styles['all']
+                ax1.plot([1], [avg_all], marker=style['marker'], linewidth=0,
+                        color=single_hop_color, label='All Results',
+                        markersize=style['size'], zorder=5)
+        
+        # Plot multi-hop (progression across hops) - "All Results" is k-independent
+        if multi_hop_data:
+            multi_hop_numbers = sorted([int(h) for h in multi_hop_data.keys()])
+            
+            hop_avgs = []
+            for hop_num in multi_hop_numbers:
+                hop_data = multi_hop_data.get(str(hop_num), {})
+                avg_all = hop_data.get("avg_all_scores")
+                hop_avgs.append(avg_all if avg_all is not None else np.nan)
+            
+            style = metric_styles['all']
+            ax1.plot(multi_hop_numbers, hop_avgs, marker=style['marker'],
+                    linewidth=3, color=multi_hop_color, label='All Results',
+                    markersize=style['size'], linestyle=style['linestyle'],
+                    zorder=5)
+        
+        # Plot top-k for each k value for single-hop
+        if single_hop_data:
+            for k in k_values:
+                style = metric_styles.get(k, {'marker': 'x', 'size': 8})
+                single_hop = stats_data[k].get("single_hop", {})
+                hop_data = single_hop.get("1", {})
+                avg_topk = hop_data.get("avg_topk_scores")
+                
+                if avg_topk is not None:
+                    ax1.plot([1], [avg_topk], marker=style['marker'],
+                            linewidth=0, color=single_hop_color,
+                            label=f'Top-{k}',
+                            markersize=style['size'], alpha=0.8, zorder=4)
+        
+        # Plot top-k for each k value for multi-hop
+        if multi_hop_data:
+            for k in k_values:
+                style = metric_styles.get(k, {'marker': 'x', 'size': 8})
+                multi_hop = stats_data[k].get("multi_hop", {})
+                hop_topk_avgs = []
+                for hop_num in multi_hop_numbers:
+                    hop_data = multi_hop.get(str(hop_num), {})
+                    avg_topk = hop_data.get("avg_topk_scores")
+                    hop_topk_avgs.append(
+                        avg_topk if avg_topk is not None else np.nan
+                    )
+                
+                ax1.plot(multi_hop_numbers, hop_topk_avgs,
+                        marker=style['marker'], linewidth=2.5,
+                        linestyle=style['linestyle'], color=multi_hop_color,
+                        label=f'Top-{k}',
+                        markersize=style['size'], alpha=0.8, zorder=4)
+        
+        ax1.set_xlabel('Hop Sequence (only non-empty hops)', fontsize=13)
+        ax1.set_ylabel('Utterance-Average CiteDCG Score', fontsize=13)
+        ax1.set_title('CiteDCG Scores by Hop\n(only hops with scores)',
+                     fontsize=14, fontweight='bold')
+        ax1.set_xticks(range(1, max_hop + 1))
+        
+        # Custom legend with two columns: Single-Hop | Multi-Hop
+        from matplotlib.lines import Line2D
+
+        # Create legend organized for column-wise layout
+        # With ncol=2, matplotlib fills column 1 first, then column 2
+        # So we need total_items/2 in each column
+        single_hop_elements = []
+        multi_hop_elements = []
+        
+        # Single-Hop column items
+        single_hop_elements.append(Line2D([0], [0], marker='', color='none',
+                                         linestyle='', label='Single-Hop'))
+        
+        style = metric_styles['all']
+        single_hop_elements.append(Line2D([0], [0], marker=style['marker'],
+                                         color=single_hop_color,
+                                         markersize=style['size'],
+                                         linestyle=style['linestyle'],
+                                         label='All Results'))
+        
+        for k in k_values:
+            style = metric_styles.get(k, {'marker': 'x', 'size': 8,
+                                         'linestyle': '-'})
+            single_hop_elements.append(Line2D([0], [0], marker=style['marker'],
+                                             color=single_hop_color,
+                                             markersize=style['size'],
+                                             linestyle=style['linestyle'],
+                                             label=f'Top-{k}'))
+        
+        # Multi-Hop column items
+        multi_hop_elements.append(Line2D([0], [0], marker='', color='none',
+                                        linestyle='', label='Multi-Hop'))
+        
+        style = metric_styles['all']
+        multi_hop_elements.append(Line2D([0], [0], marker=style['marker'],
+                                        color=multi_hop_color,
+                                        markersize=style['size'],
+                                        linestyle=style['linestyle'],
+                                        label='All Results'))
+        
+        for k in k_values:
+            style = metric_styles.get(k, {'marker': 'x', 'size': 8,
+                                         'linestyle': '-'})
+            multi_hop_elements.append(Line2D([0], [0], marker=style['marker'],
+                                            color=multi_hop_color,
+                                            markersize=style['size'],
+                                            linestyle=style['linestyle'],
+                                            label=f'Top-{k}'))
+        
+        # Combine: column 1 items first, then column 2 items
+        legend_elements = single_hop_elements + multi_hop_elements
+        
+        leg = ax1.legend(handles=legend_elements, fontsize=10, loc='best',
+                        ncol=2, columnspacing=2.5, handlelength=2.5,
+                        handletextpad=0.5)
+        
+        # Make header labels bold (first item in each column)
+        texts = leg.get_texts()
+        num_items_per_col = len(legend_elements) // 2
+        texts[0].set_weight('bold')  # Single-Hop header
+        texts[num_items_per_col].set_weight('bold')  # Multi-Hop header
+        
+        ax1.grid(True, alpha=0.3)
+        
+        # RIGHT: Utterance counts for single-hop and multi-hop
+        hop_positions = list(range(1, max_hop + 1))
+        single_hop_counts = []
+        multi_hop_counts = []
+        
+        for hop_num in hop_positions:
+            # Single-hop: only has count at hop 1
+            if hop_num == 1 and single_hop_data:
+                sh_data = single_hop_data.get("1", {})
+                single_count = sh_data.get("utterances_count", 0)
+            else:
+                single_count = 0
+            single_hop_counts.append(single_count)
+            
+            # Multi-hop: has counts at each hop sequence
+            if multi_hop_data:
+                mh_data = multi_hop_data.get(str(hop_num), {})
+                multi_count = mh_data.get("utterances_count", 0)
+            else:
+                multi_count = 0
+            multi_hop_counts.append(multi_count)
+        
+        ax2.plot(hop_positions, single_hop_counts, marker='o', linewidth=3,
+                color='green', label='Single-Hop Utterances', markersize=8)
+        ax2.plot(hop_positions, multi_hop_counts, marker='s', linewidth=3,
+                color='blue', label='Multi-Hop Utterances', markersize=8,
+                linestyle='--')
+        
+        ax2.set_xlabel('Hop Sequence (only non-empty hops)', fontsize=13)
+        ax2.set_ylabel('Number of Utterances', fontsize=13)
+        ax2.set_title('Utterance Counts by Hop\n(only hops with scores)',
+                     fontsize=14, fontweight='bold')
+        ax2.set_xticks(hop_positions)
+        ax2.legend(fontsize=11, loc='best')
+        ax2.grid(True, alpha=0.3)
+        
+        # Add total counts annotation
+        if single_hop_data:
+            single_total = single_hop_data.get("1", {}).get("utterances_count", 0)
+        else:
+            single_total = 0
+        
+        if multi_hop_data:
+            # Get count from hop 1 only (represents unique utterances)
+            multi_total = multi_hop_data.get("1", {}).get("utterances_count", 0)
+        else:
+            multi_total = 0
+        
+        ax2.text(0.5, 0.95,
+                f'Single-Hop: {single_total} utterances\n'
+                f'Multi-Hop: {multi_total} utterances',
+                transform=ax2.transAxes, fontsize=11,
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        fig.suptitle(
+            f'Single-Hop vs Multi-Hop Utterance Analysis\n'
+            f'Job: {job_id} | Experiment: {experiment}',
+            fontsize=15, fontweight='bold', y=0.98
+        )
+        
+        plt.tight_layout()
+        plot_file = output_dir / f"{job_id}_{experiment}_single_vs_multi.png"
+        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved: {plot_file.name}")
+
+
+
+def process_seval_job_with_statistics_plots(
     job_id: str,
     experiment: str = "control",
     top_k_list: str = "1,3,5",
@@ -1119,66 +1683,59 @@ def process_seval_job_with_plots(
     verbose: bool = False
 ):
     """
-    Process a SEVAL job with multiple top-k values and generate plots.
+    Process a SEVAL job: extract data, merge with CiteDCG, calculate statistics
+    for multiple top-k values, and generate plots.
     
-    This function is fully self-sufficient and will:
-    1. Extract CiteDCG scores from metrics (or reuse if already exists)
-    2. Extract conversation details from raw data (or reuse if already exists)
-    3. Merge conversations with CiteDCG scores for each top-k value
-    4. Generate visualization plots comparing the different top-k values
+    New Architecture (optimized for multiple top-k values):
+    1. Extract CiteDCG scores from metrics (done once, reused for all k)
+    2. Extract conversation details (done once, reused for all k)
+    3. Merge conversations with CiteDCG scores (done once, no statistics)
+    4. Calculate statistics for each top-k value from merged data
+    5. Generate visualization plots comparing the different top-k values
     
-    No prerequisite commands needed - this function generates all required files.
     
-    Workflow Details:
-    - Step 1: CiteDCG extraction is shared across all top-k values (done once)
-    - Step 2: Conversation extraction is shared across all top-k values (done once)
-    - Step 3: Merge operation is performed separately for each top-k value
-    - Step 4: Plots are generated using the merged results (always cleans plot dir)
+    Efficiency: Merges conversation data with CiteDCG scores ONCE, then calculates
+    statistics for different top-k values by reading the same merged files.
+    This is much faster than re-merging for each k value.
     
     Args:
         job_id: SEVAL job ID (e.g., "130949")
         experiment: Which experiment to process ("control", "treatment", or "both")
         top_k_list: Comma-separated list of top-k values (e.g., "1,3,5")
-            Note: Can be passed as string "1,3,5" or Fire will parse as (1,3,5)
         threads: Number of parallel threads for processing (default: 8)
-        raw_data_dir: Directory with raw SEVAL data (default: seval_data/{job_id}_scraping_raw_data_output)
-        metrics_dir: Directory with metrics data (default: {job_id}_metrics)
+        raw_data_dir: Raw SEVAL data directory 
+            (default: seval_data/{job_id}_scraping_raw_data_output)
+        metrics_dir: Metrics data directory (default: {job_id}_metrics)
         output_base_dir: Base directory for outputs (default: "results")
-        clean: Force regeneration of ALL processing steps (default: False)
-            When True, cleans and regenerates:
-            - Step 1: CiteDCG scores from metrics (shared across all k values)
-            - Step 2: Conversation details from raw data (shared across all k values)
-            - Step 3: Merged results for each top-k value (k-specific directories)
-            Note: Plot output folder is always cleaned regardless of this setting
+        clean: Force complete regeneration (default: False)
+            When False: Reuses existing CiteDCG scores, conversation details,
+                       and merged files if they exist
+            When True: Deletes and regenerates everything from scratch
+            Note: Plots folder is ALWAYS cleaned regardless of this setting
         verbose: Enable verbose output (default: False)
     
     Example:
-        # Process job with default top-k values [1, 3, 5]
-        python seval_batch_processor.py process_seval_job_with_plots \\
+        # Process with default top-k values [1, 3, 5]
+        python seval_batch_processor.py process_seval_job_with_statistics_plots \\
             --job_id=130949
         
         # Process with custom top-k values
-        python seval_batch_processor.py process_seval_job_with_plots \\
+        python seval_batch_processor.py process_seval_job_with_statistics_plots \\
             --job_id=130949 \\
             --top_k_list="1,2,3,5,10" \\
             --threads=16
         
-        # Force full regeneration of all steps
-        python seval_batch_processor.py process_seval_job_with_plots \\
+        # Force complete regeneration
+        python seval_batch_processor.py process_seval_job_with_statistics_plots \\
             --job_id=130949 \\
             --clean=True
     
     Note:
-        This function automatically generates CiteDCG scores and conversation details
-        if they don't exist. You do NOT need to run process_seval_job_multihop_citedcg first.
+        With --clean=False (default): Reuses existing files (CiteDCG scores,
+        conversation details, merged data) to save time.
         
-        Use --clean=True to force complete regeneration of all processing steps:
-        - Re-extracts CiteDCG scores from metrics
-        - Re-extracts conversation details from raw SEVAL data
-        - Re-merges CiteDCG with conversations for all top-k values
-        
-        Without --clean, the function intelligently reuses existing results when available,
-        only regenerating what's missing.
+        With --clean=True: Deletes and regenerates all intermediate files
+        from scratch.
     """
     import sys
 
@@ -1228,8 +1785,8 @@ def process_seval_job_with_plots(
     print("=" * 80)
     print("")
     
-    # Store merged directories for each k
-    merged_dirs = {}
+    # Store statistics files for each k
+    stats_files = {}
     
     # Determine which experiments to process
     experiments = []
@@ -1238,52 +1795,71 @@ def process_seval_job_with_plots(
     if experiment.lower() in ["treatment", "both"]:
         experiments.append("treatment")
     
-    # Check if we can reuse results from process_seval_job_multihop_citedcg
-    # Convention: that function creates {job_id}_citedcg and {job_id}_conversation_details
+    # Define output directories (new architecture: single merged folder)
     existing_citedcg_dir = f"{output_base_dir}/{job_id}_citedcg"
     existing_conv_dir = f"{output_base_dir}/{job_id}_conversation_details"
+    merged_dir = (
+        f"{output_base_dir}/{job_id}_conversation_w_citedcg_details"
+    )
     
     # Clean existing directories if requested
-    processor = BaseProcessor()  # For access to _clean_directory utility
+    processor = BaseProcessor()
     if clean:
         print("FORCING COMPLETE REGENERATION (--clean=True):")
-        print("  Cleaning all processing outputs...")
-        # Clean merge directories for each k
-        for k in k_values:
-            citedcg_k_dir = Path(f"{output_base_dir}/{job_id}_citedcg_k{k}")
-            processor._clean_directory(citedcg_k_dir, f"CiteDCG k={k}")
-            merged_k_dir = Path(f"{output_base_dir}/{job_id}_merged_k{k}")
-            processor._clean_directory(merged_k_dir, f"Merged k={k}")
+        print("  Deleting all intermediate files...")
+        print("")
         
-        # Clean shared directories
+        # Clean all intermediate directories
         processor._clean_directory(
-            Path(existing_citedcg_dir), "shared CiteDCG"
+            Path(existing_citedcg_dir), "CiteDCG scores"
         )
         processor._clean_directory(
             Path(existing_conv_dir), "conversation details"
         )
+        processor._clean_directory(
+            Path(merged_dir), "merged conversations with CiteDCG"
+        )
         print("")
+        
         can_reuse_citedcg = False
         can_reuse_conv = False
+        can_reuse_merged = False
     else:
+        # Check what can be reused
         can_reuse_citedcg = Path(existing_citedcg_dir).exists()
         
         # Check if conversation directory exists AND contains files
         conv_path = Path(existing_conv_dir)
         if conv_path.exists():
-            # Verify it contains conversation detail files
             conv_files = list(conv_path.glob("*_conv_details.json"))
             can_reuse_conv = len(conv_files) > 0
         else:
             can_reuse_conv = False
         
-        if can_reuse_citedcg or can_reuse_conv:
+        # Check if merged directory exists AND contains files
+        merged_path = Path(merged_dir)
+        if merged_path.exists():
+            merged_files = list(merged_path.rglob("*.json"))
+            can_reuse_merged = len(merged_files) > 0
+        else:
+            can_reuse_merged = False
+        
+        if can_reuse_citedcg or can_reuse_conv or can_reuse_merged:
             print("REUSING EXISTING RESULTS:")
             if can_reuse_citedcg:
-                print(f"  ✓ Found CiteDCG scores: {existing_citedcg_dir}")
+                print(f"  ✓ CiteDCG scores: {existing_citedcg_dir}")
             if can_reuse_conv:
-                conv_count = len(list(Path(existing_conv_dir).glob("*_conv_details.json")))
-                print(f"  ✓ Found {conv_count} conversation files: {existing_conv_dir}")
+                conv_count = len(list(conv_path.glob("*_conv_details.json")))
+                print(
+                    f"  ✓ {conv_count} conversation files: "
+                    f"{existing_conv_dir}"
+                )
+            if can_reuse_merged:
+                merged_count = len(merged_files)
+                print(
+                    f"  ✓ {merged_count} merged files: "
+                    f"{merged_dir}"
+                )
             print("")
     
     # STEP 1: Extract CiteDCG scores ONCE (same for all top-k values)
@@ -1298,8 +1874,11 @@ def process_seval_job_with_plots(
                 f"{existing_citedcg_dir}/{job_id}_citedcg_scores_{exp}.json"
             )
             if Path(citedcg_file).exists():
+                # Count utterances in CiteDCG file
+                with open(citedcg_file, 'r', encoding='utf-8') as f:
+                    utterance_count = sum(1 for line in f if line.strip())
                 citedcg_files[exp] = citedcg_file
-                print(f"  ✓ {exp}: {citedcg_file}")
+                print(f"  ✓ {exp}: {citedcg_file} ({utterance_count} utterances)")
             else:
                 print(f"  ✗ {exp}: Not found, will extract")
         print("")
@@ -1350,10 +1929,13 @@ def process_seval_job_with_plots(
     conv_dir = existing_conv_dir
     
     if can_reuse_conv:
+        # Count conversation files
+        conv_file_count = len(list(Path(existing_conv_dir).glob("*_conv_details.json")))
         print("=" * 80)
         print("STEP 2: REUSING EXISTING CONVERSATION DETAILS")
         print("=" * 80)
         print(f"  Location: {existing_conv_dir}")
+        print(f"  Files: {conv_file_count} conversation files")
         print("")
     else:
         print("=" * 80)
@@ -1403,125 +1985,187 @@ def process_seval_job_with_plots(
         print("=" * 80)
         sys.exit(1)
     
-    # STEP 3: Process each top-k value (merge CiteDCG with conversations)
-    for idx, k in enumerate(k_values, 1):
-        print("")
+    # STEP 3: Merge CiteDCG with conversations ONCE (no statistics)
+    if can_reuse_merged:
+        # Count merged files
+        merged_file_count = len(list(Path(merged_dir).rglob("*_merged.json")))
         print("=" * 80)
-        print(f"STEP 3: MERGING WITH TOP-K={k} ({idx}/{len(k_values)})")
+        print("STEP 3: REUSING EXISTING MERGED DATA")
         print("=" * 80)
+        print(f"  Location: {merged_dir}")
+        print(f"  Files: {merged_file_count} merged files")
+        print("")
+    else:
+        print("=" * 80)
+        print("STEP 3: MERGING CITEDCG WITH CONVERSATIONS")
+        print("=" * 80)
+        print("  (Scores only, no statistics - done once for all k values)")
         print("")
         
-        # Create k-specific output directory
-        merged_dir = f"{output_base_dir}/{job_id}_merged_k{k}"
-        merged_dirs[k] = merged_dir
-        
-        # Check if merged results already exist for this k
-        merged_path = Path(merged_dir)
-        if not clean and merged_path.exists():
-            # Count existing stats files to verify completeness
-            exp_dirs = []
-            if experiment.lower() in ["control", "both"]:
-                exp_dirs.append(merged_path / "control")
-            if experiment.lower() in ["treatment", "both"]:
-                exp_dirs.append(merged_path / "treatment")
-            
-            stats_count = sum(
-                len(list(d.glob("*_stats.json")))
-                for d in exp_dirs
-                if d.exists()
-            )
-            
-            if stats_count > 0:
-                print(f"REUSING EXISTING MERGED RESULTS for k={k}")
-                print(f"  Found {stats_count} stats files in: {merged_dir}")
-                print("  Skipping merge step")
-                print("")
-                print(f"✓ Using existing results for top-k={k}")
-                print(f"  Results location: {merged_dir}")
-                continue
-        
-        # Merge CiteDCG with conversations using current top-k
-        print(f"Merging CiteDCG scores with conversations (top-k={k})...")
         merge_citescg_scores(
             conv_dir=conv_dir,
             citedcg_control_file=citedcg_files.get("control"),
             citedcg_treatment_file=citedcg_files.get("treatment"),
             output_dir=merged_dir,
             threads=threads,
-            top_k=k,
+            top_k=5,  # Not used anymore, but keep for compatibility
             verbose=verbose
         )
         print("")
-        print(f"✓ Completed processing for top-k={k}")
-        print(f"  Results saved to: {merged_dir}")
+        print(f"✓ Merge complete: {merged_dir}")
+        print("")
     
-    # Step 4: Generate plots
-    if len(k_values) >= 3:
-        # Find k=1, k=3, k=5 for plotting (or closest available)
-        k1 = min(k_values, key=lambda x: abs(x - 1))
-        k3 = min(k_values, key=lambda x: abs(x - 3))
-        k5 = min(k_values, key=lambda x: abs(x - 5))
-        
-        # Always clean plot output folder to avoid old/new plot mixture
-        plots_dir = Path(f"{output_base_dir}/{job_id}_plots")
-        if plots_dir.exists():
-            print("")
-            print("CLEANING PLOT OUTPUT DIRECTORY:")
-            processor._clean_directory(plots_dir, "plots")
-        
+    # Validate merged files exist
+    merged_path = Path(merged_dir)
+    if not merged_path.exists():
         print("")
         print("=" * 80)
-        print(f"GENERATING PLOTS (using k={k1}, k={k3}, k={k5})")
+        print("✗ ERROR: Merged directory not found")
         print("=" * 80)
+        print(f"Expected: {merged_dir}")
+        print("=" * 80)
+        sys.exit(1)
+    
+    merged_files = list(merged_path.rglob("*_merged.json"))
+    if len(merged_files) == 0:
+        print("")
+        print("=" * 80)
+        print("✗ ERROR: No merged files found")
+        print("=" * 80)
+        print(f"Directory exists but is empty: {merged_dir}")
+        print("=" * 80)
+        sys.exit(1)
+    
+    # STEP 4: Calculate statistics for each top-k value
+    # Create and clean statistics output folder
+    stats_dir = Path(f"{output_base_dir}/{job_id}_statistics")
+    
+    print("=" * 80)
+    print("STEP 4: CALCULATING STATISTICS FOR EACH TOP-K VALUE")
+    print("=" * 80)
+    
+    if stats_dir.exists():
+        # Clean existing statistics files
+        old_stats = list(stats_dir.glob("*.json"))
+        if old_stats:
+            print(f"  Deleting {len(old_stats)} old files from {stats_dir}")
+            processor._clean_directory(stats_dir, "statistics", silent=True)
+    
+    # Create statistics directory
+    stats_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"  Experiment: {experiment}")
+    print(f"  Reading from: {merged_dir}")
+    print(f"  Output to: {stats_dir}")
+    print(f"  Top-k values: {k_values}")
+    print("")
+    
+    for k in k_values:
+        stats_file = stats_dir / f"{job_id}_{experiment}_statistics_k{k}.json"
+        print(f"  Calculating statistics for k={k}...")
+        
+        # Calculate statistics from merged files
+        try:
+            from merge_seval_results import calculate_statistics_from_merged
+            
+            stats = calculate_statistics_from_merged(
+                merged_dir=merged_dir,
+                top_k=k,
+                output_file=str(stats_file)
+            )
+            
+            stats_files[k] = str(stats_file)
+            print(f"    ✓ Saved to: {stats_file.name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate statistics for k={k}: {e}")
+            print(f"    ✗ Error: {e}")
+    
+    print("")
+    if stats_files:
+        print(f"✓ Statistics calculated for {len(stats_files)} top-k values")
+    else:
+        print("⚠ No statistics were calculated")
+    print("")
+    
+    # Step 5: Generate plots
+    # Always clean plot output folder first
+    plots_dir = Path(f"{output_base_dir}/{job_id}_statistics_plots")
+    
+    if len(k_values) >= 2:
+        # Ensure plots directory exists
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        
+        print("=" * 80)
+        print("STEP 5: GENERATING COMPARISON PLOTS")
+        print("=" * 80)
+        
+        if plots_dir.exists():
+            plot_files = (
+                list(plots_dir.rglob("*.png")) +
+                list(plots_dir.rglob("*.jpg"))
+            )
+            if plot_files:
+                print(f"  Deleting {len(plot_files)} old files from {plots_dir}")
+                processor._clean_directory(plots_dir, "plots", silent=True)
+        
+        print(f"  Experiment: {experiment}")
+        print(f"  Statistics files: {len(stats_files)} top-k values")
+        print(f"  Output directory: {plots_dir}")
         print("")
         
         try:
-            # Import plot module
-            sys.path.insert(0, str(Path(__file__).parent))
-            from plot_seval_metrics import plot_seval_metrics
-
-            # Generate plots using new flexible API
-            merged_dir_list = [
-                merged_dirs[k1],
-                merged_dirs[k3],
-                merged_dirs[k5]
-            ]
-            
-            plot_seval_metrics(
-                merged_dirs=merged_dir_list,
-                experiment=experiment if experiment != "both" else "control",
-                output_dir=f"{output_base_dir}/{job_id}_plots"
+            # Generate comparison plots from statistics files
+            _generate_statistics_plots(
+                stats_files=stats_files,
+                output_dir=plots_dir,
+                job_id=job_id,
+                experiment=experiment
             )
-            
-            print("")
-            print(f"✓ Plots generated successfully")
-            print(f"  Plots saved to: {output_base_dir}/{job_id}_plots")
-            
+            print(f"✓ Plots generated in: {plots_dir}")
         except Exception as e:
-            print(f"⚠ Warning: Failed to generate plots: {e}")
-            print(f"  You can generate plots manually using plot_seval_metrics.py")
-            import traceback
-            traceback.print_exc()
-    
+            logger.error(f"Failed to generate plots: {e}")
+            print(f"✗ Error generating plots: {e}")
+        print("")
     else:
         print("")
-        print("⚠ Note: Plotting requires at least 3 different top-k values")
+        print("⚠ Note: Plotting requires at least 2 different top-k values")
         print(f"  You provided: {k_values}")
-        print(f"  Plots will not be generated")
+        print("  Plots will not be generated")
+        print("")
     
-    # Final summary
-    print("")
+    # Final summary - only show what was generated in this run
     print("=" * 80)
-    print("✓ COMPLETE: SEVAL JOB PROCESSING WITH MULTIPLE TOP-K")
+    print("✓ COMPLETE: SEVAL JOB PROCESSING WITH STATISTICS")
     print("=" * 80)
     print(f"Job ID: {job_id}")
-    print(f"Processed top-k values: {k_values}")
+    print(f"Experiment: {experiment}")
+    print(f"Top-k values: {k_values}")
     print("")
-    print("Output directories:")
-    for k, merged_dir in merged_dirs.items():
-        print(f"  k={k}: {merged_dir}")
-    if len(k_values) >= 3:
-        print(f"  Plots: {output_base_dir}/{job_id}_plots")
+    
+    # Only show directories that were actually created/modified
+    has_output = False
+    if stats_files:
+        if not has_output:
+            print("Generated files:")
+            has_output = True
+        stats_count = len(stats_files)
+        print(f"  Statistics: {stats_count} files in {stats_dir}/")
+        for k in sorted(stats_files.keys()):
+            print(f"    - {job_id}_{experiment}_statistics_k{k}.json")
+    
+    if len(k_values) >= 2 and plots_dir.exists():
+        plot_count = len(list(plots_dir.glob("*.png")))
+        if plot_count > 0:
+            if not has_output:
+                print("Generated files:")
+                has_output = True
+            print(f"  Plots: {plot_count} files in {plots_dir}/")
+    
+    if not has_output:
+        print("No new files generated (all data reused)")
+    
+    print("=" * 80)
     print("=" * 80)
 
 
@@ -1536,5 +2180,5 @@ if __name__ == "__main__":
         'extract_conversations': extract_conversations,
         'merge_citescg_scores': merge_citescg_scores,
         'process_seval_job_multihop_citedcg': process_seval_job_multihop_citedcg,
-        'process_seval_job_with_plots': process_seval_job_with_plots,
+        'process_seval_job_with_statistics_plots': process_seval_job_with_statistics_plots,
     })
