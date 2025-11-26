@@ -246,17 +246,28 @@ class ConversationExtractor(BaseProcessor):
         
         # Find files based on experiment type
         files = []
+        control_count = 0
+        treatment_count = 0
+        
         if experiment.lower() in ["control", "both"]:
             control_files = sorted(input_path.glob("control_*.json"))
             files.extend(control_files)
-            if verbose:
-                logger.info(f"Found {len(control_files)} control files")
+            control_count = len(control_files)
+            print(f"  Found {control_count} control files")
         
         if experiment.lower() in ["treatment", "both"]:
+            # Try both naming conventions for treatment files
             treatment_files = sorted(input_path.glob("treatment_*.json"))
+            if len(treatment_files) == 0:
+                # Try alternate naming convention
+                treatment_files = sorted(input_path.glob("experiment_*.json"))
+                if len(treatment_files) > 0:
+                    print(f"  (Using 'experiment_*' pattern for treatment)")
             files.extend(treatment_files)
-            if verbose:
-                logger.info(f"Found {len(treatment_files)} treatment files")
+            treatment_count = len(treatment_files)
+            print(f"  Found {treatment_count} treatment files")
+        
+        print("")
         
         if not files:
             logger.warning(f"No {experiment} files found in {input_dir}")
@@ -723,9 +734,16 @@ class MergeCiteDCGProcessor(BaseProcessor):
         
         # Find conversation files
         control_files = sorted(conv_path.glob("control_*_conv_details.json"))
+        
+        # Try both naming patterns for treatment files
         treatment_files = sorted(
             conv_path.glob("treatment_*_conv_details.json")
         )
+        if len(treatment_files) == 0:
+            # Try alternate naming convention
+            treatment_files = sorted(
+                conv_path.glob("experiment_*_conv_details.json")
+            )
         
         print(f"Found {len(control_files)} control conversations")
         print(f"Found {len(treatment_files)} treatment conversations")
@@ -735,6 +753,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
         if self.citedcg_control_file:
             if control_files:
                 print(f"Processing {len(control_files)} control conversations...")
+                print(f"  → Using CiteDCG: {self.citedcg_control_file}")
                 control_output = output_path / "control"
                 control_output.mkdir(exist_ok=True)
                 
@@ -758,6 +777,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
                     f"Processing {len(treatment_files)} treatment "
                     "conversations..."
                 )
+                print(f"  → Using CiteDCG: {self.citedcg_treatment_file}")
                 treatment_output = output_path / "treatment"
                 treatment_output.mkdir(exist_ok=True)
                 
@@ -854,6 +874,10 @@ class MergeCiteDCGProcessor(BaseProcessor):
             # Extract utterances_not_in_dcg from summary (NEW location)
             summary = eval_results.get("summary", {})
             utterances_not_in_dcg = summary.get("utterances_not_in_dcg", 0)
+            queries_no_match = summary.get("queries_no_match", 0)
+            
+            # Extract multi-turn turn information
+            turn_used_for_scoring = summary.get("turn_used_for_scoring", None)
             
             return {
                 "file": conv_file.name,
@@ -866,6 +890,8 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 "nonempty_hops": nonempty_hops,
                 "has_scores": has_scores,
                 "utterances_not_in_dcg": utterances_not_in_dcg,
+                "queries_no_match": queries_no_match,
+                "turn_used_for_scoring": turn_used_for_scoring,
             }
         
         except Exception as e:
@@ -890,105 +916,300 @@ class MergeCiteDCGProcessor(BaseProcessor):
         print("MERGE SUMMARY")
         print("=" * 80)
         
-        # SECTION 1: UTTERANCE-BASED SUMMARY (most important)
-        print("")
-        print("Utterance-Based Summary:")
-        print("-" * 80)
-        print(f"Total conversations processed: {total}")
-        print(f"  With CiteDCG scores:     {total - self.no_scores_count}")
-        print(f"  Without scores:          {self.no_scores_count}")
-        print(f"  Not in DCG data:         {self.utterances_not_in_dcg}")
-        print(
-            f"  Matching errors:         {len(self.errors)} "
-            f"(DCG exists but tools/queries/results don't match)"
-        )
-        
         if total > 0:
-            # SECTION 2: EXPERIMENT BREAKDOWN
-            control = sum(
-                1 for r in self.results if r.get("experiment") == "control"
-            )
-            treatment = sum(
-                1 for r in self.results
-                if r.get("experiment") == "treatment"
-            )
+            # Separate results by experiment
+            control_results = [r for r in self.results if r.get("experiment") == "control"]
+            treatment_results = [r for r in self.results if r.get("experiment") == "treatment"]
             
-            print("")
-            print("Experiment Breakdown:")
-            print("-" * 80)
-            print(f"Control conversations:   {control}")
-            print(f"Treatment conversations: {treatment}")
+            # Check if we have both experiments
+            has_both = len(control_results) > 0 and len(treatment_results) > 0
             
-            # SECTION 3: HOP AND TURN STATISTICS
-            total_results_scored = sum(
-                r.get("results_with_scores", 0) for r in self.results
-            )
-            total_hops = sum(
-                r.get("total_hops", 0) for r in self.results
-            )
-            total_nonempty_hops = sum(
-                r.get("nonempty_hops", 0) for r in self.results
-            )
-            
-            print("")
-            print("Hop and Turn Statistics:")
-            print("-" * 80)
-            print(f"Total search results with scores: {total_results_scored}")
-            print(f"Total hops (incl empty): {total_hops}")
-            print(f"Non-empty hops:          {total_nonempty_hops}")
-            
-            # Turn distribution with multi-turn breakdown
-            turn_dist = {}
-            # NOTE: "nonempty_hops" in merge phase = hops with invocations
-            # (not just hop data structures, but actual search attempts)
-            multi_turn_with_invocations = 0  # Has hops with invocations (search attempted)
-            multi_turn_with_scores = 0  # Has invocations AND scores
-            multi_turn_no_invocations = 0  # Has hop structures but no invocations
-            
-            for result in self.results:
-                turn_count = result.get("total_turns", 0)
-                turn_dist[turn_count] = turn_dist.get(turn_count, 0) + 1
-                
-                # Track multi-turn conversations
-                if turn_count > 1:
-                    # "nonempty_hops" = hops WITH invocations (stricter definition)
-                    nonempty_hops = result.get("nonempty_hops", 0)
-                    has_scores = result.get("has_scores", False)
+            if has_both:
+                # Print summary for each experiment separately
+                for exp_name, exp_results in [("CONTROL", control_results), ("TREATMENT", treatment_results)]:
+                    exp_total = len(exp_results)
+                    exp_no_scores = sum(1 for r in exp_results if not r.get("has_scores", False))
+                    exp_not_in_dcg = sum(r.get("utterances_not_in_dcg", 0) for r in exp_results)
+                    exp_queries_no_match = sum(r.get("queries_no_match", 0) for r in exp_results)
+                    exp_errors = sum(1 for e in self.errors if any(r.get("file") == e.get("file") for r in exp_results))
                     
-                    if nonempty_hops > 0:
-                        multi_turn_with_invocations += 1
-                        if has_scores:
-                            multi_turn_with_scores += 1
-                    else:
-                        multi_turn_no_invocations += 1
-            
-            if turn_dist:
-                print("")
-                print("Turn Distribution:")
-                for turn_count in sorted(turn_dist.keys()):
-                    file_count = turn_dist[turn_count]
-                    pct = (file_count / total * 100) if total > 0 else 0
-                    
-                    if turn_count == 0:
-                        print(f"  {turn_count} turns: {file_count} conversations ({pct:.1f}%)")
-                    elif turn_count == 1:
-                        print(f"  {turn_count} turn:  {file_count} conversations ({pct:.1f}%)")
-                    else:
-                        print(f"  {turn_count} turns: {file_count} conversations ({pct:.1f}%)")
-                
-                # Add detailed multi-turn summary
-                multi_turn_total = sum(turn_dist.get(k, 0) for k in turn_dist if k > 1)
-                if multi_turn_total > 0:
                     print("")
-                    print("  Multi-turn breakdown (retry scenarios):")
-                    print(f"    Total: {multi_turn_total} conversations")
-                    pct_inv = (multi_turn_with_invocations / multi_turn_total * 100)
-                    print(f"    With invocations: {multi_turn_with_invocations} ({pct_inv:.1f}% - search attempted)")
-                    print(f"      → With CiteDCG scores: {multi_turn_with_scores}")
-                    no_scores = multi_turn_with_invocations - multi_turn_with_scores
-                    print(f"      → No scores: {no_scores} (not in DCG or no match)")
-                    pct_no_inv = (multi_turn_no_invocations / multi_turn_total * 100)
-                    print(f"    No invocations: {multi_turn_no_invocations} ({pct_no_inv:.1f}% - search not attempted)")
+                    print(f"{exp_name} Experiment Summary:")
+                    print("-" * 80)
+                    print(f"Total conversations:     {exp_total}")
+                    print(f"  With CiteDCG scores:   {exp_total - exp_no_scores}")
+                    print(f"  Without scores:        {exp_no_scores}")
+                    print(f"  Not in DCG data:       {exp_not_in_dcg}")
+                    print(f"  Queries no match:      {exp_queries_no_match}")
+                    print(
+                        f"  Matching errors:       {exp_errors} "
+                        f"(DCG exists but tools/queries/results don't match)"
+                    )
+                    
+                    # Hop and Turn Statistics for this experiment
+                    exp_results_scored = sum(r.get("results_with_scores", 0) for r in exp_results)
+                    exp_total_hops = sum(r.get("total_hops", 0) for r in exp_results)
+                    exp_nonempty_hops = sum(r.get("nonempty_hops", 0) for r in exp_results)
+                    
+                    print("")
+                    print("  Hop and Turn Statistics:")
+                    print(f"    Search results with scores: {exp_results_scored}")
+                    print(f"    Total hops (incl empty):    {exp_total_hops}")
+                    print(f"    Non-empty hops:             {exp_nonempty_hops}")
+                    
+                    # Turn distribution - track which turn has non-empty hops
+                    turn_dist = {}
+                    turn_nonempty_dist = {}  # Track non-empty turn for each turn count
+                    multi_turn_with_invocations = 0
+                    multi_turn_with_scores = 0
+                    multi_turn_no_invocations = 0
+                    
+                    for result in exp_results:
+                        turn_count = result.get("total_turns", 0)
+                        turn_dist[turn_count] = turn_dist.get(turn_count, 0) + 1
+                        
+                        # Track which turn has non-empty hops for multi-turn
+                        if turn_count > 1:
+                            nonempty_turn = result.get("turn_used_for_scoring", None)
+                            if nonempty_turn:
+                                key = (turn_count, nonempty_turn)
+                                if key not in turn_nonempty_dist:
+                                    turn_nonempty_dist[key] = 0
+                                turn_nonempty_dist[key] += 1
+                        
+                        if turn_count > 1:
+                            nonempty_hops = result.get("nonempty_hops", 0)
+                            has_scores = result.get("has_scores", False)
+                            
+                            if nonempty_hops > 0:
+                                multi_turn_with_invocations += 1
+                                if has_scores:
+                                    multi_turn_with_scores += 1
+                            else:
+                                multi_turn_no_invocations += 1
+                    
+                    if turn_dist:
+                        print("")
+                        print("  Turn Distribution:")
+                        for turn_count in sorted(turn_dist.keys()):
+                            file_count = turn_dist[turn_count]
+                            pct = (
+                                (file_count / exp_total * 100)
+                                if exp_total > 0 else 0
+                            )
+                            
+                            # Format turn count display
+                            if turn_count == 0:
+                                turn_label = f"{turn_count} turns"
+                            elif turn_count == 1:
+                                turn_label = f"{turn_count} turn "
+                            else:
+                                turn_label = f"{turn_count} turns"
+                            
+                            # Add non-empty turn info for multi-turn
+                            if turn_count > 1:
+                                # Find which turn has non-empty hops
+                                nonempty_turns = [
+                                    nt for (tc, nt), count
+                                    in turn_nonempty_dist.items()
+                                    if tc == turn_count
+                                ]
+                                if nonempty_turns:
+                                    # Get most common non-empty turn
+                                    from collections import Counter
+                                    most_common = Counter(
+                                        nonempty_turns
+                                    ).most_common(1)[0][0]
+                                    turn_info = f" (turn {most_common} non-empty)"
+                                else:
+                                    # No turns with invocations found
+                                    turn_info = " (0 non-empty turns)"
+                                print(
+                                    f"    {turn_label}{turn_info}: "
+                                    f"{file_count} conversations ({pct:.1f}%)"
+                                )
+                            else:
+                                print(
+                                    f"    {turn_label}: "
+                                    f"{file_count} conversations ({pct:.1f}%)"
+                                )
+                        
+                        multi_turn_total = sum(turn_dist.get(k, 0) for k in turn_dist if k > 1)
+                        if multi_turn_total > 0:
+                            print("")
+                            print("    Multi-turn breakdown (retry scenarios):")
+                            print(f"      Total: {multi_turn_total} conversations")
+                            pct_inv = (multi_turn_with_invocations / multi_turn_total * 100)
+                            print(f"      With invocations: {multi_turn_with_invocations} ({pct_inv:.1f}% - search attempted)")
+                            print(f"        → With CiteDCG scores: {multi_turn_with_scores}")
+                            no_scores = multi_turn_with_invocations - multi_turn_with_scores
+                            print(f"        → No scores: {no_scores} (not in DCG or no match)")
+                            pct_no_inv = (multi_turn_no_invocations / multi_turn_total * 100)
+                            print(f"      No invocations: {multi_turn_no_invocations} ({pct_no_inv:.1f}% - search not attempted)")
+            else:
+                # Single experiment - use original format
+                # Calculate queries_no_match for single experiment
+                total_queries_no_match = sum(
+                    r.get("queries_no_match", 0) for r in self.results
+                )
+                
+                print("")
+                print("Utterance-Based Summary:")
+                print("-" * 80)
+                print(f"Total conversations processed: {total}")
+                print(f"  With CiteDCG scores:     {total - self.no_scores_count}")
+                print(f"  Without scores:          {self.no_scores_count}")
+                print(f"  Not in DCG data:         {self.utterances_not_in_dcg}")
+                print(f"  Queries no match:        {total_queries_no_match}")
+                print(
+                    f"  Matching errors:         {len(self.errors)} "
+                    f"(DCG exists but tools/queries/results don't match)"
+                )
+                
+                # SECTION 2: EXPERIMENT BREAKDOWN
+                control = sum(
+                    1 for r in self.results if r.get("experiment") == "control"
+                )
+                treatment = sum(
+                    1 for r in self.results
+                    if r.get("experiment") == "treatment"
+                )
+                
+                print("")
+                print("Experiment Breakdown:")
+                print("-" * 80)
+                print(f"Control conversations:   {control}")
+                print(f"Treatment conversations: {treatment}")
+                
+                # SECTION 3: HOP AND TURN STATISTICS (for single experiment)
+                total_results_scored = sum(
+                    r.get("results_with_scores", 0) for r in self.results
+                )
+                total_hops = sum(
+                    r.get("total_hops", 0) for r in self.results
+                )
+                total_nonempty_hops = sum(
+                    r.get("nonempty_hops", 0) for r in self.results
+                )
+                
+                print("")
+                print("Hop and Turn Statistics:")
+                print("-" * 80)
+                print(f"Total search results with scores: {total_results_scored}")
+                print(f"Total hops (incl empty): {total_hops}")
+                print(f"Non-empty hops:          {total_nonempty_hops}")
+                
+                # Turn distribution with multi-turn breakdown
+                turn_dist = {}
+                turn_nonempty_dist = {}  # Track non-empty turn for each turn count
+                # NOTE: "nonempty_hops" in merge phase = hops with invocations
+                # (not just hop data structures, but actual search attempts)
+                multi_turn_with_invocations = 0
+                multi_turn_with_scores = 0
+                multi_turn_no_invocations = 0
+                
+                for result in self.results:
+                    turn_count = result.get("total_turns", 0)
+                    turn_dist[turn_count] = turn_dist.get(turn_count, 0) + 1
+                    
+                    # Track which turn has non-empty hops for multi-turn
+                    if turn_count > 1:
+                        nonempty_turn = result.get("turn_used_for_scoring", None)
+                        # If not set, assume last turn for multi-turn with hops
+                        if nonempty_turn is None and result.get("nonempty_hops", 0) > 0:
+                            nonempty_turn = turn_count
+                        if nonempty_turn:
+                            key = (turn_count, nonempty_turn)
+                            if key not in turn_nonempty_dist:
+                                turn_nonempty_dist[key] = 0
+                            turn_nonempty_dist[key] += 1
+                    
+                    # Track multi-turn conversations
+                    if turn_count > 1:
+                        # "nonempty_hops" = hops WITH invocations
+                        nonempty_hops = result.get("nonempty_hops", 0)
+                        has_scores = result.get("has_scores", False)
+                        
+                        if nonempty_hops > 0:
+                            multi_turn_with_invocations += 1
+                            if has_scores:
+                                multi_turn_with_scores += 1
+                        else:
+                            multi_turn_no_invocations += 1
+                
+                if turn_dist:
+                    print("")
+                    print("Turn Distribution:")
+                    for turn_count in sorted(turn_dist.keys()):
+                        file_count = turn_dist[turn_count]
+                        pct = (file_count / total * 100) if total > 0 else 0
+                        
+                        # Format turn count display
+                        if turn_count == 0:
+                            turn_label = f"{turn_count} turns"
+                        elif turn_count == 1:
+                            turn_label = f"{turn_count} turn "
+                        else:
+                            turn_label = f"{turn_count} turns"
+                        
+                        # Add non-empty turn info for multi-turn
+                        if turn_count > 1:
+                            # Find which turn has non-empty hops
+                            nonempty_turns = [
+                                nt for (tc, nt), count
+                                in turn_nonempty_dist.items()
+                                if tc == turn_count
+                            ]
+                            if nonempty_turns:
+                                # Get most common non-empty turn
+                                from collections import Counter
+                                most_common = Counter(
+                                    nonempty_turns
+                                ).most_common(1)[0][0]
+                                turn_info = f" (turn {most_common} non-empty)"
+                            else:
+                                # No turns with invocations found
+                                turn_info = " (0 non-empty turns)"
+                            print(
+                                f"  {turn_label}{turn_info}: "
+                                f"{file_count} conversations ({pct:.1f}%)"
+                            )
+                        else:
+                            print(
+                                f"  {turn_label}: "
+                                f"{file_count} conversations ({pct:.1f}%)"
+                            )
+                    
+                    # Add detailed multi-turn summary
+                    multi_turn_total = sum(
+                        turn_dist.get(k, 0) for k in turn_dist if k > 1
+                    )
+                    if multi_turn_total > 0:
+                        print("")
+                        print("  Multi-turn breakdown:")
+                        print(f"    Total: {multi_turn_total} conversations")
+                        pct_inv = (
+                            multi_turn_with_invocations / multi_turn_total * 100
+                        )
+                        print(
+                            f"    With invocations: {multi_turn_with_invocations}"
+                            f" ({pct_inv:.1f}% - search attempted)"
+                        )
+                        print(f"      → With CiteDCG scores: {multi_turn_with_scores}")
+                        no_scores = (
+                            multi_turn_with_invocations - multi_turn_with_scores
+                        )
+                        print(
+                            f"      → No scores: {no_scores} "
+                            f"(not in DCG or no match)"
+                        )
+                        pct_no_inv = (
+                            multi_turn_no_invocations / multi_turn_total * 100
+                        )
+                        print(
+                            f"    No invocations: {multi_turn_no_invocations} "
+                            f"({pct_no_inv:.1f}% - search not attempted)"
+                        )
         
         print("=" * 80)
     
@@ -1356,7 +1577,7 @@ def _generate_statistics_plots(
         fig.suptitle(
             f'Utterance-Averaged CiteDCG Score vs Hop Index '
             f'(includes empty hops)\n'
-            f'Job: {job_id} | Experiment: {experiment}',
+            f'Job: {job_id} | Experiment: {experiment.upper()}',
             fontsize=15, fontweight='bold', y=0.98
         )
         
@@ -1434,7 +1655,7 @@ def _generate_statistics_plots(
         fig.suptitle(
             f'Utterance-Averaged CiteDCG Score vs Hop Sequence '
             f'(only non-empty hops)\n'
-            f'Job: {job_id} | Experiment: {experiment}',
+            f'Job: {job_id} | Experiment: {experiment.upper()}',
             fontsize=15, fontweight='bold', y=0.98
         )
         
@@ -1658,7 +1879,7 @@ def _generate_statistics_plots(
         
         fig.suptitle(
             f'Single-Hop vs Multi-Hop Utterance Analysis\n'
-            f'Job: {job_id} | Experiment: {experiment}',
+            f'Job: {job_id} | Experiment: {experiment.upper()}',
             fontsize=15, fontweight='bold', y=0.98
         )
         
@@ -1669,6 +1890,539 @@ def _generate_statistics_plots(
         
         print(f"  ✓ Saved: {plot_file.name}")
 
+
+def _generate_statistics_plots_comparison(
+    stats_files_control: Dict[int, str],
+    stats_files_treatment: Dict[int, str],
+    output_dir: Path,
+    job_id: str
+):
+    """
+    Generate 2x2 comparison plots for control vs treatment experiments.
+    
+    Top row: Control experiment
+    Bottom row: Treatment experiment
+    Left column: CiteDCG scores
+    Right column: Utterance counts
+    
+    Args:
+        stats_files_control: Dict mapping k values to control stats file paths
+        stats_files_treatment: Dict mapping k values to treatment stats file paths
+        output_dir: Directory to save plots
+        job_id: SEVAL job ID for plot titles
+    """
+    import json
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.lines import Line2D
+
+    print("  Generating 2x2 comparison plots...")
+
+    # Load statistics for both experiments
+    stats_control = {}
+    stats_treatment = {}
+    
+    for k, stats_file in sorted(stats_files_control.items()):
+        with open(stats_file, 'r', encoding='utf-8') as f:
+            stats_control[k] = json.load(f)
+    
+    for k, stats_file in sorted(stats_files_treatment.items()):
+        with open(stats_file, 'r', encoding='utf-8') as f:
+            stats_treatment[k] = json.load(f)
+    
+    k_values = sorted(stats_control.keys())
+    
+    # ========== PLOT 1: Hop Index (includes empty hops) - 2x2 layout ==========
+    hop_key = "per_hop"
+    
+    # Determine max hop index across both experiments
+    max_hop_index_control = max(
+        int(h) for k_data in stats_control.values()
+        for h in k_data.get(hop_key, {}).keys()
+    ) if any(stats_control[k].get(hop_key) for k in k_values) else 0
+    
+    max_hop_index_treatment = max(
+        int(h) for k_data in stats_treatment.values()
+        for h in k_data.get(hop_key, {}).keys()
+    ) if any(stats_treatment[k].get(hop_key) for k in k_values) else 0
+    
+    max_hop_index = max(max_hop_index_control, max_hop_index_treatment)
+    
+    if max_hop_index > 0:
+        fig, axes = plt.subplots(2, 2, figsize=(20, 14))
+        hop_indices = list(range(0, max_hop_index + 1))
+        
+        # ===== TOP ROW: CONTROL =====
+        # Top-left: Control CiteDCG scores
+        ax = axes[0, 0]
+        per_hop = stats_control[k_values[0]].get(hop_key, {})
+        hop_avgs = [per_hop.get(str(i), {}).get("avg_all_scores") 
+                    if per_hop.get(str(i), {}).get("avg_all_scores") is not None else np.nan
+                    for i in hop_indices]
+        
+        ax.plot(hop_indices, hop_avgs, marker='o', linewidth=3,
+                color='steelblue', label='All Results', markersize=8)
+        
+        for k in k_values:
+            per_hop = stats_control[k].get(hop_key, {})
+            hop_topk_avgs = [per_hop.get(str(i), {}).get("avg_topk_scores")
+                            if per_hop.get(str(i), {}).get("avg_topk_scores") is not None else np.nan
+                            for i in hop_indices]
+            ax.plot(hop_indices, hop_topk_avgs, marker='s', linewidth=2.5,
+                    linestyle='--', label=f'Top-{k}', markersize=7)
+        
+        ax.set_xlabel('Hop Index', fontsize=12)
+        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
+        ax.set_title('CONTROL - CiteDCG Scores', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_indices)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        # Top-right: Control utterance counts
+        ax = axes[0, 1]
+        per_hop = stats_control[k_values[0]].get(hop_key, {})
+        utterances_with_scores = [per_hop.get(str(i), {}).get("utterances_with_scores", 0)
+                                  for i in hop_indices]
+        utterances_without_scores = [per_hop.get(str(i), {}).get("utterances_without_scores", 0)
+                                     for i in hop_indices]
+        
+        ax.plot(hop_indices, utterances_with_scores, marker='o', linewidth=3,
+                color='green', label='With Scores', markersize=8)
+        ax.plot(hop_indices, utterances_without_scores, marker='s', linewidth=3,
+                color='red', label='Without Scores', markersize=8, linestyle='--')
+        
+        ax.set_xlabel('Hop Index', fontsize=12)
+        ax.set_ylabel('Number of Utterances', fontsize=12)
+        ax.set_title('CONTROL - Utterance Counts', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_indices)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        # ===== BOTTOM ROW: TREATMENT =====
+        # Bottom-left: Treatment CiteDCG scores
+        ax = axes[1, 0]
+        per_hop = stats_treatment[k_values[0]].get(hop_key, {})
+        hop_avgs = [per_hop.get(str(i), {}).get("avg_all_scores")
+                    if per_hop.get(str(i), {}).get("avg_all_scores") is not None else np.nan
+                    for i in hop_indices]
+        
+        ax.plot(hop_indices, hop_avgs, marker='o', linewidth=3,
+                color='steelblue', label='All Results', markersize=8)
+        
+        for k in k_values:
+            per_hop = stats_treatment[k].get(hop_key, {})
+            hop_topk_avgs = [per_hop.get(str(i), {}).get("avg_topk_scores")
+                            if per_hop.get(str(i), {}).get("avg_topk_scores") is not None else np.nan
+                            for i in hop_indices]
+            ax.plot(hop_indices, hop_topk_avgs, marker='s', linewidth=2.5,
+                    linestyle='--', label=f'Top-{k}', markersize=7)
+        
+        ax.set_xlabel('Hop Index', fontsize=12)
+        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
+        ax.set_title('TREATMENT - CiteDCG Scores', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_indices)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        # Bottom-right: Treatment utterance counts
+        ax = axes[1, 1]
+        per_hop = stats_treatment[k_values[0]].get(hop_key, {})
+        utterances_with_scores = [per_hop.get(str(i), {}).get("utterances_with_scores", 0)
+                                  for i in hop_indices]
+        utterances_without_scores = [per_hop.get(str(i), {}).get("utterances_without_scores", 0)
+                                     for i in hop_indices]
+        
+        ax.plot(hop_indices, utterances_with_scores, marker='o', linewidth=3,
+                color='green', label='With Scores', markersize=8)
+        ax.plot(hop_indices, utterances_without_scores, marker='s', linewidth=3,
+                color='red', label='Without Scores', markersize=8, linestyle='--')
+        
+        ax.set_xlabel('Hop Index', fontsize=12)
+        ax.set_ylabel('Number of Utterances', fontsize=12)
+        ax.set_title('TREATMENT - Utterance Counts', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_indices)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        fig.suptitle(
+            f'Control vs Treatment: CiteDCG Score vs Hop Index (includes empty hops)\n'
+            f'Job: {job_id}',
+            fontsize=16, fontweight='bold', y=0.995
+        )
+        
+        plt.tight_layout()
+        plot_file = output_dir / f"{job_id}_comparison_hop_index.png"
+        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✓ Saved: {plot_file.name}")
+    
+    # ========== PLOT 2: Hop Sequence (only non-empty hops) - 2x2 layout ==========
+    hop_key = "per_hop_sequence"
+    
+    # Collect all hop numbers from both experiments
+    all_hop_numbers = set()
+    for k in k_values:
+        per_hop = stats_control[k].get(hop_key, {})
+        all_hop_numbers.update(int(h) for h in per_hop.keys())
+        per_hop = stats_treatment[k].get(hop_key, {})
+        all_hop_numbers.update(int(h) for h in per_hop.keys())
+    
+    if all_hop_numbers:
+        hop_numbers = sorted(all_hop_numbers)
+        fig, axes = plt.subplots(2, 2, figsize=(20, 14))
+        
+        # ===== TOP ROW: CONTROL =====
+        # Top-left: Control CiteDCG scores
+        ax = axes[0, 0]
+        per_hop = stats_control[k_values[0]].get(hop_key, {})
+        hop_avgs = [per_hop.get(str(hop_num), {}).get("avg_all_scores")
+                    if per_hop.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
+                    for hop_num in hop_numbers]
+        
+        ax.plot(hop_numbers, hop_avgs, marker='o', linewidth=3,
+                color='steelblue', label='All Results', markersize=8)
+        
+        for k in k_values:
+            per_hop = stats_control[k].get(hop_key, {})
+            hop_topk_avgs = [per_hop.get(str(hop_num), {}).get("avg_topk_scores")
+                            if per_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
+                            for hop_num in hop_numbers]
+            ax.plot(hop_numbers, hop_topk_avgs, marker='s', linewidth=2.5,
+                    linestyle='--', label=f'Top-{k}', markersize=7)
+        
+        ax.set_xlabel('Hop Sequence', fontsize=12)
+        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
+        ax.set_title('CONTROL - CiteDCG Scores', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_numbers)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        # Top-right: Control utterance counts
+        ax = axes[0, 1]
+        per_hop = stats_control[k_values[0]].get(hop_key, {})
+        utterances_with_scores = [per_hop.get(str(hop_num), {}).get("utterances_with_scores", 0)
+                                  for hop_num in hop_numbers]
+        
+        ax.plot(hop_numbers, utterances_with_scores, marker='o', linewidth=3,
+                color='green', label='Utterances with Scores', markersize=8)
+        
+        ax.set_xlabel('Hop Sequence', fontsize=12)
+        ax.set_ylabel('Number of Utterances', fontsize=12)
+        ax.set_title('CONTROL - Utterance Counts', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_numbers)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        # ===== BOTTOM ROW: TREATMENT =====
+        # Bottom-left: Treatment CiteDCG scores
+        ax = axes[1, 0]
+        per_hop = stats_treatment[k_values[0]].get(hop_key, {})
+        hop_avgs = [per_hop.get(str(hop_num), {}).get("avg_all_scores")
+                    if per_hop.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
+                    for hop_num in hop_numbers]
+        
+        ax.plot(hop_numbers, hop_avgs, marker='o', linewidth=3,
+                color='steelblue', label='All Results', markersize=8)
+        
+        for k in k_values:
+            per_hop = stats_treatment[k].get(hop_key, {})
+            hop_topk_avgs = [per_hop.get(str(hop_num), {}).get("avg_topk_scores")
+                            if per_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
+                            for hop_num in hop_numbers]
+            ax.plot(hop_numbers, hop_topk_avgs, marker='s', linewidth=2.5,
+                    linestyle='--', label=f'Top-{k}', markersize=7)
+        
+        ax.set_xlabel('Hop Sequence', fontsize=12)
+        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
+        ax.set_title('TREATMENT - CiteDCG Scores', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_numbers)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        # Bottom-right: Treatment utterance counts
+        ax = axes[1, 1]
+        per_hop = stats_treatment[k_values[0]].get(hop_key, {})
+        utterances_with_scores = [per_hop.get(str(hop_num), {}).get("utterances_with_scores", 0)
+                                  for hop_num in hop_numbers]
+        
+        ax.plot(hop_numbers, utterances_with_scores, marker='o', linewidth=3,
+                color='green', label='Utterances with Scores', markersize=8)
+        
+        ax.set_xlabel('Hop Sequence', fontsize=12)
+        ax.set_ylabel('Number of Utterances', fontsize=12)
+        ax.set_title('TREATMENT - Utterance Counts', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_numbers)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        fig.suptitle(
+            f'Control vs Treatment: CiteDCG Score vs Hop Sequence (only non-empty hops)\n'
+            f'Job: {job_id}',
+            fontsize=16, fontweight='bold', y=0.995
+        )
+        
+        plt.tight_layout()
+        plot_file = output_dir / f"{job_id}_comparison_hop_sequence.png"
+        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✓ Saved: {plot_file.name}")
+    
+    # ========== PLOT 3: Single-hop vs Multi-hop - 2x2 layout ==========
+    single_hop_control = stats_control[k_values[0]].get("single_hop", {})
+    multi_hop_control = stats_control[k_values[0]].get("multi_hop", {})
+    single_hop_treatment = stats_treatment[k_values[0]].get("single_hop", {})
+    multi_hop_treatment = stats_treatment[k_values[0]].get("multi_hop", {})
+    
+    if any([single_hop_control, multi_hop_control, single_hop_treatment, multi_hop_treatment]):
+        fig, axes = plt.subplots(2, 2, figsize=(20, 14))
+        
+        # Determine max hop across both experiments
+        max_hop = 1
+        if multi_hop_control:
+            max_hop = max(max_hop, max([int(h) for h in multi_hop_control.keys()]))
+        if multi_hop_treatment:
+            max_hop = max(max_hop, max([int(h) for h in multi_hop_treatment.keys()]))
+        
+        hop_positions = list(range(1, max_hop + 1))
+        
+        # Define styles
+        metric_styles = {
+            'all': {'marker': 'o', 'size': 12, 'linestyle': '-'},
+            1: {'marker': '^', 'size': 10, 'linestyle': '--'},
+            3: {'marker': 's', 'size': 9, 'linestyle': '-.'},
+            5: {'marker': 'D', 'size': 8, 'linestyle': ':'}
+        }
+        single_hop_color = 'green'
+        multi_hop_color = 'blue'
+        
+        # ===== TOP ROW: CONTROL =====
+        # Top-left: Control CiteDCG scores
+        ax = axes[0, 0]
+        
+        # Single-hop at hop 1
+        if single_hop_control:
+            hop_data = single_hop_control.get("1", {})
+            avg_all = hop_data.get("avg_all_scores")
+            if avg_all is not None:
+                style = metric_styles['all']
+                ax.plot([1], [avg_all], marker=style['marker'], linewidth=0,
+                        color=single_hop_color, label='All Results',
+                        markersize=style['size'], zorder=5)
+        
+        # Multi-hop progression
+        if multi_hop_control:
+            multi_hop_numbers = sorted([int(h) for h in multi_hop_control.keys()])
+            hop_avgs = [multi_hop_control.get(str(hop_num), {}).get("avg_all_scores")
+                       if multi_hop_control.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
+                       for hop_num in multi_hop_numbers]
+            style = metric_styles['all']
+            ax.plot(multi_hop_numbers, hop_avgs, marker=style['marker'],
+                    linewidth=3, color=multi_hop_color, label='All Results',
+                    markersize=style['size'], linestyle=style['linestyle'], zorder=5)
+        
+        # Top-k for single-hop
+        if single_hop_control:
+            for k in k_values:
+                style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
+                single_hop = stats_control[k].get("single_hop", {})
+                hop_data = single_hop.get("1", {})
+                avg_topk = hop_data.get("avg_topk_scores")
+                if avg_topk is not None:
+                    ax.plot([1], [avg_topk], marker=style['marker'], linewidth=0,
+                            color=single_hop_color, label=f'Top-{k}',
+                            markersize=style['size'], alpha=0.8, zorder=4)
+        
+        # Top-k for multi-hop
+        if multi_hop_control:
+            for k in k_values:
+                style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
+                multi_hop = stats_control[k].get("multi_hop", {})
+                hop_topk_avgs = [multi_hop.get(str(hop_num), {}).get("avg_topk_scores")
+                                if multi_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
+                                for hop_num in multi_hop_numbers]
+                ax.plot(multi_hop_numbers, hop_topk_avgs, marker=style['marker'],
+                        linewidth=2.5, linestyle=style['linestyle'],
+                        color=multi_hop_color, label=f'Top-{k}',
+                        markersize=style['size'], alpha=0.8, zorder=4)
+        
+        ax.set_xlabel('Hop Sequence', fontsize=12)
+        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
+        ax.set_title('CONTROL - CiteDCG Scores', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_positions)
+        
+        # Legend
+        single_hop_elements = [
+            Line2D([0], [0], marker='', color='none', linestyle='', label='Single-Hop')
+        ]
+        style = metric_styles['all']
+        single_hop_elements.append(Line2D([0], [0], marker=style['marker'],
+                                         color=single_hop_color, markersize=style['size'],
+                                         linestyle=style['linestyle'], label='All Results'))
+        for k in k_values:
+            style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
+            single_hop_elements.append(Line2D([0], [0], marker=style['marker'],
+                                             color=single_hop_color, markersize=style['size'],
+                                             linestyle=style['linestyle'], label=f'Top-{k}'))
+        
+        multi_hop_elements = [
+            Line2D([0], [0], marker='', color='none', linestyle='', label='Multi-Hop')
+        ]
+        style = metric_styles['all']
+        multi_hop_elements.append(Line2D([0], [0], marker=style['marker'],
+                                        color=multi_hop_color, markersize=style['size'],
+                                        linestyle=style['linestyle'], label='All Results'))
+        for k in k_values:
+            style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
+            multi_hop_elements.append(Line2D([0], [0], marker=style['marker'],
+                                            color=multi_hop_color, markersize=style['size'],
+                                            linestyle=style['linestyle'], label=f'Top-{k}'))
+        
+        legend_elements = single_hop_elements + multi_hop_elements
+        leg = ax.legend(handles=legend_elements, fontsize=9, loc='best',
+                       ncol=2, columnspacing=2.5, handlelength=2.5, handletextpad=0.5)
+        texts = leg.get_texts()
+        num_items_per_col = len(legend_elements) // 2
+        texts[0].set_weight('bold')
+        texts[num_items_per_col].set_weight('bold')
+        ax.grid(True, alpha=0.3)
+        
+        # Top-right: Control utterance counts
+        ax = axes[0, 1]
+        single_hop_counts = []
+        multi_hop_counts = []
+        for hop_num in hop_positions:
+            if hop_num == 1 and single_hop_control:
+                sh_data = single_hop_control.get("1", {})
+                single_count = sh_data.get("utterances_count", 0)
+            else:
+                single_count = 0
+            single_hop_counts.append(single_count)
+            
+            if multi_hop_control:
+                mh_data = multi_hop_control.get(str(hop_num), {})
+                multi_count = mh_data.get("utterances_count", 0)
+            else:
+                multi_count = 0
+            multi_hop_counts.append(multi_count)
+        
+        ax.plot(hop_positions, single_hop_counts, marker='o', linewidth=3,
+                color='green', label='Single-Hop', markersize=8)
+        ax.plot(hop_positions, multi_hop_counts, marker='s', linewidth=3,
+                color='blue', label='Multi-Hop', markersize=8, linestyle='--')
+        
+        ax.set_xlabel('Hop Sequence', fontsize=12)
+        ax.set_ylabel('Number of Utterances', fontsize=12)
+        ax.set_title('CONTROL - Utterance Counts', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_positions)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        # ===== BOTTOM ROW: TREATMENT =====
+        # Bottom-left: Treatment CiteDCG scores
+        ax = axes[1, 0]
+        
+        # Single-hop at hop 1
+        if single_hop_treatment:
+            hop_data = single_hop_treatment.get("1", {})
+            avg_all = hop_data.get("avg_all_scores")
+            if avg_all is not None:
+                style = metric_styles['all']
+                ax.plot([1], [avg_all], marker=style['marker'], linewidth=0,
+                        color=single_hop_color, label='All Results',
+                        markersize=style['size'], zorder=5)
+        
+        # Multi-hop progression
+        if multi_hop_treatment:
+            multi_hop_numbers = sorted([int(h) for h in multi_hop_treatment.keys()])
+            hop_avgs = [multi_hop_treatment.get(str(hop_num), {}).get("avg_all_scores")
+                       if multi_hop_treatment.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
+                       for hop_num in multi_hop_numbers]
+            style = metric_styles['all']
+            ax.plot(multi_hop_numbers, hop_avgs, marker=style['marker'],
+                    linewidth=3, color=multi_hop_color, label='All Results',
+                    markersize=style['size'], linestyle=style['linestyle'], zorder=5)
+        
+        # Top-k for single-hop
+        if single_hop_treatment:
+            for k in k_values:
+                style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
+                single_hop = stats_treatment[k].get("single_hop", {})
+                hop_data = single_hop.get("1", {})
+                avg_topk = hop_data.get("avg_topk_scores")
+                if avg_topk is not None:
+                    ax.plot([1], [avg_topk], marker=style['marker'], linewidth=0,
+                            color=single_hop_color, label=f'Top-{k}',
+                            markersize=style['size'], alpha=0.8, zorder=4)
+        
+        # Top-k for multi-hop
+        if multi_hop_treatment:
+            for k in k_values:
+                style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
+                multi_hop = stats_treatment[k].get("multi_hop", {})
+                hop_topk_avgs = [multi_hop.get(str(hop_num), {}).get("avg_topk_scores")
+                                if multi_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
+                                for hop_num in multi_hop_numbers]
+                ax.plot(multi_hop_numbers, hop_topk_avgs, marker=style['marker'],
+                        linewidth=2.5, linestyle=style['linestyle'],
+                        color=multi_hop_color, label=f'Top-{k}',
+                        markersize=style['size'], alpha=0.8, zorder=4)
+        
+        ax.set_xlabel('Hop Sequence', fontsize=12)
+        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
+        ax.set_title('TREATMENT - CiteDCG Scores', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_positions)
+        
+        # Legend (same structure)
+        leg = ax.legend(handles=legend_elements, fontsize=9, loc='best',
+                       ncol=2, columnspacing=2.5, handlelength=2.5, handletextpad=0.5)
+        texts = leg.get_texts()
+        texts[0].set_weight('bold')
+        texts[num_items_per_col].set_weight('bold')
+        ax.grid(True, alpha=0.3)
+        
+        # Bottom-right: Treatment utterance counts
+        ax = axes[1, 1]
+        single_hop_counts = []
+        multi_hop_counts = []
+        for hop_num in hop_positions:
+            if hop_num == 1 and single_hop_treatment:
+                sh_data = single_hop_treatment.get("1", {})
+                single_count = sh_data.get("utterances_count", 0)
+            else:
+                single_count = 0
+            single_hop_counts.append(single_count)
+            
+            if multi_hop_treatment:
+                mh_data = multi_hop_treatment.get(str(hop_num), {})
+                multi_count = mh_data.get("utterances_count", 0)
+            else:
+                multi_count = 0
+            multi_hop_counts.append(multi_count)
+        
+        ax.plot(hop_positions, single_hop_counts, marker='o', linewidth=3,
+                color='green', label='Single-Hop', markersize=8)
+        ax.plot(hop_positions, multi_hop_counts, marker='s', linewidth=3,
+                color='blue', label='Multi-Hop', markersize=8, linestyle='--')
+        
+        ax.set_xlabel('Hop Sequence', fontsize=12)
+        ax.set_ylabel('Number of Utterances', fontsize=12)
+        ax.set_title('TREATMENT - Utterance Counts', fontsize=13, fontweight='bold')
+        ax.set_xticks(hop_positions)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        fig.suptitle(
+            f'Control vs Treatment: Single-Hop vs Multi-Hop Analysis\n'
+            f'Job: {job_id}',
+            fontsize=16, fontweight='bold', y=0.995
+        )
+        
+        plt.tight_layout()
+        plot_file = output_dir / f"{job_id}_comparison_single_vs_multi.png"
+        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✓ Saved: {plot_file.name}")
 
 
 def process_seval_job_with_statistics_plots(
@@ -1795,6 +2549,11 @@ def process_seval_job_with_statistics_plots(
     if experiment.lower() in ["treatment", "both"]:
         experiments.append("treatment")
     
+    if not experiments:
+        print(f"Error: Invalid experiment value: '{experiment}'")
+        print("Must be 'control', 'treatment', or 'both'")
+        sys.exit(1)
+    
     # Define output directories (new architecture: single merged folder)
     existing_citedcg_dir = f"{output_base_dir}/{job_id}_citedcg"
     existing_conv_dir = f"{output_base_dir}/{job_id}_conversation_details"
@@ -1825,22 +2584,54 @@ def process_seval_job_with_statistics_plots(
         can_reuse_conv = False
         can_reuse_merged = False
     else:
-        # Check what can be reused
+        # Check what can be reused - must have ALL required experiments
         can_reuse_citedcg = Path(existing_citedcg_dir).exists()
         
-        # Check if conversation directory exists AND contains files
+        # Check if conversation directory exists AND contains files for ALL experiments
         conv_path = Path(existing_conv_dir)
         if conv_path.exists():
             conv_files = list(conv_path.glob("*_conv_details.json"))
-            can_reuse_conv = len(conv_files) > 0
+            if len(conv_files) > 0:
+                # Check if we have files for all required experiments
+                has_control = any("control_" in f.name for f in conv_files)
+                # Treatment files can be named "treatment_" or "experiment_"
+                has_treatment = any(
+                    "treatment_" in f.name or "experiment_" in f.name
+                    for f in conv_files
+                )
+                
+                if "control" in experiments and not has_control:
+                    can_reuse_conv = False
+                elif "treatment" in experiments and not has_treatment:
+                    can_reuse_conv = False
+                else:
+                    can_reuse_conv = True
+            else:
+                can_reuse_conv = False
         else:
             can_reuse_conv = False
         
-        # Check if merged directory exists AND contains files
+        # Check if merged directory exists AND contains files for ALL experiments
         merged_path = Path(merged_dir)
         if merged_path.exists():
             merged_files = list(merged_path.rglob("*.json"))
-            can_reuse_merged = len(merged_files) > 0
+            if len(merged_files) > 0:
+                # Check if we have files for all required experiments
+                has_control = any("control_" in f.name for f in merged_files)
+                # Treatment files can be named "treatment_" or "experiment_"
+                has_treatment = any(
+                    "treatment_" in f.name or "experiment_" in f.name
+                    for f in merged_files
+                )
+                
+                if "control" in experiments and not has_control:
+                    can_reuse_merged = False
+                elif "treatment" in experiments and not has_treatment:
+                    can_reuse_merged = False
+                else:
+                    can_reuse_merged = True
+            else:
+                can_reuse_merged = False
         else:
             can_reuse_merged = False
         
@@ -1849,15 +2640,43 @@ def process_seval_job_with_statistics_plots(
             if can_reuse_citedcg:
                 print(f"  ✓ CiteDCG scores: {existing_citedcg_dir}")
             if can_reuse_conv:
-                conv_count = len(list(conv_path.glob("*_conv_details.json")))
+                control_conv = len(
+                    list(conv_path.glob("control_*_conv_details.json"))
+                )
+                # Count treatment files (both naming patterns)
+                treatment_conv = len(
+                    list(conv_path.glob("treatment_*_conv_details.json"))
+                )
+                if treatment_conv == 0:
+                    treatment_conv = len(
+                        list(conv_path.glob("experiment_*_conv_details.json"))
+                    )
+                
+                exp_info = []
+                if control_conv > 0:
+                    exp_info.append(f"control: {control_conv}")
+                if treatment_conv > 0:
+                    exp_info.append(f"treatment: {treatment_conv}")
                 print(
-                    f"  ✓ {conv_count} conversation files: "
+                    f"  ✓ Conversation files ({', '.join(exp_info)}): "
                     f"{existing_conv_dir}"
                 )
             if can_reuse_merged:
-                merged_count = len(merged_files)
+                control_merged = len(
+                    [f for f in merged_files if "control_" in f.name]
+                )
+                # Count treatment files (both naming patterns)
+                treatment_merged = len(
+                    [f for f in merged_files 
+                     if "treatment_" in f.name or "experiment_" in f.name]
+                )
+                exp_info = []
+                if control_merged > 0:
+                    exp_info.append(f"control: {control_merged}")
+                if treatment_merged > 0:
+                    exp_info.append(f"treatment: {treatment_merged}")
                 print(
-                    f"  ✓ {merged_count} merged files: "
+                    f"  ✓ Merged files ({', '.join(exp_info)}): "
                     f"{merged_dir}"
                 )
             print("")
@@ -1886,7 +2705,7 @@ def process_seval_job_with_statistics_plots(
     # Extract CiteDCG if not reusing or if files missing
     if not can_reuse_citedcg or len(citedcg_files) < len(experiments):
         print("=" * 80)
-        print("STEP 1: EXTRACTING CITEDCG SCORES (once for all top-k)")
+        print("STEP 1: EXTRACTING CITEDCG SCORES ...")
         print("=" * 80)
         citedcg_dir = Path(existing_citedcg_dir)
         citedcg_dir.mkdir(parents=True, exist_ok=True)
@@ -1896,7 +2715,7 @@ def process_seval_job_with_statistics_plots(
                 print(f"  Skipping {exp} (already exists)")
                 continue
                 
-            print(f"  Extracting {exp}...")
+            print(f"\n ***  Extracting {exp}...")
             citedcg_file = f"{citedcg_dir}/{job_id}_citedcg_scores_{exp}.json"
             
             count = extract_per_result_citedcg(
@@ -1939,11 +2758,11 @@ def process_seval_job_with_statistics_plots(
         print("")
     else:
         print("=" * 80)
-        print("STEP 2: EXTRACTING CONVERSATION DETAILS (once for all top-k)")
+        print("STEP 2: EXTRACTING CONVERSATION DETAILS ...")
         print("=" * 80)
         print(f"  Input:  {raw_data_dir}")
         print(f"  Output: {conv_dir}")
-        print(f"  Experiment: {experiment}")
+        print(f"  Experiments: {', '.join(experiments)}")
         print(f"  Threads: {threads}")
         print("")
         
@@ -1997,10 +2816,8 @@ def process_seval_job_with_statistics_plots(
         print("")
     else:
         print("=" * 80)
-        print("STEP 3: MERGING CITEDCG WITH CONVERSATIONS")
+        print("STEP 3: MERGING CITEDCG WITH CONVERSATIONS (Extract CiteDCG scores for search results) ...")
         print("=" * 80)
-        print("  (Scores only, no statistics - done once for all k values)")
-        print("")
         
         merge_citescg_scores(
             conv_dir=conv_dir,
@@ -2060,30 +2877,51 @@ def process_seval_job_with_statistics_plots(
     print(f"  Top-k values: {k_values}")
     print("")
     
-    for k in k_values:
-        stats_file = stats_dir / f"{job_id}_{experiment}_statistics_k{k}.json"
-        print(f"  Calculating statistics for k={k}...")
+    # Calculate statistics for each experiment separately
+    stats_files_by_exp = {}  # {experiment: {k: filepath}}
+    
+    for exp in experiments:
+        print(f"  Calculating statistics for {exp.upper()}...")
+        stats_files_by_exp[exp] = {}
         
-        # Calculate statistics from merged files
-        try:
-            from merge_seval_results import calculate_statistics_from_merged
+        for k in k_values:
+            stats_file = stats_dir / f"{job_id}_{exp}_statistics_k{k}.json"
+            print(f"    k={k}...")
             
-            stats = calculate_statistics_from_merged(
-                merged_dir=merged_dir,
-                top_k=k,
-                output_file=str(stats_file)
-            )
-            
-            stats_files[k] = str(stats_file)
-            print(f"    ✓ Saved to: {stats_file.name}")
-            
-        except Exception as e:
-            logger.error(f"Failed to calculate statistics for k={k}: {e}")
-            print(f"    ✗ Error: {e}")
+            # Calculate statistics from merged files for this experiment
+            try:
+                from merge_seval_results import calculate_statistics_from_merged
+
+                # Filter to only this experiment's files
+                exp_merged_dir = Path(merged_dir) / exp
+                if not exp_merged_dir.exists():
+                    print(f"      ✗ No merged files found for {exp}")
+                    continue
+                
+                stats = calculate_statistics_from_merged(
+                    merged_dir=str(exp_merged_dir),
+                    top_k=k,
+                    output_file=str(stats_file)
+                )
+                
+                stats_files_by_exp[exp][k] = str(stats_file)
+                print(f"      ✓ Saved to: {stats_file.name}")
+                
+            except Exception as e:
+                logger.error(f"Failed to calculate statistics for {exp} k={k}: {e}")
+                print(f"      ✗ Error: {e}")
+        print("")
+    
+    # For backward compatibility, if only one experiment, use old format
+    if len(experiments) == 1:
+        stats_files = stats_files_by_exp[experiments[0]]
+    else:
+        stats_files = stats_files_by_exp
     
     print("")
-    if stats_files:
-        print(f"✓ Statistics calculated for {len(stats_files)} top-k values")
+    total_stats = sum(len(sf) for sf in stats_files_by_exp.values())
+    if total_stats > 0:
+        print(f"✓ Statistics calculated: {total_stats} files across {len(experiments)} experiment(s)")
     else:
         print("⚠ No statistics were calculated")
     print("")
@@ -2116,12 +2954,22 @@ def process_seval_job_with_statistics_plots(
         
         try:
             # Generate comparison plots from statistics files
-            _generate_statistics_plots(
-                stats_files=stats_files,
-                output_dir=plots_dir,
-                job_id=job_id,
-                experiment=experiment
-            )
+            if len(experiments) == 1:
+                # Single experiment - use original 1x2 layout
+                _generate_statistics_plots(
+                    stats_files=stats_files,
+                    output_dir=plots_dir,
+                    job_id=job_id,
+                    experiment=experiments[0]
+                )
+            else:
+                # Both experiments - use 2x2 layout for comparison
+                _generate_statistics_plots_comparison(
+                    stats_files_control=stats_files_by_exp["control"],
+                    stats_files_treatment=stats_files_by_exp["treatment"],
+                    output_dir=plots_dir,
+                    job_id=job_id
+                )
             print(f"✓ Plots generated in: {plots_dir}")
         except Exception as e:
             logger.error(f"Failed to generate plots: {e}")

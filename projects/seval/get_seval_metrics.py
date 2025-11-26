@@ -137,6 +137,8 @@ class PerResultCiteDCGExtractor:
             logger.error(f"Results file not found: {results_path}")
             return 0
         
+        print(f"Extracting CiteDCG scores for {experiment}...")
+        print(f"  → Reading from: {results_path}")
         logger.info(f"Reading CiteDCG data from: {results_path}")
         logger.info(f"  Metrics folder: {metrics_folder}, Experiment: {experiment}")
         if utterance:
