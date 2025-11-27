@@ -2539,9 +2539,6 @@ def process_seval_job_with_statistics_plots(
     print("=" * 80)
     print("")
     
-    # Store statistics files for each k
-    stats_files = {}
-    
     # Determine which experiments to process
     experiments = []
     if experiment.lower() in ["control", "both"]:
@@ -2853,80 +2850,64 @@ def process_seval_job_with_statistics_plots(
         print("=" * 80)
         sys.exit(1)
     
-    # STEP 4: Calculate statistics for each top-k value
-    # Create and clean statistics output folder
-    stats_dir = Path(f"{output_base_dir}/{job_id}_statistics")
-    
+    # STEP 4: Build/update per-utterance details with hop-level scores
     print("=" * 80)
-    print("STEP 4: CALCULATING STATISTICS FOR EACH TOP-K VALUE")
+    print("STEP 4: BUILDING PER-UTTERANCE DETAILS")
     print("=" * 80)
     
-    if stats_dir.exists():
-        # Clean existing statistics files
-        old_stats = list(stats_dir.glob("*.json"))
-        if old_stats:
-            print(f"  Deleting {len(old_stats)} old files from {stats_dir}")
-            processor._clean_directory(stats_dir, "statistics", silent=True)
-    
-    # Create statistics directory
-    stats_dir.mkdir(parents=True, exist_ok=True)
+    from merge_seval_results import build_utterance_details_with_top_k
+
+    # Create utterance details directory
+    utterance_details_dir = Path(f"{output_base_dir}/{job_id}_utterance_hop_citedcg_scores")
+    utterance_details_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"  Experiment: {experiment}")
     print(f"  Reading from: {merged_dir}")
-    print(f"  Output to: {stats_dir}")
+    print(f"  Output to: {utterance_details_dir}")
     print(f"  Top-k values: {k_values}")
     print("")
     
-    # Calculate statistics for each experiment separately
-    stats_files_by_exp = {}  # {experiment: {k: filepath}}
+    # Build utterance details for each experiment
+    utterance_details_files = {}  # {experiment: filepath}
     
     for exp in experiments:
-        print(f"  Calculating statistics for {exp.upper()}...")
-        stats_files_by_exp[exp] = {}
+        print(f"  Processing {exp.upper()}...")
         
-        for k in k_values:
-            stats_file = stats_dir / f"{job_id}_{exp}_statistics_k{k}.json"
-            print(f"    k={k}...")
+        exp_merged_dir = Path(merged_dir) / exp
+        if not exp_merged_dir.exists():
+            print(f"    ✗ No merged files found for {exp}")
+            continue
+        
+        # Define output file for this experiment in the dedicated folder
+        details_file = utterance_details_dir / f"{job_id}_{exp}_utterance_details.json"
+        
+        # Check if file exists (for incremental updates)
+        existing_file = str(details_file) if details_file.exists() else None
+        
+        try:
+            details = build_utterance_details_with_top_k(
+                merged_dir=str(exp_merged_dir),
+                top_k_list=k_values,
+                output_file=str(details_file),
+                experiment=exp,
+                existing_file=existing_file
+            )
             
-            # Calculate statistics from merged files for this experiment
-            try:
-                from merge_seval_results import calculate_statistics_from_merged
-
-                # Filter to only this experiment's files
-                exp_merged_dir = Path(merged_dir) / exp
-                if not exp_merged_dir.exists():
-                    print(f"      ✗ No merged files found for {exp}")
-                    continue
-                
-                stats = calculate_statistics_from_merged(
-                    merged_dir=str(exp_merged_dir),
-                    top_k=k,
-                    output_file=str(stats_file)
-                )
-                
-                stats_files_by_exp[exp][k] = str(stats_file)
-                print(f"      ✓ Saved to: {stats_file.name}")
-                
-            except Exception as e:
-                logger.error(f"Failed to calculate statistics for {exp} k={k}: {e}")
-                print(f"      ✗ Error: {e}")
-        print("")
-    
-    # For backward compatibility, if only one experiment, use old format
-    if len(experiments) == 1:
-        stats_files = stats_files_by_exp[experiments[0]]
-    else:
-        stats_files = stats_files_by_exp
+            utterance_details_files[exp] = str(details_file)
+            print(f"    ✓ Saved: {details_file.name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to build utterance details for {exp}: {e}")
+            print(f"    ✗ Error: {e}")
     
     print("")
-    total_stats = sum(len(sf) for sf in stats_files_by_exp.values())
-    if total_stats > 0:
-        print(f"✓ Statistics calculated: {total_stats} files across {len(experiments)} experiment(s)")
+    if utterance_details_files:
+        print(f"✓ Utterance details built: {len(utterance_details_files)} file(s)")
     else:
-        print("⚠ No statistics were calculated")
+        print("⚠ No utterance details were created")
     print("")
     
-    # Step 5: Generate plots
+    # Step 5: Generate plots with plot-specific statistics
     # Always clean plot output folder first
     plots_dir = Path(f"{output_base_dir}/{job_id}_statistics_plots")
     
@@ -2935,29 +2916,63 @@ def process_seval_job_with_statistics_plots(
         plots_dir.mkdir(parents=True, exist_ok=True)
         
         print("=" * 80)
-        print("STEP 5: GENERATING COMPARISON PLOTS")
+        print("STEP 5: GENERATING PLOTS AND PLOT-SPECIFIC STATISTICS")
         print("=" * 80)
         
         if plots_dir.exists():
-            plot_files = (
+            old_files = (
                 list(plots_dir.rglob("*.png")) +
-                list(plots_dir.rglob("*.jpg"))
+                list(plots_dir.rglob("*.jpg")) +
+                list(plots_dir.rglob("*.json"))
             )
-            if plot_files:
-                print(f"  Deleting {len(plot_files)} old files from {plots_dir}")
+            if old_files:
+                print(f"  Deleting {len(old_files)} old files from {plots_dir}")
                 processor._clean_directory(plots_dir, "plots", silent=True)
         
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        
         print(f"  Experiment: {experiment}")
-        print(f"  Statistics files: {len(stats_files)} top-k values")
+        print(f"  Top-k values: {k_values}")
         print(f"  Output directory: {plots_dir}")
         print("")
         
         try:
+            from merge_seval_results import (
+                generate_plot_statistics_from_utterance_details,
+            )
+
+            # Generate plot-specific statistics for each experiment and k-value
+            stats_files_by_exp = {}  # {experiment: {k: filepath}}
+            
+            for exp in experiments:
+                if exp not in utterance_details_files:
+                    continue
+                    
+                print(f"  Generating plot statistics for {exp.upper()}...")
+                stats_files_by_exp[exp] = {}
+                
+                for k in k_values:
+                    # Generate plot statistics in plots folder
+                    stats_file = plots_dir / f"{job_id}_{exp}_plot_stats_k{k}.json"
+                    
+                    try:
+                        stats = generate_plot_statistics_from_utterance_details(
+                            utterance_details_file=utterance_details_files[exp],
+                            top_k=k,
+                            output_file=str(stats_file)
+                        )
+                        stats_files_by_exp[exp][k] = str(stats_file)
+                        print(f"    ✓ k={k}: {stats_file.name}")
+                    except Exception as e:
+                        logger.error(f"Failed to generate plot stats for {exp} k={k}: {e}")
+                        print(f"    ✗ k={k}: Error: {e}")
+                print("")
+            
             # Generate comparison plots from statistics files
             if len(experiments) == 1:
                 # Single experiment - use original 1x2 layout
                 _generate_statistics_plots(
-                    stats_files=stats_files,
+                    stats_files=stats_files_by_exp[experiments[0]],
                     output_dir=plots_dir,
                     job_id=job_id,
                     experiment=experiments[0]
@@ -2974,6 +2989,8 @@ def process_seval_job_with_statistics_plots(
         except Exception as e:
             logger.error(f"Failed to generate plots: {e}")
             print(f"✗ Error generating plots: {e}")
+            import traceback
+            traceback.print_exc()
         print("")
     else:
         print("")
@@ -2982,7 +2999,7 @@ def process_seval_job_with_statistics_plots(
         print("  Plots will not be generated")
         print("")
     
-    # Final summary - only show what was generated in this run
+    # Final summary
     print("=" * 80)
     print("✓ COMPLETE: SEVAL JOB PROCESSING WITH STATISTICS")
     print("=" * 80)
@@ -2991,27 +3008,27 @@ def process_seval_job_with_statistics_plots(
     print(f"Top-k values: {k_values}")
     print("")
     
-    # Only show directories that were actually created/modified
-    has_output = False
-    if stats_files:
-        if not has_output:
-            print("Generated files:")
-            has_output = True
-        stats_count = len(stats_files)
-        print(f"  Statistics: {stats_count} files in {stats_dir}/")
-        for k in sorted(stats_files.keys()):
-            print(f"    - {job_id}_{experiment}_statistics_k{k}.json")
+    print("Generated files:")
     
+    # Utterance details files (per experiment in dedicated folder)
+    if utterance_details_files:
+        print(f"  Utterance details folder ({utterance_details_dir}/):")
+        print(f"    {len(utterance_details_files)} file(s)")
+        for exp, filepath in utterance_details_files.items():
+            filename = Path(filepath).name
+            print(f"    - {filename}")
+    
+    # Plot-specific statistics and plots (in same folder)
     if len(k_values) >= 2 and plots_dir.exists():
+        stats_count = len(list(plots_dir.glob("*_plot_stats_*.json")))
         plot_count = len(list(plots_dir.glob("*.png")))
-        if plot_count > 0:
-            if not has_output:
-                print("Generated files:")
-                has_output = True
-            print(f"  Plots: {plot_count} files in {plots_dir}/")
-    
-    if not has_output:
-        print("No new files generated (all data reused)")
+        
+        if stats_count > 0 or plot_count > 0:
+            print(f"  Plots folder ({plots_dir}/):")
+            if stats_count > 0:
+                print(f"    Plot statistics: {stats_count} files")
+            if plot_count > 0:
+                print(f"    Plot images: {plot_count} files")
     
     print("=" * 80)
     print("=" * 80)
