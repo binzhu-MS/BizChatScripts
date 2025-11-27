@@ -965,10 +965,14 @@ def calculate_statistics_from_merged(
             utterance_has_scores = False
             
             # Collect scores organized by hop number
-            # Track both hop_index (includes empty hops) and hop_sequence (only hops with results)
+            # Track both hop_number (from source data) and hop_sequence (only hops with results)
             for turn in eval_results.get("turns", []):
                 hop_sequence = 0  # Counter for hops with actual results
-                for hop_idx, hop in enumerate(turn.get("hops", []), start=1):
+                for hop in turn.get("hops", []):
+                    hop_number = hop.get("hop_number", 0)
+                    if hop_number == 0:
+                        continue  # Skip hops without valid hop_number
+                    
                     hop_all_scores = []
                     hop_top_k_scores = []
                     
@@ -999,11 +1003,11 @@ def calculate_statistics_from_merged(
                         utterance_has_scores = True
                         hop_sequence += 1  # Increment only for hops with results
                         
-                        # Store by hop index (position in array)
-                        stats["per_hop"][hop_idx]["all_scores"].extend(
+                        # Store by hop number (from source data, 1-indexed)
+                        stats["per_hop"][hop_number]["all_scores"].extend(
                             hop_all_scores
                         )
-                        stats["per_hop"][hop_idx]["top_k_scores"].extend(
+                        stats["per_hop"][hop_number]["top_k_scores"].extend(
                             hop_top_k_scores
                         )
                         
@@ -1027,9 +1031,13 @@ def calculate_statistics_from_merged(
             # and which had scores (for scores count)
             hop_sequence = 0
             for turn in eval_results.get("turns", []):
-                for hop_idx, hop in enumerate(turn.get("hops", []), start=1):
-                    # Count this utterance as having this hop index
-                    stats["per_hop"][hop_idx]["total_utterances"] += 1
+                for hop in turn.get("hops", []):
+                    hop_number = hop.get("hop_number", 0)
+                    if hop_number == 0:
+                        continue  # Skip hops without valid hop_number
+                    
+                    # Count this utterance as having this hop number
+                    stats["per_hop"][hop_number]["total_utterances"] += 1
                     
                     has_scores_in_hop = False
                     hop_scores_all = []
@@ -1055,8 +1063,11 @@ def calculate_statistics_from_merged(
                     
                     if has_scores_in_hop:
                         hop_sequence += 1
-                        stats["per_hop"][hop_idx]["utterances_with_scores"] += 1
-                        stats["per_hop_sequence"][hop_sequence]["utterances_with_scores"] += 1
+                        stats["per_hop"][hop_number]["utterances_with_scores"] += 1
+                        seq_key = hop_sequence
+                        stats["per_hop_sequence"][seq_key][
+                            "utterances_with_scores"
+                        ] += 1
                         
                         # Store for single/multi-hop classification
                         utterance_hops_with_scores.append({
@@ -1066,7 +1077,7 @@ def calculate_statistics_from_merged(
                         })
                     else:
                         # This hop exists but has no scores (empty)
-                        stats["per_hop"][hop_idx]["utterances_empty"] += 1
+                        stats["per_hop"][hop_number]["utterances_empty"] += 1
             
             # Classify as single-hop or multi-hop based on non-empty hops
             num_nonempty_hops = len(utterance_hops_with_scores)
@@ -1286,6 +1297,7 @@ def build_utterance_details_with_top_k(
             utterances[utterance_id] = {
                 "utterance_id": utterance_id,
                 "file": merged_file.name,
+                "query_text": None,  # Will be populated from merged file
                 "hops": {}  # {hop_index: {k: {all_avg, topk_avg, count}}}
             }
         
@@ -1293,14 +1305,26 @@ def build_utterance_details_with_top_k(
             with open(merged_file, 'r', encoding='utf-8') as f:
                 merged_data = json.load(f)
             
+            # Extract query text from metadata if not already set
+            if utterances[utterance_id]["query_text"] is None:
+                query_text = merged_data.get("metadata", {}).get(
+                    "query_text", ""
+                )
+                utterances[utterance_id]["query_text"] = query_text
+            
             eval_results = merged_data.get("evaluation_data_results", {})
             
             # Collect scores by hop for each turn
-            hop_index = 0
             hop_sequence = 0  # Only non-empty hops
             
             for turn in eval_results.get("turns", []):
                 for hop in turn.get("hops", []):
+                    # Get the original hop_number from the data (1-indexed)
+                    hop_number = hop.get("hop_number", 0)
+                    if hop_number == 0:
+                        # Skip if hop_number is missing
+                        continue
+                    
                     hop_all_scores = []
                     
                     # Collect all scores from this hop
@@ -1311,15 +1335,19 @@ def build_utterance_details_with_top_k(
                                 if score is not None:
                                     hop_all_scores.append(score)
                     
-                    # Initialize hop entry if needed
-                    hop_key = str(hop_index)
+                    # Initialize hop entry if needed (use hop_number as key)
+                    hop_key = str(hop_number)
                     if hop_key not in utterances[utterance_id]["hops"]:
                         utterances[utterance_id]["hops"][hop_key] = {}
+                    
+                    # Increment hop_sequence if this hop has scores
+                    # (same sequence number for ALL k-values)
+                    if hop_all_scores:
+                        hop_sequence += 1
                     
                     # Calculate averages for each new k-value
                     for k in new_k_values:
                         if hop_all_scores:
-                            hop_sequence += 1
                             avg_all = sum(hop_all_scores) / len(hop_all_scores)
                             
                             # Top-k average
@@ -1332,7 +1360,8 @@ def build_utterance_details_with_top_k(
                                 "avg_topk_scores": avg_topk,
                                 "result_count": len(hop_all_scores),
                                 "is_empty": False,
-                                "hop_sequence": hop_sequence
+                                "hop_sequence": hop_sequence,
+                                "hop_number": hop_number
                             }
                         else:
                             # Empty hop
@@ -1341,10 +1370,9 @@ def build_utterance_details_with_top_k(
                                 "avg_topk_scores": None,
                                 "result_count": 0,
                                 "is_empty": True,
-                                "hop_sequence": None
+                                "hop_sequence": None,
+                                "hop_number": hop_number
                             }
-                    
-                    hop_index += 1
         
         except Exception as e:
             logger.error(f"Error processing {merged_file.name}: {e}")
@@ -1568,6 +1596,233 @@ def generate_plot_statistics_from_utterance_details(
     return stats
 
 
+def find_paired_utterances_with_scores(
+    control_details_file: str,
+    treatment_details_file: str,
+    output_file: str
+) -> Dict[str, Any]:
+    """
+    Find utterances with scores in both control and treatment experiments.
+    
+    This function:
+    1. Loads both control and treatment utterance details files
+    2. Identifies utterances present in both experiments
+    3. For each paired utterance, checks if it has scores (non-empty hops)
+    4. Creates comprehensive comparison file with actual hop scores
+    
+    Args:
+        control_details_file: Path to control utterance details JSON
+        treatment_details_file: Path to treatment utterance details JSON
+        output_file: Path to save paired utterances comparison JSON
+        
+    Returns:
+        Dictionary containing:
+        - metadata: Summary statistics and k-values
+        - paired_data: Dict mapping query_text to control/treatment scores
+        - summary_lists: Categorized query text lists for reference
+        
+    Output Structure:
+        {
+            "metadata": {
+                "total_utterances": int,
+                "paired_with_scores": int,
+                "common_k_values": [1, 3, 5],
+                ...
+            },
+            "paired_data": [
+                {
+                    "pair_id": 1,
+                    "query_text": "...",
+                    "control": {
+                        "utterance_id": "...",
+                        "hops": {
+                            "0": {"1": {...}, "3": {...}, "5": {...}},
+                            "1": {"1": {...}, "3": {...}, "5": {...}}
+                        }
+                    },
+                    "treatment": {
+                        "utterance_id": "...",
+                        "hops": {...}
+                    }
+                },
+                ...
+            ],
+            "summary_lists": {
+                "paired_utterances": [...],
+                "control_only": [...],
+                "treatment_only": [...],
+                "no_scores": [...]
+            }
+        }
+    """
+    logger.info("="*70)
+    logger.info("Finding paired utterances with scores in both experiments")
+    logger.info("="*70)
+    
+    # Load control details
+    logger.info(f"Loading control details: {control_details_file}")
+    with open(control_details_file, 'r', encoding='utf-8') as f:
+        control_data = json.load(f)
+    
+    control_utterances = control_data.get("utterances", {})
+    control_metadata = control_data.get("metadata", {})
+    control_k_values = control_metadata.get("k_values_calculated", [])
+    
+    # Load treatment details
+    logger.info(f"Loading treatment details: {treatment_details_file}")
+    with open(treatment_details_file, 'r', encoding='utf-8') as f:
+        treatment_data = json.load(f)
+    
+    treatment_utterances = treatment_data.get("utterances", {})
+    treatment_metadata = treatment_data.get("metadata", {})
+    treatment_k_values = treatment_metadata.get("k_values_calculated", [])
+    
+    logger.info(f"  Control utterances: {len(control_utterances)}")
+    logger.info(f"  Treatment utterances: {len(treatment_utterances)}")
+    
+    # Find common k-values
+    common_k_values = sorted(set(control_k_values) & set(treatment_k_values))
+    if not common_k_values:
+        raise ValueError(
+            f"No common k-values found. Control: {control_k_values}, "
+            f"Treatment: {treatment_k_values}"
+        )
+    logger.info(f"  Common k-values: {common_k_values}")
+    
+    # Helper function to check if utterance has scores
+    def has_scores(utterance_data, k_value):
+        """Check if utterance has at least one non-empty hop for given k."""
+        hops = utterance_data.get("hops", {})
+        k_str = str(k_value)
+        
+        for hop_idx, hop_data in hops.items():
+            k_data = hop_data.get(k_str, {})
+            if not k_data.get("is_empty", True):
+                return True
+        return False
+    
+    # Build mappings from query text to utterance data
+    control_by_query = {}
+    for utt_id, utt_data in control_utterances.items():
+        query_text = utt_data.get("query_text", "").strip().lower()
+        if query_text:
+            control_by_query[query_text] = {
+                "id": utt_id,
+                "data": utt_data
+            }
+    
+    treatment_by_query = {}
+    for utt_id, utt_data in treatment_utterances.items():
+        query_text = utt_data.get("query_text", "").strip().lower()
+        if query_text:
+            treatment_by_query[query_text] = {
+                "id": utt_id,
+                "data": utt_data
+            }
+    
+    logger.info(f"  Control queries mapped: {len(control_by_query)}")
+    logger.info(f"  Treatment queries mapped: {len(treatment_by_query)}")
+    
+    # Find all unique queries from both experiments
+    all_queries = (set(control_by_query.keys()) |
+                   set(treatment_by_query.keys()))
+    
+    # Categorize utterances and build paired data
+    paired_data = []  # List of paired utterance objects
+    control_only = []
+    treatment_only = []
+    no_scores = []
+    
+    # Use first common k-value to check for scores
+    check_k = common_k_values[0]
+    
+    pair_id = 1
+    for query_text in sorted(all_queries):
+        in_control = query_text in control_by_query
+        in_treatment = query_text in treatment_by_query
+        
+        has_control_scores = (in_control and has_scores(
+            control_by_query[query_text]["data"], check_k
+        ))
+        has_treatment_scores = (in_treatment and has_scores(
+            treatment_by_query[query_text]["data"], check_k
+        ))
+        
+        if has_control_scores and has_treatment_scores:
+            # Build paired data with full hop scores
+            control_utt = control_by_query[query_text]["data"]
+            treatment_utt = treatment_by_query[query_text]["data"]
+            
+            paired_data.append({
+                "pair_id": pair_id,
+                "query_text": query_text,
+                "control": {
+                    "utterance_id": control_utt.get("utterance_id", ""),
+                    "file": control_utt.get("file", ""),
+                    "hops": control_utt.get("hops", {})
+                },
+                "treatment": {
+                    "utterance_id": treatment_utt.get("utterance_id", ""),
+                    "file": treatment_utt.get("file", ""),
+                    "hops": treatment_utt.get("hops", {})
+                }
+            })
+            pair_id += 1
+        elif has_control_scores and not has_treatment_scores:
+            control_only.append(query_text)
+        elif has_treatment_scores and not has_control_scores:
+            treatment_only.append(query_text)
+        else:
+            no_scores.append(query_text)
+    
+    # Build output data
+    output_data = {
+        "metadata": {
+            "control_file": control_details_file,
+            "treatment_file": treatment_details_file,
+            "total_utterances": len(all_queries),
+            "paired_with_scores": len(paired_data),
+            "control_only_with_scores": len(control_only),
+            "treatment_only_with_scores": len(treatment_only),
+            "no_scores_in_either": len(no_scores),
+            "common_k_values": common_k_values,
+            "description": (
+                "Paired utterances with hop-level CiteDCG scores "
+                "from both control and treatment experiments"
+            )
+        },
+        "paired_data": paired_data,
+        "summary_lists": {
+            "paired_utterances": [p["query_text"] for p in paired_data],
+            "control_only": control_only,
+            "treatment_only": treatment_only,
+            "no_scores": no_scores
+        }
+    }
+    
+    # Save to file
+    logger.info(f"\nSaving paired utterances to: {output_file}")
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+    
+    # Print summary
+    logger.info("\n" + "="*70)
+    logger.info("PAIRING SUMMARY")
+    logger.info("="*70)
+    logger.info(f"Total unique utterances: {len(all_queries)}")
+    logger.info(f"  ✓ Paired (scores in both): {len(paired_data)}")
+    logger.info(f"  • Control only: {len(control_only)}")
+    logger.info(f"  • Treatment only: {len(treatment_only)}")
+    logger.info(f"  • No scores in either: {len(no_scores)}")
+    logger.info("="*70)
+    
+    pct_paired = 100.0 * len(paired_data) / max(1, len(all_queries))
+    logger.info(f"Paired coverage: {pct_paired:.1f}%")
+    logger.info("="*70)
+    
+    return output_data
+
+
 if __name__ == "__main__":
     # Use fire for command line arguments
     # Exposes the main merge_citedcg_and_calculate_stats function
@@ -1580,7 +1835,9 @@ if __name__ == "__main__":
                 'build_utterance_details_with_top_k':
                     build_utterance_details_with_top_k,
                 'generate_plot_statistics_from_utterance_details':
-                    generate_plot_statistics_from_utterance_details
+                    generate_plot_statistics_from_utterance_details,
+                'find_paired_utterances_with_scores':
+                    find_paired_utterances_with_scores
             },
             serialize=lambda x: None
         )

@@ -1598,6 +1598,12 @@ def _generate_statistics_plots(
     if all_hop_numbers:
         hop_numbers = sorted(all_hop_numbers)
         
+        # DEBUG: Print what we're about to plot
+        print(f"\n=== DEBUG: Hop Sequence Plot Data for {experiment.upper()} ===")
+        print(f"Hop numbers (x-axis): {hop_numbers}")
+        print(f"K-values to plot: {k_values}")
+        print(f"\nData at each hop position:")
+        
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
         
         # LEFT: CiteDCG scores
@@ -1607,6 +1613,10 @@ def _generate_statistics_plots(
             hop_data = per_hop.get(str(hop_num), {})
             avg_all = hop_data.get("avg_all_scores")
             hop_avgs.append(avg_all if avg_all is not None else np.nan)
+        
+        print(f"\nAll Results (blue line):")
+        for i, hop_num in enumerate(hop_numbers):
+            print(f"  Hop {hop_num}: {hop_avgs[i]}")
         
         ax1.plot(hop_numbers, hop_avgs, marker='o', linewidth=3,
                 color='steelblue', label='All Results', markersize=8)
@@ -1620,6 +1630,10 @@ def _generate_statistics_plots(
                 hop_topk_avgs.append(
                     avg_topk if avg_topk is not None else np.nan
                 )
+            
+            print(f"\nTop-{k} (dashed line):")
+            for i, hop_num in enumerate(hop_numbers):
+                print(f"  Hop {hop_num}: {hop_topk_avgs[i]}")
             
             ax1.plot(hop_numbers, hop_topk_avgs, marker='s', linewidth=2.5,
                     linestyle='--', label=f'Top-{k}', markersize=7)
@@ -1642,7 +1656,7 @@ def _generate_statistics_plots(
             )
         
         ax2.plot(hop_numbers, utterances_with_scores, marker='o',
-                linewidth=3, color='green',
+                linewidth=2.5, color='green',
                 label='Utterances with Scores', markersize=8)
         
         ax2.set_xlabel('Hop Sequence', fontsize=13)
@@ -1654,9 +1668,10 @@ def _generate_statistics_plots(
         
         fig.suptitle(
             f'Utterance-Averaged CiteDCG Score vs Hop Sequence '
-            f'(only non-empty hops)\n'
-            f'Job: {job_id} | Experiment: {experiment.upper()}',
-            fontsize=15, fontweight='bold', y=0.98
+            f'(per-utterance position of non-empty hops)\n'
+            f'Job: {job_id} | Experiment: {experiment.upper()} | '
+            f'Note: Hop sequence resets for each utterance',
+            fontsize=14, fontweight='bold', y=0.99
         )
         
         plt.tight_layout()
@@ -2060,99 +2075,124 @@ def _generate_statistics_plots_comparison(
     # ========== PLOT 2: Hop Sequence (only non-empty hops) - 2x2 layout ==========
     hop_key = "per_hop_sequence"
     
-    # Collect all hop numbers from both experiments
-    all_hop_numbers = set()
+    # Collect hop numbers separately for each experiment (use sparse keys)
+    control_hop_numbers = set()
+    treatment_hop_numbers = set()
+    
     for k in k_values:
         per_hop = stats_control[k].get(hop_key, {})
-        all_hop_numbers.update(int(h) for h in per_hop.keys())
+        control_hop_numbers.update(int(h) for h in per_hop.keys())
         per_hop = stats_treatment[k].get(hop_key, {})
-        all_hop_numbers.update(int(h) for h in per_hop.keys())
+        treatment_hop_numbers.update(int(h) for h in per_hop.keys())
     
-    if all_hop_numbers:
-        hop_numbers = sorted(all_hop_numbers)
+    if control_hop_numbers or treatment_hop_numbers:
+        control_hop_nums = (
+            sorted(control_hop_numbers) if control_hop_numbers else []
+        )
+        treatment_hop_nums = (
+            sorted(treatment_hop_numbers) if treatment_hop_numbers else []
+        )
+        
         fig, axes = plt.subplots(2, 2, figsize=(20, 14))
         
         # ===== TOP ROW: CONTROL =====
         # Top-left: Control CiteDCG scores
         ax = axes[0, 0]
-        per_hop = stats_control[k_values[0]].get(hop_key, {})
-        hop_avgs = [per_hop.get(str(hop_num), {}).get("avg_all_scores")
-                    if per_hop.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
-                    for hop_num in hop_numbers]
-        
-        ax.plot(hop_numbers, hop_avgs, marker='o', linewidth=3,
-                color='steelblue', label='All Results', markersize=8)
-        
-        for k in k_values:
-            per_hop = stats_control[k].get(hop_key, {})
-            hop_topk_avgs = [per_hop.get(str(hop_num), {}).get("avg_topk_scores")
-                            if per_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
-                            for hop_num in hop_numbers]
-            ax.plot(hop_numbers, hop_topk_avgs, marker='s', linewidth=2.5,
-                    linestyle='--', label=f'Top-{k}', markersize=7)
+        if control_hop_nums:
+            per_hop = stats_control[k_values[0]].get(hop_key, {})
+            hop_avgs = [per_hop.get(str(hop_num), {}).get("avg_all_scores")
+                        if per_hop.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
+                        for hop_num in control_hop_nums]
+            
+            ax.plot(control_hop_nums, hop_avgs, marker='o', linewidth=2.5,
+                    color='steelblue', label='All Results', markersize=8)
+            
+            for k in k_values:
+                per_hop = stats_control[k].get(hop_key, {})
+                hop_topk_avgs = [per_hop.get(str(hop_num), {}).get("avg_topk_scores")
+                                if per_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
+                                for hop_num in control_hop_nums]
+                ax.plot(control_hop_nums, hop_topk_avgs, marker='s', linewidth=2.5,
+                        linestyle='--', label=f'Top-{k}', markersize=7)
+            
+            ax.set_xticks(control_hop_nums)
         
         ax.set_xlabel('Hop Sequence', fontsize=12)
         ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
         ax.set_title('CONTROL - CiteDCG Scores', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_numbers)
         ax.legend(fontsize=10, loc='best')
         ax.grid(True, alpha=0.3)
         
         # Top-right: Control utterance counts
         ax = axes[0, 1]
-        per_hop = stats_control[k_values[0]].get(hop_key, {})
-        utterances_with_scores = [per_hop.get(str(hop_num), {}).get("utterances_with_scores", 0)
-                                  for hop_num in hop_numbers]
-        
-        ax.plot(hop_numbers, utterances_with_scores, marker='o', linewidth=3,
-                color='green', label='Utterances with Scores', markersize=8)
+        if control_hop_nums:
+            per_hop = stats_control[k_values[0]].get(hop_key, {})
+            utterances_with_scores = [per_hop.get(str(hop_num), {}).get("utterances_with_scores", 0)
+                                      for hop_num in control_hop_nums]
+            
+            ax.plot(control_hop_nums, utterances_with_scores, marker='o', linewidth=2.5,
+                    color='green', label='Utterances with Scores', markersize=8)
+            ax.set_xticks(control_hop_nums)
         
         ax.set_xlabel('Hop Sequence', fontsize=12)
         ax.set_ylabel('Number of Utterances', fontsize=12)
         ax.set_title('CONTROL - Utterance Counts', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_numbers)
         ax.legend(fontsize=10, loc='best')
         ax.grid(True, alpha=0.3)
         
         # ===== BOTTOM ROW: TREATMENT =====
         # Bottom-left: Treatment CiteDCG scores
         ax = axes[1, 0]
-        per_hop = stats_treatment[k_values[0]].get(hop_key, {})
-        hop_avgs = [per_hop.get(str(hop_num), {}).get("avg_all_scores")
-                    if per_hop.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
-                    for hop_num in hop_numbers]
-        
-        ax.plot(hop_numbers, hop_avgs, marker='o', linewidth=3,
-                color='steelblue', label='All Results', markersize=8)
-        
-        for k in k_values:
-            per_hop = stats_treatment[k].get(hop_key, {})
-            hop_topk_avgs = [per_hop.get(str(hop_num), {}).get("avg_topk_scores")
-                            if per_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
-                            for hop_num in hop_numbers]
-            ax.plot(hop_numbers, hop_topk_avgs, marker='s', linewidth=2.5,
-                    linestyle='--', label=f'Top-{k}', markersize=7)
+        if treatment_hop_nums:
+            per_hop = stats_treatment[k_values[0]].get(hop_key, {})
+            hop_avgs = [per_hop.get(str(hop_num), {}).get("avg_all_scores")
+                        if per_hop.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
+                        for hop_num in treatment_hop_nums]
+            
+            ax.plot(treatment_hop_nums, hop_avgs, marker='o', linewidth=2.5,
+                    color='steelblue', label='All Results', markersize=8)
+            
+            for k in k_values:
+                per_hop = stats_treatment[k].get(hop_key, {})
+                hop_topk_avgs = [per_hop.get(str(hop_num), {}).get("avg_topk_scores")
+                                if per_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
+                                for hop_num in treatment_hop_nums]
+                ax.plot(treatment_hop_nums, hop_topk_avgs, marker='s', linewidth=2.5,
+                        linestyle='--', label=f'Top-{k}', markersize=7)
+            
+            ax.set_xticks(treatment_hop_nums)
         
         ax.set_xlabel('Hop Sequence', fontsize=12)
         ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
         ax.set_title('TREATMENT - CiteDCG Scores', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_numbers)
         ax.legend(fontsize=10, loc='best')
         ax.grid(True, alpha=0.3)
         
         # Bottom-right: Treatment utterance counts
         ax = axes[1, 1]
-        per_hop = stats_treatment[k_values[0]].get(hop_key, {})
-        utterances_with_scores = [per_hop.get(str(hop_num), {}).get("utterances_with_scores", 0)
-                                  for hop_num in hop_numbers]
-        
-        ax.plot(hop_numbers, utterances_with_scores, marker='o', linewidth=3,
-                color='green', label='Utterances with Scores', markersize=8)
+        if treatment_hop_nums:
+            per_hop = stats_treatment[k_values[0]].get(hop_key, {})
+            utterances_with_scores = [
+                per_hop.get(str(hop_num), {}).get(
+                    "utterances_with_scores", 0
+                )
+                for hop_num in treatment_hop_nums
+            ]
+            
+            ax.plot(
+                treatment_hop_nums, utterances_with_scores,
+                marker='o', linewidth=2.5,
+                color='green', label='Utterances with Scores',
+                markersize=8
+            )
+            ax.set_xticks(treatment_hop_nums)
         
         ax.set_xlabel('Hop Sequence', fontsize=12)
         ax.set_ylabel('Number of Utterances', fontsize=12)
-        ax.set_title('TREATMENT - Utterance Counts', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_numbers)
+        ax.set_title(
+            'TREATMENT - Utterance Counts',
+            fontsize=13, fontweight='bold'
+        )
         ax.legend(fontsize=10, loc='best')
         ax.grid(True, alpha=0.3)
         
@@ -2423,6 +2463,177 @@ def _generate_statistics_plots_comparison(
         plt.savefig(plot_file, dpi=150, bbox_inches='tight')
         plt.close()
         print(f"  ✓ Saved: {plot_file.name}")
+
+
+def _generate_paired_utterances_plot(
+    paired_utterances_file: str,
+    output_dir: Path,
+    job_id: str,
+    k_values: List[int] = [1, 3, 5]
+):
+    """
+    Generate scatter plot showing control vs treatment scores for each paired utterance.
+    
+    X-axis: Each utterance (numbered sequentially)
+    Y-axis: CiteDCG scores
+    Markers: Different shapes for All Results vs Top-K values
+    Colors: Blue for control, orange for treatment
+    
+    Args:
+        paired_utterances_file: Path to paired utterances JSON file
+        output_dir: Directory to save the plot
+        job_id: SEVAL job ID for plot title
+        k_values: List of top-k values to plot
+    """
+    import json
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    # Load paired utterances data
+    with open(paired_utterances_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    paired_data = data.get("paired_data", [])
+    if not paired_data:
+        print("  ⚠ No paired utterances with scores found")
+        return
+    
+    metadata = data.get("metadata", {})
+    common_k = metadata.get("common_k_values", k_values)
+    
+    # Prepare data for plotting
+    num_utterances = len(paired_data)
+    x_positions = list(range(1, num_utterances + 1))
+    
+    # Define marker styles: circle for All Results, different shapes for Top-K
+    marker_styles = {
+        'all': {'marker': 'o', 'size': 8, 'label': 'All Results'},
+        1: {'marker': '^', 'size': 7, 'label': 'Top-1'},
+        3: {'marker': 's', 'size': 6, 'label': 'Top-3'},
+        5: {'marker': 'D', 'size': 5, 'label': 'Top-5'}
+    }
+    
+    control_color = '#1f77b4'  # Blue
+    treatment_color = '#ff7f0e'  # Orange
+    
+    fig, ax = plt.subplots(1, 1, figsize=(max(12, num_utterances * 0.15), 8))
+    
+    # Collect scores for each utterance
+    for idx, pair in enumerate(paired_data):
+        x_pos = x_positions[idx]
+        control_hops = pair.get("control", {}).get("hops", {})
+        treatment_hops = pair.get("treatment", {}).get("hops", {})
+        
+        # Get first hop with scores for each experiment
+        control_scores = {}
+        treatment_scores = {}
+        
+        for hop_idx, hop_data in control_hops.items():
+            # All Results score (k-independent, use k=1 data)
+            k1_data = hop_data.get("1", {})
+            if not k1_data.get("is_empty", True):
+                control_scores['all'] = k1_data.get("avg_all_scores")
+                # Top-K scores
+                for k in common_k:
+                    k_data = hop_data.get(str(k), {})
+                    if not k_data.get("is_empty", True):
+                        control_scores[k] = k_data.get("avg_topk_scores")
+                break  # Use first non-empty hop
+        
+        for hop_idx, hop_data in treatment_hops.items():
+            k1_data = hop_data.get("1", {})
+            if not k1_data.get("is_empty", True):
+                treatment_scores['all'] = k1_data.get("avg_all_scores")
+                for k in common_k:
+                    k_data = hop_data.get(str(k), {})
+                    if not k_data.get("is_empty", True):
+                        treatment_scores[k] = k_data.get("avg_topk_scores")
+                break
+        
+        # Plot control scores (slightly left offset)
+        offset = -0.15
+        for metric, score in control_scores.items():
+            if score is not None:
+                style = marker_styles.get(metric, marker_styles['all'])
+                ax.scatter(x_pos + offset, score, 
+                          marker=style['marker'], 
+                          s=style['size']**2,
+                          color=control_color,
+                          alpha=0.7,
+                          edgecolors='black',
+                          linewidths=0.5,
+                          zorder=3)
+        
+        # Plot treatment scores (slightly right offset)
+        offset = 0.15
+        for metric, score in treatment_scores.items():
+            if score is not None:
+                style = marker_styles.get(metric, marker_styles['all'])
+                ax.scatter(x_pos + offset, score,
+                          marker=style['marker'],
+                          s=style['size']**2,
+                          color=treatment_color,
+                          alpha=0.7,
+                          edgecolors='black',
+                          linewidths=0.5,
+                          zorder=3)
+    
+    # Configure axes
+    ax.set_xlabel('Utterance Index', fontsize=13)
+    ax.set_ylabel('CiteDCG Score (First Non-Empty Hop)', fontsize=13)
+    ax.set_title(
+        f'Control vs Treatment: Paired Utterances CiteDCG Scores\n'
+        f'Job: {job_id} | {num_utterances} paired utterances',
+        fontsize=14, fontweight='bold'
+    )
+    
+    # Set x-axis ticks
+    if num_utterances <= 50:
+        ax.set_xticks(x_positions)
+    else:
+        # Show every 5th or 10th tick for large datasets
+        step = 5 if num_utterances <= 100 else 10
+        ax.set_xticks(x_positions[::step])
+    
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_xlim(0, num_utterances + 1)
+    
+    # Create custom legend
+    from matplotlib.lines import Line2D
+    legend_elements = []
+    
+    # Experiment colors
+    legend_elements.append(Line2D([0], [0], marker='o', color='w',
+                                 markerfacecolor=control_color,
+                                 markersize=8, label='Control',
+                                 markeredgecolor='black', markeredgewidth=0.5))
+    legend_elements.append(Line2D([0], [0], marker='o', color='w',
+                                 markerfacecolor=treatment_color,
+                                 markersize=8, label='Treatment',
+                                 markeredgecolor='black', markeredgewidth=0.5))
+    
+    # Add separator
+    legend_elements.append(Line2D([0], [0], marker='', color='none',
+                                 linestyle='', label=''))
+    
+    # Metric types
+    for metric_key in ['all'] + common_k:
+        style = marker_styles.get(metric_key, marker_styles['all'])
+        legend_elements.append(
+            Line2D([0], [0], marker=style['marker'], color='w',
+                  markerfacecolor='gray', markersize=style['size'],
+                  label=style['label'],
+                  markeredgecolor='black', markeredgewidth=0.5))
+    
+    ax.legend(handles=legend_elements, fontsize=10, loc='best',
+             ncol=2, framealpha=0.9)
+    
+    plt.tight_layout()
+    plot_file = output_dir / f"{job_id}_paired_utterances_comparison.png"
+    plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"  ✓ Saved: {plot_file.name}")
 
 
 def process_seval_job_with_statistics_plots(
@@ -2850,9 +3061,9 @@ def process_seval_job_with_statistics_plots(
         print("=" * 80)
         sys.exit(1)
     
-    # STEP 4: Build/update per-utterance details with hop-level scores
+    # STEP 4-1: Build/update per-utterance details with hop-level scores
     print("=" * 80)
-    print("STEP 4: BUILDING PER-UTTERANCE DETAILS")
+    print("STEP 4-1: BUILDING PER-UTTERANCE DETAILS")
     print("=" * 80)
     
     from merge_seval_results import build_utterance_details_with_top_k
@@ -2865,10 +3076,13 @@ def process_seval_job_with_statistics_plots(
     print(f"  Reading from: {merged_dir}")
     print(f"  Output to: {utterance_details_dir}")
     print(f"  Top-k values: {k_values}")
+    print(f"  Merged files reused: {can_reuse_merged}")
     print("")
     
     # Build utterance details for each experiment
     utterance_details_files = {}  # {experiment: filepath}
+    # Track which files were reused {experiment: bool}
+    details_files_reused = {}
     
     for exp in experiments:
         print(f"  Processing {exp.upper()}...")
@@ -2879,33 +3093,166 @@ def process_seval_job_with_statistics_plots(
             continue
         
         # Define output file for this experiment in the dedicated folder
-        details_file = utterance_details_dir / f"{job_id}_{exp}_utterance_details.json"
+        details_file = (
+            utterance_details_dir /
+            f"{job_id}_{exp}_utterance_details.json"
+        )
         
-        # Check if file exists (for incremental updates)
-        existing_file = str(details_file) if details_file.exists() else None
+        # Check if we can reuse existing file
+        can_reuse = False
+        if details_file.exists() and can_reuse_merged:
+            # Load existing file to check k-values
+            try:
+                with open(details_file, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+                metadata = existing_data.get("metadata", {})
+                existing_k = set(metadata.get("k_values_calculated", []))
+                requested_k = set(k_values)
+                
+                if requested_k <= existing_k:
+                    # All requested k-values already calculated
+                    can_reuse = True
+                    utterance_details_files[exp] = str(details_file)
+                    details_files_reused[exp] = True
+                    print(f"    \u2713 Reused existing file: "
+                          f"{details_file.name}")
+                elif requested_k > existing_k:
+                    # Need to add new k-values
+                    new_k = sorted(requested_k - existing_k)
+                    print(f"    \u27A4 Will update with new k-values: "
+                          f"{new_k}")
+            except Exception as e:
+                logger.warning(f"Could not load existing file for {exp}: {e}")
+                print("    \u27A4 Will regenerate (existing file unreadable)")
         
-        try:
-            details = build_utterance_details_with_top_k(
-                merged_dir=str(exp_merged_dir),
-                top_k_list=k_values,
-                output_file=str(details_file),
-                experiment=exp,
-                existing_file=existing_file
+        if not can_reuse:
+            # Build or update the file
+            existing_file = (
+                str(details_file) if details_file.exists() else None
             )
             
-            utterance_details_files[exp] = str(details_file)
-            print(f"    ✓ Saved: {details_file.name}")
-            
-        except Exception as e:
-            logger.error(f"Failed to build utterance details for {exp}: {e}")
-            print(f"    ✗ Error: {e}")
+            try:
+                details = build_utterance_details_with_top_k(
+                    merged_dir=str(exp_merged_dir),
+                    top_k_list=k_values,
+                    output_file=str(details_file),
+                    experiment=exp,
+                    existing_file=existing_file
+                )
+                
+                utterance_details_files[exp] = str(details_file)
+                details_files_reused[exp] = False
+                
+                # Determine what action was taken
+                metadata = details.get("metadata", {})
+                k_calculated = metadata.get("k_values_calculated", [])
+                
+                if existing_file:
+                    new_k = sorted(set(k_values) - set(k_calculated))
+                    if new_k:
+                        print(f"    \u2713 Updated with new k-values "
+                              f"{new_k}: {details_file.name}")
+                    else:
+                        print(f"    \u2713 Regenerated: "
+                              f"{details_file.name}")
+                else:
+                    print(f"    \u2713 Generated new file: "
+                          f"{details_file.name}")
+                
+            except Exception as e:
+                msg = f"Failed to build utterance details for {exp}: {e}"
+                logger.error(msg)
+                print(f"    ✗ Error: {e}")
+                details_files_reused[exp] = False
     
     print("")
     if utterance_details_files:
-        print(f"✓ Utterance details built: {len(utterance_details_files)} file(s)")
+        count = len(utterance_details_files)
+        print(f"✓ Utterance details built: {count} file(s)")
     else:
         print("⚠ No utterance details were created")
     print("")
+    
+    # STEP 4-2: Find paired utterances (only if both experiments processed)
+    paired_utterances_file = None
+    if len(experiments) == 2 and len(utterance_details_files) == 2:
+        print("=" * 80)
+        print("STEP 4-2: FINDING PAIRED UTTERANCES WITH SCORES")
+        print("=" * 80)
+        
+        from merge_seval_results import find_paired_utterances_with_scores
+        
+        control_file = utterance_details_files.get("control")
+        treatment_file = utterance_details_files.get("treatment")
+        
+        if control_file and treatment_file:
+            paired_file = (
+                utterance_details_dir / f"{job_id}_paired_utterances.json"
+            )
+            
+            print(f"  Control: {Path(control_file).name}")
+            print(f"  Treatment: {Path(treatment_file).name}")
+            print(f"  Output: {paired_file.name}")
+            print("")
+            
+            # Check if we can reuse existing paired file
+            can_reuse_paired = False
+            both_details_reused = (
+                details_files_reused.get("control", False) and
+                details_files_reused.get("treatment", False)
+            )
+            
+            if paired_file.exists() and both_details_reused:
+                # Both input files were reused, so paired file is still valid
+                can_reuse_paired = True
+                print("  \u2713 Reused existing paired file")
+                print("")
+                
+                # Load the file to show summary
+                try:
+                    with open(paired_file, 'r', encoding='utf-8') as f:
+                        paired_data = json.load(f)
+                    paired_utterances_file = str(paired_file)
+                except Exception as e:
+                    logger.warning(f"Could not load paired file: {e}")
+                    can_reuse_paired = False
+            
+            if not can_reuse_paired:
+                try:
+                    paired_data = find_paired_utterances_with_scores(
+                        control_details_file=control_file,
+                        treatment_details_file=treatment_file,
+                        output_file=str(paired_file)
+                    )
+                    paired_utterances_file = str(paired_file)
+                    print("  \u2713 Generated paired utterances file")
+                    print("")
+                except Exception as e:
+                    logger.error(f"Failed to find paired utterances: {e}")
+                    print(f"  ✗ Error: {e}")
+                    paired_data = None
+            
+            # Print detailed summary if we have data
+            if paired_data:
+                metadata = paired_data.get("metadata", {})
+                total = metadata.get("total_utterances", 0)
+                paired = metadata.get("paired_with_scores", 0)
+                control_only = metadata.get("control_only_with_scores", 0)
+                treatment_only = metadata.get(
+                    "treatment_only_with_scores", 0
+                )
+                no_scores = metadata.get("no_scores_in_either", 0)
+                
+                pct = 100.0 * paired / max(1, total)
+                print("  Results:")
+                print(f"    Total unique queries: {total}")
+                print(f"    \u2713 Paired (scores in both): {paired} "
+                      f"({pct:.1f}%)")
+                print(f"    \u2022 Control only: {control_only}")
+                print(f"    \u2022 Treatment only: {treatment_only}")
+                print(f"    \u2022 No scores: {no_scores}")
+                print("")
+                print("")
     
     # Step 5: Generate plots with plot-specific statistics
     # Always clean plot output folder first
@@ -2985,6 +3332,22 @@ def process_seval_job_with_statistics_plots(
                     output_dir=plots_dir,
                     job_id=job_id
                 )
+                
+                # Generate paired utterances comparison plot
+                if paired_utterances_file:
+                    print("")
+                    print("  Generating paired utterances plot...")
+                    try:
+                        _generate_paired_utterances_plot(
+                            paired_utterances_file=paired_utterances_file,
+                            output_dir=plots_dir,
+                            job_id=job_id,
+                            k_values=k_values
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to generate paired utterances plot: {e}")
+                        print(f"  ✗ Error: {e}")
+            
             print(f"✓ Plots generated in: {plots_dir}")
         except Exception as e:
             logger.error(f"Failed to generate plots: {e}")
@@ -3013,10 +3376,16 @@ def process_seval_job_with_statistics_plots(
     # Utterance details files (per experiment in dedicated folder)
     if utterance_details_files:
         print(f"  Utterance details folder ({utterance_details_dir}/):")
-        print(f"    {len(utterance_details_files)} file(s)")
+        file_count = len(utterance_details_files)
+        if paired_utterances_file:
+            file_count += 1  # Include paired file
+        print(f"    {file_count} file(s)")
         for exp, filepath in utterance_details_files.items():
             filename = Path(filepath).name
             print(f"    - {filename}")
+        if paired_utterances_file:
+            filename = Path(paired_utterances_file).name
+            print(f"    - {filename} (paired utterances)")
     
     # Plot-specific statistics and plots (in same folder)
     if len(k_values) >= 2 and plots_dir.exists():
