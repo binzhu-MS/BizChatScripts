@@ -3749,7 +3749,9 @@ class SEVALAnalysisToolkit:
                 break
 
         # Extract all search results from evaluationData
-        evaluation_results = self._extract_evaluation_data_results(messages)
+        evaluation_results = self._extract_evaluation_data_results(
+            messages, conversation_id, exp_name
+        )
 
         analysis = {
             "metadata": {
@@ -4022,7 +4024,9 @@ class SEVALAnalysisToolkit:
 
         return invocation_info if invocation_info["function_name"] else None
 
-    def _extract_evaluation_data_results(self, messages: list) -> Dict:
+    def _extract_evaluation_data_results(
+        self, messages: list, conversation_id: str = "Unknown", exp_name: str = "Unknown"
+    ) -> Dict:
         """Extract all search results from EvaluationData message.
 
         This method extracts the COMPLETE set of search results from the EvaluationData message.
@@ -4160,14 +4164,9 @@ class SEVALAnalysisToolkit:
                     tool_invocations = model_action.get("toolInvocations", [])
 
                     for tool_inv in tool_invocations:
-                        batched_queries = tool_inv.get("batchedQueries", [])
-
-                        if not batched_queries:
-                            continue
-
                         # Extract tool name from invocation
                         tool_name = tool_inv.get("function", "unknown")
-
+                        
                         total_tool_invocations_count += 1
                         invocation_results = {
                             "invocation_number": len(
@@ -4178,6 +4177,9 @@ class SEVALAnalysisToolkit:
                             "queries": [],
                             "total_results": 0,
                         }
+                        
+                        # Check for batchedQueries (office365_search pattern)
+                        batched_queries = tool_inv.get("batchedQueries", [])
 
                         for query_idx, batched_query in enumerate(
                             batched_queries
@@ -4328,7 +4330,159 @@ class SEVALAnalysisToolkit:
                             turn_results["total_results"] += len(results)
                             total_results += len(results)
 
-                        hop_results["invocations"].append(invocation_results)
+                        # Check for web search results (search_web pattern)
+                        # Web search stores results in 'processedResult' field, not batchedQueries
+                        if not batched_queries and "processedResult" in tool_inv and tool_name == "search_web":
+                            # Extract query from arguments field
+                            arguments_str = tool_inv.get("arguments", "")
+                            query_text = ""
+                            if arguments_str:
+                                try:
+                                    arguments = json.loads(arguments_str)
+                                    query_text = arguments.get("query", "")
+                                except Exception:
+                                    pass
+                            
+                            result_str = tool_inv.get("processedResult", "")
+                            # Only process if we have non-empty content after stripping
+                            if result_str:
+                                result_str = result_str.strip()
+                                if result_str:
+                                    try:
+                                        # Parse result JSON
+                                        result_data = json.loads(result_str)
+                                        
+                                        # Handle three different structures:
+                                        # 1. Dict with 'News' and 'WebPages' keys (standard format)
+                                        # 2. Dict with 'QuestionsAndAnswers' key (site-restricted search)
+                                        # 3. List of messages with groundingInfo (legacy format)
+                                        
+                                        # Extract results by type
+                                        results_by_type = {}
+                                        
+                                        if isinstance(result_data, dict):
+                                            # Extract all possible result types from the dict
+                                            if "QuestionsAndAnswers" in result_data:
+                                                results_by_type["questionsandanswers"] = result_data.get("QuestionsAndAnswers", [])
+                                            if "WebPages" in result_data:
+                                                results_by_type["webpages"] = result_data.get("WebPages", [])
+                                            if "News" in result_data:
+                                                results_by_type["news"] = result_data.get("News", [])
+                                        elif isinstance(result_data, list) and result_data:
+                                            # Legacy format: list of messages with groundingInfo
+                                            web_pages = []
+                                            news_items = []
+                                            for msg in result_data:
+                                                grounding = msg.get("groundingInfo", {})
+                                                web_pages.extend(grounding.get("WebPages", []))
+                                                news_items.extend(grounding.get("News", []))
+                                            if web_pages:
+                                                results_by_type["webpages"] = web_pages
+                                            if news_items:
+                                                results_by_type["news"] = news_items
+                                        
+                                        # Create separate query entries for each type (to match CiteDCG structure)
+                                        for search_type, items in results_by_type.items():
+                                            if not items:
+                                                continue
+                                            
+                                            total_queries += 1
+                                            # Create a query entry for this specific type
+                                            # Domain format: search_web_{type} to match CiteDCG
+                                            query_results = {
+                                                "query_number": len(invocation_results["queries"]) + 1,
+                                                "domain": search_type,  # Type-specific domain
+                                                "query": query_text,
+                                                "result_count": len(items),
+                                                "results": [],
+                                            }
+                                            
+                                            # Extract each result for this type
+                                            for item in items:
+                                                # Determine display type
+                                                if search_type == "questionsandanswers":
+                                                    item_type = "QA"
+                                                elif search_type == "news":
+                                                    item_type = "News"
+                                                else:
+                                                    item_type = "WebPage"
+                                                
+                                                # Extract snippets if available
+                                                snippets = item.get("snippets", [])
+                                                snippet_text = ""
+                                                if snippets:
+                                                    snippet_text = " ".join(str(s) for s in snippets)[:200]
+                                                
+                                                result_item = {
+                                                    "reference_id": item.get("reference_id", ""),
+                                                    "type": item_type,
+                                                    "title": item.get("title", ""),
+                                                    "snippet": snippet_text,
+                                                    "author": "",
+                                                    "lastModifiedTime": "",
+                                                    "fileName": "",
+                                                    "fileType": "",
+                                                    "url": item.get("url", ""),
+                                                }
+                                                query_results["results"].append(result_item)
+                                            
+                                            invocation_results["queries"].append(query_results)
+                                            invocation_results["total_results"] += len(items)
+                                            hop_results["total_results"] += len(items)
+                                            turn_results["total_results"] += len(items)
+                                            total_results += len(items)
+                                        
+                                        # Check if NO types had results
+                                        if not results_by_type:
+                                            # Web search invocation with no results - log for investigation
+                                            user_input = turn_results.get("user_input", "")
+                                            print(f"\n{'='*80}")
+                                            print("WARNING: Web search with no News/WebPages results")
+                                            print(f"  Conversation ID: {conversation_id}")
+                                            print(f"  Experiment: {exp_name}")
+                                            print(f"  Utterance: {user_input[:100]}...")
+                                            print(f"  Turn: {turn_results.get('turn_number')}, Hop: {hop_results.get('hop_number')}")
+                                            print(f"  Search query: {query_text[:100] if query_text else 'no query'}")
+                                            print(f"  processedResult type: {type(result_data)}")
+                                            if isinstance(result_data, dict):
+                                                print(f"  processedResult keys: {list(result_data.keys())}")
+                                            print(f"{'='*80}\n")
+                                    except Exception as e:
+                                        # Log error but continue processing
+                                        user_input = turn_results.get("user_input", "")
+                                        print(f"\n{'='*80}")
+                                        print("WARNING: Error parsing web search result")
+                                        print(f"  Conversation ID: {conversation_id}")
+                                        print(f"  Experiment: {exp_name}")
+                                        print(f"  Utterance: {user_input[:100]}...")
+                                        print(f"  Turn: {turn_results.get('turn_number')}, Hop: {hop_results.get('hop_number')}")
+                                        print(f"  Error: {e}")
+                                        print(f"{'='*80}\n")
+                                else:
+                                    # Empty processedResult after stripping
+                                    user_input = turn_results.get("user_input", "")
+                                    print(f"\n{'='*80}")
+                                    print("WARNING: Web search with empty processedResult")
+                                    print(f"  Conversation ID: {conversation_id}")
+                                    print(f"  Experiment: {exp_name}")
+                                    print(f"  Utterance: {user_input[:100]}...")
+                                    print(f"  Turn: {turn_results.get('turn_number')}, Hop: {hop_results.get('hop_number')}")
+                                    print(f"{'='*80}\n")
+                            else:
+                                # Empty or missing processedResult
+                                if not batched_queries:  # Only for web search pattern
+                                    user_input = turn_results.get("user_input", "")
+                                    print(f"\n{'='*80}")
+                                    print("WARNING: Web search pattern but no processedResult")
+                                    print(f"  Conversation ID: {conversation_id}")
+                                    print(f"  Experiment: {exp_name}")
+                                    print(f"  Utterance: {user_input[:100]}...")
+                                    print(f"  Turn: {turn_results.get('turn_number')}, Hop: {hop_results.get('hop_number')}")
+                                    print(f"{'='*80}\n")
+
+                        # Only add invocation if it has queries (either batched or web search)
+                        if invocation_results["queries"]:
+                            hop_results["invocations"].append(invocation_results)
 
                 # Always add hop to preserve complete iteration structure
                 # (even if empty - shows reasoning steps without tool calls)

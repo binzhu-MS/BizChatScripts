@@ -603,6 +603,7 @@ class PerResultCiteDCGExtractor:
                                 search_domain,
                                 plugin_name,
                                 query_string,
+                                plugin_invocation,
                                 include_null_score=True
                             )
                             results_without_scores.append(extracted)
@@ -615,6 +616,7 @@ class PerResultCiteDCGExtractor:
                             search_domain,
                             plugin_name,
                             query_string,
+                            plugin_invocation,
                         )
                         extracted["num_turns"] = num_turns
                         results.append(extracted)
@@ -652,6 +654,9 @@ class PerResultCiteDCGExtractor:
                     "is_error": is_error
                 })
         
+        # No deduplication needed - same reference_id can legitimately appear
+        # in multiple hops when search results are reused across turns
+        
         return results
     
     def _extract_query_from_invocation(
@@ -680,33 +685,74 @@ class PerResultCiteDCGExtractor:
             import re
 
             # Find the dict/parameter part: function_name({...})
-            match = re.search(r'\(({[^)]+})\)', invocation_str)
-            if match:
-                dict_str = match.group(1)
-                try:
-                    # Safely parse the dict literal
-                    params = ast.literal_eval(dict_str)
-                    if isinstance(params, dict):
-                        # Try 'query' first (office365_search)
-                        if 'query' in params:
-                            query_val = params['query']
-                            # Handle nested dict (web search case)
-                            if isinstance(query_val, dict):
-                                # Try common web search fields
-                                return (
-                                    query_val.get('search_query') or
-                                    query_val.get('query') or
-                                    str(query_val)
-                                )
-                            return str(query_val)
-                        
-                        # Try 'search_query' (bing_search)
-                        if 'search_query' in params:
-                            return str(params['search_query'])
-                except (ValueError, SyntaxError):
-                    pass
+            # Use a more robust approach to extract the dict
+            # Find opening paren after function name
+            paren_start = invocation_str.find('(')
+            if paren_start != -1:
+                # Find matching closing paren by counting nesting
+                brace_count = 0
+                in_string = False
+                string_char = None
+                escaped = False
+                
+                for i in range(paren_start + 1, len(invocation_str)):
+                    char = invocation_str[i]
+                    
+                    if escaped:
+                        escaped = False
+                        continue
+                    
+                    if char == '\\':
+                        escaped = True
+                        continue
+                    
+                    # Track string state
+                    if char in ('"', "'"):
+                        if not in_string:
+                            in_string = True
+                            string_char = char
+                        elif char == string_char:
+                            in_string = False
+                            string_char = None
+                        continue
+                    
+                    # Only count parens outside strings
+                    if not in_string:
+                        if char == '(':
+                            brace_count += 1
+                        elif char == ')':
+                            if brace_count == 0:
+                                # Found matching closing paren
+                                dict_str = invocation_str[paren_start + 1:i]
+                                try:
+                                    # Safely parse the dict literal
+                                    params = ast.literal_eval(dict_str)
+                                    if isinstance(params, dict):
+                                        # Try 'query' first (office365_search)
+                                        if 'query' in params:
+                                            query_val = params['query']
+                                            # Handle nested dict (web search case)
+                                            if isinstance(query_val, dict):
+                                                # Try common web search fields
+                                                return (
+                                                    query_val.get('search_query') or
+                                                    query_val.get('query') or
+                                                    str(query_val)
+                                                )
+                                            return str(query_val)
+                                        
+                                        # Try 'search_query' (bing_search)
+                                        if 'search_query' in params:
+                                            return str(params['search_query'])
+                                except (ValueError, SyntaxError):
+                                    pass
+                                break
+                            else:
+                                brace_count -= 1
             
             # Fallback: regex extraction for simple string queries
+            # NOTE: These regexes may truncate queries with embedded quotes
+            # The ast.literal_eval approach above should handle most cases
             # Try single quotes: 'query': 'value'
             match = re.search(r"'query':\s*'([^']+)'", invocation_str)
             if match:
@@ -766,6 +812,7 @@ class PerResultCiteDCGExtractor:
         search_domain: str,
         plugin_name: str = "",
         query_string: str = "",
+        plugin_invocation: str = "",
         include_null_score: bool = False,
     ) -> dict:
         """Extract relevant fields from a single result."""
@@ -777,7 +824,13 @@ class PerResultCiteDCGExtractor:
             "search_domain": search_domain,
             "plugin_name": plugin_name,
             "query_string": query_string,
-            "ReferenceId": result.get("ReferenceId", ""),
+            "plugin_invocation": plugin_invocation,
+            # Extract reference_id: Office365 uses "ReferenceId" (PascalCase),
+            # Web searches use "reference_id" (lowercase). Check both.
+            "reference_id": (
+                result.get("reference_id", "")
+                or result.get("ReferenceId", "")
+            ),
             "CiteDCGLLMLabel": result.get("CiteDCGLLMLabel", default_label),
             "ResultType": result.get("ResultType", ""),
             "Type": result.get("Type", ""),
@@ -890,12 +943,31 @@ class PerResultCiteDCGExtractor:
             
             # Process results with search data (normal or error cases)
             search_groups = defaultdict(list)
+            plugin_invocations = {}  # Store plugin_invocation per group
             for result in results:
                 domain = result.get("search_domain", "unknown")
                 query_string = result.get("query_string", "")
                 plugin_name = result.get("plugin_name", "")
+                plugin_invocation = result.get("plugin_invocation", "")
                 hop = result.get("turn_index", "")
+                
+                # For web searches, extract domain from Type field for grouping
+                # This matches the conversation structure which has separate queries
+                # for different web search types (webpages, news, questionsandanswers)
+                # BUT keep original plugin_name ("search_web") to match raw data
+                result_type = result.get("Type", "")
+                if plugin_name == "search_web" and result_type:
+                    # Extract the domain from Type to create separate groups
+                    # Type format: "search_web_<domain>" -> extract domain part
+                    if result_type.startswith("search_web_"):
+                        domain = result_type.replace("search_web_", "")
+                
+                # Use domain in grouping key but preserve original plugin_name
                 key = (hop, domain, query_string, plugin_name)
+                
+                # Store plugin_invocation for this group (same for all results in group)
+                if key not in plugin_invocations:
+                    plugin_invocations[key] = plugin_invocation
                 
                 # Remove redundant fields for result item
                 result_item = {
@@ -908,6 +980,7 @@ class PerResultCiteDCGExtractor:
                         "search_domain",
                         "plugin_name",
                         "query_string",
+                        "plugin_invocation",  # Now at search level
                         "is_error",  # Remove internal tracking field
                     ]
                 }
@@ -920,12 +993,14 @@ class PerResultCiteDCGExtractor:
             for (hop, domain, query_string, plugin_name), search_results in (
                 search_groups.items()
             ):
+                key = (hop, domain, query_string, plugin_name)
                 searches.append(
                     {
                         "hop": hop,
-                        "search_domain": domain,
                         "plugin_name": plugin_name,
+                        "search_domain": domain,
                         "query_string": query_string,
+                        "plugin_invocation": plugin_invocations.get(key, ""),
                         "result_count": len(search_results),
                         "results": search_results,
                     }

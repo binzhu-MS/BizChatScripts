@@ -244,6 +244,9 @@ def _add_citedcg_scores_to_conversation(
     """
     merged = conversation_data.copy()
     
+    # Extract conversation_id for debugging
+    conversation_id = conversation_data.get('metadata', {}).get('conversation_id', 'UNKNOWN')
+    
     # Track score assignment counts (for logging only)
     total_results_with_scores = 0
     total_results_without_scores = 0
@@ -311,6 +314,7 @@ def _add_citedcg_scores_to_conversation(
             # Turn has search results but no CiteDCG data - not in DCG file
             utterances_not_in_dcg += 1
             logger.warning(
+                f"Conversation ID: {conversation_id}\n"
                 f"Turn {turn_idx} has {total_results_in_turn} search results "
                 f"but utterance not found in CiteDCG data:\n"
                 f"  Query: '{user_input}'\n"
@@ -366,26 +370,46 @@ def _add_citedcg_scores_to_conversation(
                     
                     total_queries_processed += 1
                     
-                    # Normalize tool+domain to CiteDCG format:
+                    # Normalize tool+domain for matching CiteDCG data
                     # Conversation: tool_name="office365_search" + domain="files"
-                    # CiteDCG: plugin_name="office365_search_files"
-                    search_domain_key = f"{invocation_tool}_{query_domain}"
+                    #   -> Match CiteDCG: plugin_name="office365_search_files", search_domain="office365_search_files"
+                    # Conversation: tool_name="search_web" + domain="webpages"  
+                    #   -> Match CiteDCG: plugin_name="search_web", search_domain="webpages"
                     
                     # Search for matching CiteDCG entry
-                    # (tool+domain, query) must both match
                     matched_search = None
                     for norm_search in normalized_searches:
                         # Skip already-used searches
                         if norm_search['used']:
                             continue
                         
-                        # Three-level match: plugin, domain, query
-                        if (norm_search['plugin_name'] == search_domain_key and
-                                norm_search['search_domain'] == search_domain_key and
+                        # Match logic depends on plugin type:
+                        # For search_web: plugin_name must be "search_web", search_domain matches domain
+                        # For others: both plugin_name and search_domain = tool_domain combined
+                        plugin_match = False
+                        domain_match = False
+                        
+                        if invocation_tool == "search_web":
+                            # Web search: plugin stays "search_web", domain is separate
+                            plugin_match = (norm_search['plugin_name'] == "search_web")
+                            domain_match = (norm_search['search_domain'] == query_domain)
+                        else:
+                            # Office365 and others: combined format
+                            search_domain_key = f"{invocation_tool}_{query_domain}"
+                            plugin_match = (norm_search['plugin_name'] == search_domain_key)
+                            domain_match = (norm_search['search_domain'] == search_domain_key)
+                        
+                        if (plugin_match and domain_match and 
                                 norm_search['query_lower'] == query_text_lower):
                             matched_search = norm_search
                             norm_search['used'] = True  # Mark as used
                             break
+                    
+                    # Build display key for logging
+                    if invocation_tool == "search_web":
+                        search_domain_key = f"{invocation_tool}:{query_domain}"
+                    else:
+                        search_domain_key = f"{invocation_tool}_{query_domain}"
                     
                     # Track matching stats
                     if matched_search:
@@ -396,9 +420,12 @@ def _add_citedcg_scores_to_conversation(
                         conv_result_count = len(query_results)
                         
                         if search_result_count != conv_result_count:
+                            hop_number = hop.get('hop_number', 'unknown')
                             logger.warning(
+                                f"Conversation ID: {conversation_id}\n"
                                 f"Result count mismatch:\n"
                                 f"  Utterance: '{user_input[:50]}'\n"
+                                f"  Turn: {turn_idx}, Hop: {hop_number}\n"
                                 f"  Tool+Domain: {search_domain_key}\n"
                                 f"  Query: '{query_text_lower[:60]}'\n"
                                 f"  Conversation results: {conv_result_count}\n"
@@ -406,15 +433,16 @@ def _add_citedcg_scores_to_conversation(
                             )
                     else:
                         total_queries_no_match += 1
+                        hop_number = hop.get('hop_number', 'unknown')
                         logger.warning(
+                            f"Conversation ID: {conversation_id}\n"
                             f"No CiteDCG match for conversation query:\n"
                             f"  Utterance: '{user_input[:50]}'\n"
+                            f"  Turn: {turn_idx}, Hop: {hop_number}\n"
                             f"  Tool+Domain: {search_domain_key}\n"
                             f"  Query: '{query_text_lower[:60]}'\n"
                             f"  Result count: {len(query_results)}"
-                        )
-                    
-                    # Add scores to each result by matching position
+                            )                    # Add scores to each result by matching position
                     if matched_search:
                         search_results = matched_search['results']
                         for idx, result in enumerate(query_results):
