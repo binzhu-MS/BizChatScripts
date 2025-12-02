@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Optional
 
 import fire
 from fire.core import FireExit
+from seval_plotting import generate_plot_statistics_from_utterance_details
 
 # Configure logging
 logging.basicConfig(
@@ -1432,198 +1433,6 @@ def build_utterance_details_with_top_k(
     return output_data
 
 
-def generate_plot_statistics_from_utterance_details(
-    utterance_details_file: str,
-    top_k: int,
-    output_file: str
-) -> Dict[str, Any]:
-    """
-    Generate aggregated statistics for plotting from utterance details file.
-    
-    This reads the per-utterance details and generates the same format as
-    the old calculate_statistics_from_merged function, but much faster since
-    hop-level averages are pre-calculated.
-    
-    Args:
-        utterance_details_file: Path to utterance details JSON
-        top_k: Top-k value to generate statistics for
-        output_file: Path to save plot statistics JSON
-        
-    Returns:
-        Dictionary containing aggregate statistics for plotting
-        
-    Example:
-        stats = generate_plot_statistics_from_utterance_details(
-            utterance_details_file="results/133560_utterance_hop_citedcg_scores/control_utterance_details.json",
-            top_k=3,
-            output_file="plots/control_plot_stats_k3.json"
-        )
-    """
-    import json
-    from collections import defaultdict
-    from pathlib import Path
-    
-    logger.info(f"Generating plot statistics for k={top_k}")
-    logger.info(f"  From: {utterance_details_file}")
-    
-    # Load utterance details
-    with open(utterance_details_file, 'r', encoding='utf-8') as f:
-        details = json.load(f)
-    
-    metadata = details.get("metadata", {})
-    utterances = details.get("utterances", {})
-    
-    # Check if this k-value was calculated
-    k_str = str(top_k)
-    if top_k not in metadata.get("k_values_calculated", []):
-        raise ValueError(
-            f"k={top_k} not found in utterance details. "
-            f"Available: {metadata.get('k_values_calculated', [])}"
-        )
-    
-    # Initialize aggregated statistics (same format as before)
-    stats = {
-        "source_file": utterance_details_file,
-        "top_k": top_k,
-        "total_utterances": len(utterances),
-        "utterances_with_scores": 0,
-        "total_search_results": 0,
-        "results_with_scores": 0,
-        "per_hop": defaultdict(lambda: {
-            "all_scores": [],
-            "top_k_scores": [],
-            "total_utterances": 0,
-            "utterances_with_scores": 0,
-            "utterances_without_scores": 0
-        }),
-        "per_hop_sequence": defaultdict(lambda: {
-            "all_scores": [],
-            "top_k_scores": [],
-            "utterances_with_scores": 0
-        }),
-        "single_hop": defaultdict(lambda: {
-            "all_scores": [],
-            "top_k_scores": [],
-            "utterances_count": 0
-        }),
-        "multi_hop": defaultdict(lambda: {
-            "all_scores": [],
-            "top_k_scores": [],
-            "utterances_count": 0
-        })
-    }
-    
-    # Process each utterance
-    for utterance_id, utterance_data in utterances.items():
-        hops = utterance_data.get("hops", {})
-        
-        if not hops:
-            continue
-        
-        utterance_has_scores = False
-        non_empty_hops = []
-        
-        # Process each hop
-        for hop_idx_str, hop_data in hops.items():
-            hop_idx = int(hop_idx_str)
-            k_data = hop_data.get(k_str, {})
-            
-            if not k_data:
-                continue
-            
-            is_empty = k_data.get("is_empty", True)
-            avg_all = k_data.get("avg_all_scores")
-            avg_topk = k_data.get("avg_topk_scores")
-            result_count = k_data.get("result_count", 0)
-            hop_seq = k_data.get("hop_sequence")
-            
-            # Track results
-            if result_count > 0:
-                stats["total_search_results"] += result_count
-                stats["results_with_scores"] += result_count
-            
-            # Per-hop index (includes empty hops)
-            stats["per_hop"][hop_idx]["total_utterances"] += 1
-            
-            if not is_empty and avg_all is not None:
-                utterance_has_scores = True
-                non_empty_hops.append((hop_seq, avg_all, avg_topk))
-                
-                stats["per_hop"][hop_idx]["all_scores"].append(avg_all)
-                stats["per_hop"][hop_idx]["top_k_scores"].append(avg_topk)
-                stats["per_hop"][hop_idx]["utterances_with_scores"] += 1
-                
-                # Per-hop sequence (only non-empty)
-                if hop_seq is not None:
-                    stats["per_hop_sequence"][hop_seq]["all_scores"].append(avg_all)
-                    stats["per_hop_sequence"][hop_seq]["top_k_scores"].append(avg_topk)
-                    stats["per_hop_sequence"][hop_seq]["utterances_with_scores"] += 1
-            else:
-                stats["per_hop"][hop_idx]["utterances_without_scores"] += 1
-        
-        if utterance_has_scores:
-            stats["utterances_with_scores"] += 1
-        
-        # Single-hop vs multi-hop
-        if non_empty_hops:
-            if len(non_empty_hops) == 1:
-                # Single-hop
-                hop_seq, avg_all, avg_topk = non_empty_hops[0]
-                stats["single_hop"][hop_seq]["all_scores"].append(avg_all)
-                stats["single_hop"][hop_seq]["top_k_scores"].append(avg_topk)
-                stats["single_hop"][hop_seq]["utterances_count"] += 1
-            else:
-                # Multi-hop
-                for hop_seq, avg_all, avg_topk in non_empty_hops:
-                    stats["multi_hop"][hop_seq]["all_scores"].append(avg_all)
-                    stats["multi_hop"][hop_seq]["top_k_scores"].append(avg_topk)
-                    # Only count utterance once (at first hop)
-                    if hop_seq == non_empty_hops[0][0]:
-                        stats["multi_hop"][hop_seq]["utterances_count"] += 1
-    
-    # Calculate averages for each category
-    for hop_idx, hop_data in stats["per_hop"].items():
-        if hop_data["all_scores"]:
-            hop_data["avg_all_scores"] = sum(hop_data["all_scores"]) / len(hop_data["all_scores"])
-            hop_data["avg_topk_scores"] = sum(hop_data["top_k_scores"]) / len(hop_data["top_k_scores"])
-        else:
-            hop_data["avg_all_scores"] = None
-            hop_data["avg_topk_scores"] = None
-    
-    for hop_seq, hop_data in stats["per_hop_sequence"].items():
-        if hop_data["all_scores"]:
-            hop_data["avg_all_scores"] = sum(hop_data["all_scores"]) / len(hop_data["all_scores"])
-            hop_data["avg_topk_scores"] = sum(hop_data["top_k_scores"]) / len(hop_data["top_k_scores"])
-        else:
-            hop_data["avg_all_scores"] = None
-            hop_data["avg_topk_scores"] = None
-    
-    for hop_seq, hop_data in stats["single_hop"].items():
-        if hop_data["all_scores"]:
-            hop_data["avg_all_scores"] = sum(hop_data["all_scores"]) / len(hop_data["all_scores"])
-            hop_data["avg_topk_scores"] = sum(hop_data["top_k_scores"]) / len(hop_data["top_k_scores"])
-    
-    for hop_seq, hop_data in stats["multi_hop"].items():
-        if hop_data["all_scores"]:
-            hop_data["avg_all_scores"] = sum(hop_data["all_scores"]) / len(hop_data["all_scores"])
-            hop_data["avg_topk_scores"] = sum(hop_data["top_k_scores"]) / len(hop_data["top_k_scores"])
-    
-    # Convert defaultdicts to regular dicts for JSON serialization
-    stats["per_hop"] = dict(stats["per_hop"])
-    stats["per_hop_sequence"] = dict(stats["per_hop_sequence"])
-    stats["single_hop"] = dict(stats["single_hop"])
-    stats["multi_hop"] = dict(stats["multi_hop"])
-    
-    # Save to file
-    logger.info(f"Saving plot statistics to: {output_file}")
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(stats, f, indent=2, ensure_ascii=False)
-    
-    logger.info(f"✓ Plot statistics generated for k={top_k}")
-    
-    return stats
-
-
 def find_paired_utterances_with_scores(
     control_details_file: str,
     treatment_details_file: str,
@@ -1862,7 +1671,7 @@ if __name__ == "__main__":
                     merge_citedcg_and_calculate_stats,
                 'build_utterance_details_with_top_k':
                     build_utterance_details_with_top_k,
-                'generate_plot_statistics_from_utterance_details':
+                'generate_plot_statistics':
                     generate_plot_statistics_from_utterance_details,
                 'find_paired_utterances_with_scores':
                     find_paired_utterances_with_scores

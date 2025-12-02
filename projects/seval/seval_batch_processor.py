@@ -60,8 +60,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import after logging configuration
-from merge_seval_results import merge_citedcg_and_calculate_stats
+from merge_seval_results import (
+    generate_plot_statistics_from_utterance_details,
+    merge_citedcg_and_calculate_stats,
+)
 from seval_analysis_toolkit import SEVALAnalysisToolkit
+from seval_plotting import (
+    generate_comparison_plots,
+    generate_paired_utterances_plot,
+    generate_statistics_plots,
+)
 
 # ==========================================================================
 # Base Classes
@@ -854,26 +862,37 @@ class MergeCiteDCGProcessor(BaseProcessor):
             # Count hops and turns
             total_hops = 0
             nonempty_hops = 0  # Only hops WITH invocations (search attempted)
+            max_hops_including_empty = 0  # Max hops across all turns (structure exists)
+            max_hops_excluding_empty = 0  # Max hops with invocations (search attempted)
             
             eval_results = merged_content.get("evaluation_data_results", {})
             total_turns = len(eval_results.get("turns", []))
             
-            # Count results with scores
+            # Count results with scores and track max hops
             results_with_scores = 0
             for turn in eval_results.get("turns", []):
-                for hop in turn.get("hops", []):
+                turn_hops = turn.get("hops", [])
+                turn_total_hops = len(turn_hops)
+                turn_nonempty_hops = 0
+                
+                for hop in turn_hops:
                     total_hops += 1
                     invocations = hop.get("invocations", [])
                     # DEFINITION: "Non-empty hop" here means has invocations
                     # (search was attempted), not just hop structure exists
                     if invocations:
                         nonempty_hops += 1
+                        turn_nonempty_hops += 1
                         # Count how many results have scores in this hop
                         for inv in invocations:
                             for query in inv.get("queries", []):
                                 for result in query.get("results", []):
                                     if result.get("citedcg_score") is not None:
                                         results_with_scores += 1
+                
+                # Track max hops for this turn
+                max_hops_including_empty = max(max_hops_including_empty, turn_total_hops)
+                max_hops_excluding_empty = max(max_hops_excluding_empty, turn_nonempty_hops)
             
             # Track if this file has any scores
             has_scores = results_with_scores > 0
@@ -897,6 +916,8 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 "total_turns": total_turns,
                 "total_hops": total_hops,
                 "nonempty_hops": nonempty_hops,
+                "max_hops_including_empty": max_hops_including_empty,
+                "max_hops_excluding_empty": max_hops_excluding_empty,
                 "has_scores": has_scores,
                 "utterances_not_in_dcg": utterances_not_in_dcg,
                 "queries_no_match": queries_no_match,
@@ -960,11 +981,17 @@ class MergeCiteDCGProcessor(BaseProcessor):
                     exp_total_hops = sum(r.get("total_hops", 0) for r in exp_results)
                     exp_nonempty_hops = sum(r.get("nonempty_hops", 0) for r in exp_results)
                     
+                    # Calculate max hops across all utterances
+                    exp_max_hops_incl_empty = max((r.get("max_hops_including_empty", 0) for r in exp_results), default=0)
+                    exp_max_hops_excl_empty = max((r.get("max_hops_excluding_empty", 0) for r in exp_results), default=0)
+                    
                     print("")
                     print("  Hop and Turn Statistics:")
                     print(f"    Search results with scores: {exp_results_scored}")
                     print(f"    Total hops (incl empty):    {exp_total_hops}")
                     print(f"    Non-empty hops:             {exp_nonempty_hops}")
+                    print(f"    Max hops per utterance (including empty): {exp_max_hops_incl_empty}")
+                    print(f"    Max hops per utterance (excluding empty): {exp_max_hops_excl_empty}")
                     
                     # Turn distribution - track which turn has non-empty hops
                     turn_dist = {}
@@ -1101,12 +1128,24 @@ class MergeCiteDCGProcessor(BaseProcessor):
                     r.get("nonempty_hops", 0) for r in self.results
                 )
                 
+                # Calculate max hops across all utterances
+                max_hops_incl_empty = max(
+                    (r.get("max_hops_including_empty", 0) for r in self.results),
+                    default=0
+                )
+                max_hops_excl_empty = max(
+                    (r.get("max_hops_excluding_empty", 0) for r in self.results),
+                    default=0
+                )
+                
                 print("")
                 print("Hop and Turn Statistics:")
                 print("-" * 80)
                 print(f"Total search results with scores: {total_results_scored}")
                 print(f"Total hops (incl empty): {total_hops}")
                 print(f"Non-empty hops:          {total_nonempty_hops}")
+                print(f"Max hops per utterance (including empty): {max_hops_incl_empty}")
+                print(f"Max hops per utterance (excluding empty): {max_hops_excl_empty}")
                 
                 # Turn distribution with multi-turn breakdown
                 turn_dist = {}
@@ -1477,1173 +1516,6 @@ def process_seval_job_multihop_citedcg(
     print("=" * 80)
     print(f"Merged results: {merged_dir}")
     print("=" * 80)
-
-
-def _generate_statistics_plots(
-    stats_files: Dict[int, str],
-    output_dir: Path,
-    job_id: str,
-    experiment: str = "control"
-):
-    """
-    Generate hop progression plots from statistics files.
-    
-    Shows how average CiteDCG scores change across hops for different k values.
-    
-    Args:
-        stats_files: Dictionary mapping k values to statistics file paths
-        output_dir: Directory to save plots
-        job_id: SEVAL job ID for plot titles
-        experiment: Experiment type (control/treatment) for labeling
-    """
-    import json
-
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    # Load all statistics
-    stats_data = {}
-    for k, stats_file in sorted(stats_files.items()):
-        with open(stats_file, 'r', encoding='utf-8') as f:
-            stats_data[k] = json.load(f)
-    
-    k_values = sorted(stats_data.keys())
-    
-    # Generate two separate plots: one for hop index, one for hop sequence
-    
-    # PLOT 1: Hop Index (includes empty hops)
-    hop_key = "per_hop"
-    all_hop_numbers = set()
-    for k in k_values:
-        per_hop = stats_data[k].get(hop_key, {})
-        all_hop_numbers.update(int(h) for h in per_hop.keys())
-    
-    if all_hop_numbers:
-        hop_numbers = sorted(all_hop_numbers)
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
-        
-        # LEFT: CiteDCG scores
-        per_hop = stats_data[k_values[0]].get(hop_key, {})
-        hop_avgs = []
-        for hop_num in hop_numbers:
-            hop_data = per_hop.get(str(hop_num), {})
-            avg_all = hop_data.get("avg_all_scores")
-            hop_avgs.append(avg_all if avg_all is not None else np.nan)
-        
-        ax1.plot(hop_numbers, hop_avgs, marker='o', linewidth=3,
-                color='steelblue', label='All Results', markersize=8)
-        
-        for k in k_values:
-            per_hop = stats_data[k].get(hop_key, {})
-            hop_topk_avgs = []
-            for hop_num in hop_numbers:
-                hop_data = per_hop.get(str(hop_num), {})
-                avg_topk = hop_data.get("avg_topk_scores")
-                hop_topk_avgs.append(
-                    avg_topk if avg_topk is not None else np.nan
-                )
-            
-            ax1.plot(hop_numbers, hop_topk_avgs, marker='s', linewidth=2.5,
-                    linestyle='--', label=f'Top-{k}', markersize=7)
-        
-        ax1.set_xlabel('Hop Index', fontsize=13)
-        ax1.set_ylabel('Utterance-Average CiteDCG Score', fontsize=13)
-        ax1.set_title('CiteDCG Scores', fontsize=14, fontweight='bold')
-        ax1.set_xticks(hop_numbers)
-        ax1.legend(fontsize=11, loc='best')
-        ax1.grid(True, alpha=0.3)
-        
-        # RIGHT: Utterance counts
-        per_hop = stats_data[k_values[0]].get(hop_key, {})
-        total_utterances = []
-        utterances_with_scores = []
-        utterances_empty = []
-        
-        for hop_num in hop_numbers:
-            hop_data = per_hop.get(str(hop_num), {})
-            total_utterances.append(hop_data.get("total_utterances", 0))
-            utterances_with_scores.append(
-                hop_data.get("utterances_with_scores", 0)
-            )
-            utterances_empty.append(hop_data.get("utterances_empty", 0))
-        
-        ax2.plot(hop_numbers, total_utterances, marker='o', linewidth=2.5,
-                color='gray', label='Total Utterances', markersize=8)
-        ax2.plot(hop_numbers, utterances_with_scores, marker='s',
-                linewidth=2.5, color='green',
-                label='With Scores', markersize=8)
-        ax2.plot(hop_numbers, utterances_empty, marker='^', linewidth=2.5,
-                color='red', label='Empty Hops', markersize=8)
-        
-        ax2.set_xlabel('Hop Index', fontsize=13)
-        ax2.set_ylabel('Number of Utterances', fontsize=13)
-        ax2.set_title('Utterance Counts', fontsize=14, fontweight='bold')
-        ax2.set_xticks(hop_numbers)
-        ax2.legend(fontsize=11, loc='best')
-        ax2.grid(True, alpha=0.3)
-        
-        fig.suptitle(
-            f'Utterance-Averaged CiteDCG Score vs Hop Index '
-            f'(includes empty hops)\n'
-            f'Job: {job_id} | Experiment: {experiment.upper()}',
-            fontsize=15, fontweight='bold', y=0.98
-        )
-        
-        plt.tight_layout()
-        plot_file = output_dir / f"{job_id}_{experiment}_hop_index.png"
-        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        print(f"  ✓ Saved: {plot_file.name}")
-    
-    # PLOT 2: Hop Sequence (only non-empty hops)
-    hop_key = "per_hop_sequence"
-    all_hop_numbers = set()
-    for k in k_values:
-        per_hop = stats_data[k].get(hop_key, {})
-        all_hop_numbers.update(int(h) for h in per_hop.keys())
-    
-    if all_hop_numbers:
-        hop_numbers = sorted(all_hop_numbers)
-        
-        # DEBUG: Print what we're about to plot
-        print(f"\n=== DEBUG: Hop Sequence Plot Data for {experiment.upper()} ===")
-        print(f"Hop numbers (x-axis): {hop_numbers}")
-        print(f"K-values to plot: {k_values}")
-        print(f"\nData at each hop position:")
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
-        
-        # LEFT: CiteDCG scores
-        per_hop = stats_data[k_values[0]].get(hop_key, {})
-        hop_avgs = []
-        for hop_num in hop_numbers:
-            hop_data = per_hop.get(str(hop_num), {})
-            avg_all = hop_data.get("avg_all_scores")
-            hop_avgs.append(avg_all if avg_all is not None else np.nan)
-        
-        print(f"\nAll Results (blue line):")
-        for i, hop_num in enumerate(hop_numbers):
-            print(f"  Hop {hop_num}: {hop_avgs[i]}")
-        
-        ax1.plot(hop_numbers, hop_avgs, marker='o', linewidth=3,
-                color='steelblue', label='All Results', markersize=8)
-        
-        for k in k_values:
-            per_hop = stats_data[k].get(hop_key, {})
-            hop_topk_avgs = []
-            for hop_num in hop_numbers:
-                hop_data = per_hop.get(str(hop_num), {})
-                avg_topk = hop_data.get("avg_topk_scores")
-                hop_topk_avgs.append(
-                    avg_topk if avg_topk is not None else np.nan
-                )
-            
-            print(f"\nTop-{k} (dashed line):")
-            for i, hop_num in enumerate(hop_numbers):
-                print(f"  Hop {hop_num}: {hop_topk_avgs[i]}")
-            
-            ax1.plot(hop_numbers, hop_topk_avgs, marker='s', linewidth=2.5,
-                    linestyle='--', label=f'Top-{k}', markersize=7)
-        
-        ax1.set_xlabel('Hop Sequence', fontsize=13)
-        ax1.set_ylabel('Utterance-Average CiteDCG Score', fontsize=13)
-        ax1.set_title('CiteDCG Scores', fontsize=14, fontweight='bold')
-        ax1.set_xticks(hop_numbers)
-        ax1.legend(fontsize=11, loc='best')
-        ax1.grid(True, alpha=0.3)
-        
-        # RIGHT: Utterance counts (only one line since all are non-empty)
-        per_hop = stats_data[k_values[0]].get(hop_key, {})
-        utterances_with_scores = []
-        
-        for hop_num in hop_numbers:
-            hop_data = per_hop.get(str(hop_num), {})
-            utterances_with_scores.append(
-                hop_data.get("utterances_with_scores", 0)
-            )
-        
-        ax2.plot(hop_numbers, utterances_with_scores, marker='o',
-                linewidth=2.5, color='green',
-                label='Utterances with Scores', markersize=8)
-        
-        ax2.set_xlabel('Hop Sequence', fontsize=13)
-        ax2.set_ylabel('Number of Utterances', fontsize=13)
-        ax2.set_title('Utterance Counts', fontsize=14, fontweight='bold')
-        ax2.set_xticks(hop_numbers)
-        ax2.legend(fontsize=11, loc='best')
-        ax2.grid(True, alpha=0.3)
-        
-        fig.suptitle(
-            f'Utterance-Averaged CiteDCG Score vs Hop Sequence '
-            f'(per-utterance position of non-empty hops)\n'
-            f'Job: {job_id} | Experiment: {experiment.upper()} | '
-            f'Note: Hop sequence resets for each utterance',
-            fontsize=14, fontweight='bold', y=0.99
-        )
-        
-        plt.tight_layout()
-        plot_file = output_dir / f"{job_id}_{experiment}_hop_sequence.png"
-        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        print(f"  ✓ Saved: {plot_file.name}")
-    
-    # PLOT 3: Single-hop vs Multi-hop comparison
-    single_hop_data = stats_data[k_values[0]].get("single_hop", {})
-    multi_hop_data = stats_data[k_values[0]].get("multi_hop", {})
-    
-    if single_hop_data or multi_hop_data:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
-        
-        # Define markers for different metric types (same for both sets)
-        # Use colors to distinguish single-hop (green) vs multi-hop (blue)
-        # Use different line styles for different metrics
-        metric_styles = {
-            'all': {'marker': 'o', 'size': 12, 'linestyle': '-'},
-            1: {'marker': '^', 'size': 10, 'linestyle': '--'},
-            3: {'marker': 's', 'size': 9, 'linestyle': '-.'},
-            5: {'marker': 'D', 'size': 8, 'linestyle': ':'}
-        }
-        
-        single_hop_color = 'green'
-        multi_hop_color = 'blue'
-        
-        # LEFT: CiteDCG scores for both single-hop and multi-hop
-        # Determine the x-axis range
-        max_hop = 1
-        if multi_hop_data:
-            max_hop = max(max_hop, max([int(h) for h in multi_hop_data.keys()]))
-        
-        # Plot single-hop (only at hop 1) - "All Results" is k-independent
-        if single_hop_data:
-            hop_data = single_hop_data.get("1", {})
-            avg_all = hop_data.get("avg_all_scores")
-            
-            if avg_all is not None:
-                style = metric_styles['all']
-                ax1.plot([1], [avg_all], marker=style['marker'], linewidth=0,
-                        color=single_hop_color, label='All Results',
-                        markersize=style['size'], zorder=5)
-        
-        # Plot multi-hop (progression across hops) - "All Results" is k-independent
-        if multi_hop_data:
-            multi_hop_numbers = sorted([int(h) for h in multi_hop_data.keys()])
-            
-            hop_avgs = []
-            for hop_num in multi_hop_numbers:
-                hop_data = multi_hop_data.get(str(hop_num), {})
-                avg_all = hop_data.get("avg_all_scores")
-                hop_avgs.append(avg_all if avg_all is not None else np.nan)
-            
-            style = metric_styles['all']
-            ax1.plot(multi_hop_numbers, hop_avgs, marker=style['marker'],
-                    linewidth=3, color=multi_hop_color, label='All Results',
-                    markersize=style['size'], linestyle=style['linestyle'],
-                    zorder=5)
-        
-        # Plot top-k for each k value for single-hop
-        if single_hop_data:
-            for k in k_values:
-                style = metric_styles.get(k, {'marker': 'x', 'size': 8})
-                single_hop = stats_data[k].get("single_hop", {})
-                hop_data = single_hop.get("1", {})
-                avg_topk = hop_data.get("avg_topk_scores")
-                
-                if avg_topk is not None:
-                    ax1.plot([1], [avg_topk], marker=style['marker'],
-                            linewidth=0, color=single_hop_color,
-                            label=f'Top-{k}',
-                            markersize=style['size'], alpha=0.8, zorder=4)
-        
-        # Plot top-k for each k value for multi-hop
-        if multi_hop_data:
-            for k in k_values:
-                style = metric_styles.get(k, {'marker': 'x', 'size': 8})
-                multi_hop = stats_data[k].get("multi_hop", {})
-                hop_topk_avgs = []
-                for hop_num in multi_hop_numbers:
-                    hop_data = multi_hop.get(str(hop_num), {})
-                    avg_topk = hop_data.get("avg_topk_scores")
-                    hop_topk_avgs.append(
-                        avg_topk if avg_topk is not None else np.nan
-                    )
-                
-                ax1.plot(multi_hop_numbers, hop_topk_avgs,
-                        marker=style['marker'], linewidth=2.5,
-                        linestyle=style['linestyle'], color=multi_hop_color,
-                        label=f'Top-{k}',
-                        markersize=style['size'], alpha=0.8, zorder=4)
-        
-        ax1.set_xlabel('Hop Sequence (only non-empty hops)', fontsize=13)
-        ax1.set_ylabel('Utterance-Average CiteDCG Score', fontsize=13)
-        ax1.set_title('CiteDCG Scores by Hop\n(only hops with scores)',
-                     fontsize=14, fontweight='bold')
-        ax1.set_xticks(range(1, max_hop + 1))
-        
-        # Custom legend with two columns: Single-Hop | Multi-Hop
-        from matplotlib.lines import Line2D
-
-        # Create legend organized for column-wise layout
-        # With ncol=2, matplotlib fills column 1 first, then column 2
-        # So we need total_items/2 in each column
-        single_hop_elements = []
-        multi_hop_elements = []
-        
-        # Single-Hop column items
-        single_hop_elements.append(Line2D([0], [0], marker='', color='none',
-                                         linestyle='', label='Single-Hop'))
-        
-        style = metric_styles['all']
-        single_hop_elements.append(Line2D([0], [0], marker=style['marker'],
-                                         color=single_hop_color,
-                                         markersize=style['size'],
-                                         linestyle=style['linestyle'],
-                                         label='All Results'))
-        
-        for k in k_values:
-            style = metric_styles.get(k, {'marker': 'x', 'size': 8,
-                                         'linestyle': '-'})
-            single_hop_elements.append(Line2D([0], [0], marker=style['marker'],
-                                             color=single_hop_color,
-                                             markersize=style['size'],
-                                             linestyle=style['linestyle'],
-                                             label=f'Top-{k}'))
-        
-        # Multi-Hop column items
-        multi_hop_elements.append(Line2D([0], [0], marker='', color='none',
-                                        linestyle='', label='Multi-Hop'))
-        
-        style = metric_styles['all']
-        multi_hop_elements.append(Line2D([0], [0], marker=style['marker'],
-                                        color=multi_hop_color,
-                                        markersize=style['size'],
-                                        linestyle=style['linestyle'],
-                                        label='All Results'))
-        
-        for k in k_values:
-            style = metric_styles.get(k, {'marker': 'x', 'size': 8,
-                                         'linestyle': '-'})
-            multi_hop_elements.append(Line2D([0], [0], marker=style['marker'],
-                                            color=multi_hop_color,
-                                            markersize=style['size'],
-                                            linestyle=style['linestyle'],
-                                            label=f'Top-{k}'))
-        
-        # Combine: column 1 items first, then column 2 items
-        legend_elements = single_hop_elements + multi_hop_elements
-        
-        leg = ax1.legend(handles=legend_elements, fontsize=10, loc='best',
-                        ncol=2, columnspacing=2.5, handlelength=2.5,
-                        handletextpad=0.5)
-        
-        # Make header labels bold (first item in each column)
-        texts = leg.get_texts()
-        num_items_per_col = len(legend_elements) // 2
-        texts[0].set_weight('bold')  # Single-Hop header
-        texts[num_items_per_col].set_weight('bold')  # Multi-Hop header
-        
-        ax1.grid(True, alpha=0.3)
-        
-        # RIGHT: Utterance counts for single-hop and multi-hop
-        hop_positions = list(range(1, max_hop + 1))
-        single_hop_counts = []
-        multi_hop_counts = []
-        
-        for hop_num in hop_positions:
-            # Single-hop: only has count at hop 1
-            if hop_num == 1 and single_hop_data:
-                sh_data = single_hop_data.get("1", {})
-                single_count = sh_data.get("utterances_count", 0)
-            else:
-                single_count = 0
-            single_hop_counts.append(single_count)
-            
-            # Multi-hop: has counts at each hop sequence
-            if multi_hop_data:
-                mh_data = multi_hop_data.get(str(hop_num), {})
-                multi_count = mh_data.get("utterances_count", 0)
-            else:
-                multi_count = 0
-            multi_hop_counts.append(multi_count)
-        
-        ax2.plot(hop_positions, single_hop_counts, marker='o', linewidth=3,
-                color='green', label='Single-Hop Utterances', markersize=8)
-        ax2.plot(hop_positions, multi_hop_counts, marker='s', linewidth=3,
-                color='blue', label='Multi-Hop Utterances', markersize=8,
-                linestyle='--')
-        
-        ax2.set_xlabel('Hop Sequence (only non-empty hops)', fontsize=13)
-        ax2.set_ylabel('Number of Utterances', fontsize=13)
-        ax2.set_title('Utterance Counts by Hop\n(only hops with scores)',
-                     fontsize=14, fontweight='bold')
-        ax2.set_xticks(hop_positions)
-        ax2.legend(fontsize=11, loc='best')
-        ax2.grid(True, alpha=0.3)
-        
-        # Add total counts annotation
-        if single_hop_data:
-            single_total = single_hop_data.get("1", {}).get("utterances_count", 0)
-        else:
-            single_total = 0
-        
-        if multi_hop_data:
-            # Get count from hop 1 only (represents unique utterances)
-            multi_total = multi_hop_data.get("1", {}).get("utterances_count", 0)
-        else:
-            multi_total = 0
-        
-        ax2.text(0.5, 0.95,
-                f'Single-Hop: {single_total} utterances\n'
-                f'Multi-Hop: {multi_total} utterances',
-                transform=ax2.transAxes, fontsize=11,
-                verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-        
-        fig.suptitle(
-            f'Single-Hop vs Multi-Hop Utterance Analysis\n'
-            f'Job: {job_id} | Experiment: {experiment.upper()}',
-            fontsize=15, fontweight='bold', y=0.98
-        )
-        
-        plt.tight_layout()
-        plot_file = output_dir / f"{job_id}_{experiment}_single_vs_multi.png"
-        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        print(f"  ✓ Saved: {plot_file.name}")
-
-
-def _generate_statistics_plots_comparison(
-    stats_files_control: Dict[int, str],
-    stats_files_treatment: Dict[int, str],
-    output_dir: Path,
-    job_id: str
-):
-    """
-    Generate 2x2 comparison plots for control vs treatment experiments.
-    
-    Top row: Control experiment
-    Bottom row: Treatment experiment
-    Left column: CiteDCG scores
-    Right column: Utterance counts
-    
-    Args:
-        stats_files_control: Dict mapping k values to control stats file paths
-        stats_files_treatment: Dict mapping k values to treatment stats file paths
-        output_dir: Directory to save plots
-        job_id: SEVAL job ID for plot titles
-    """
-    import json
-
-    import matplotlib.pyplot as plt
-    import numpy as np
-    from matplotlib.lines import Line2D
-
-    print("  Generating 2x2 comparison plots...")
-
-    # Load statistics for both experiments
-    stats_control = {}
-    stats_treatment = {}
-    
-    for k, stats_file in sorted(stats_files_control.items()):
-        with open(stats_file, 'r', encoding='utf-8') as f:
-            stats_control[k] = json.load(f)
-    
-    for k, stats_file in sorted(stats_files_treatment.items()):
-        with open(stats_file, 'r', encoding='utf-8') as f:
-            stats_treatment[k] = json.load(f)
-    
-    k_values = sorted(stats_control.keys())
-    
-    # ========== PLOT 1: Hop Index (includes empty hops) - 2x2 layout ==========
-    hop_key = "per_hop"
-    
-    # Determine max hop index across both experiments
-    max_hop_index_control = max(
-        int(h) for k_data in stats_control.values()
-        for h in k_data.get(hop_key, {}).keys()
-    ) if any(stats_control[k].get(hop_key) for k in k_values) else 0
-    
-    max_hop_index_treatment = max(
-        int(h) for k_data in stats_treatment.values()
-        for h in k_data.get(hop_key, {}).keys()
-    ) if any(stats_treatment[k].get(hop_key) for k in k_values) else 0
-    
-    max_hop_index = max(max_hop_index_control, max_hop_index_treatment)
-    
-    if max_hop_index > 0:
-        fig, axes = plt.subplots(2, 2, figsize=(20, 14))
-        hop_indices = list(range(0, max_hop_index + 1))
-        
-        # ===== TOP ROW: CONTROL =====
-        # Top-left: Control CiteDCG scores
-        ax = axes[0, 0]
-        per_hop = stats_control[k_values[0]].get(hop_key, {})
-        hop_avgs = [per_hop.get(str(i), {}).get("avg_all_scores") 
-                    if per_hop.get(str(i), {}).get("avg_all_scores") is not None else np.nan
-                    for i in hop_indices]
-        
-        ax.plot(hop_indices, hop_avgs, marker='o', linewidth=3,
-                color='steelblue', label='All Results', markersize=8)
-        
-        for k in k_values:
-            per_hop = stats_control[k].get(hop_key, {})
-            hop_topk_avgs = [per_hop.get(str(i), {}).get("avg_topk_scores")
-                            if per_hop.get(str(i), {}).get("avg_topk_scores") is not None else np.nan
-                            for i in hop_indices]
-            ax.plot(hop_indices, hop_topk_avgs, marker='s', linewidth=2.5,
-                    linestyle='--', label=f'Top-{k}', markersize=7)
-        
-        ax.set_xlabel('Hop Index', fontsize=12)
-        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
-        ax.set_title('CONTROL - CiteDCG Scores', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_indices)
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        # Top-right: Control utterance counts
-        ax = axes[0, 1]
-        per_hop = stats_control[k_values[0]].get(hop_key, {})
-        utterances_with_scores = [per_hop.get(str(i), {}).get("utterances_with_scores", 0)
-                                  for i in hop_indices]
-        utterances_without_scores = [per_hop.get(str(i), {}).get("utterances_without_scores", 0)
-                                     for i in hop_indices]
-        
-        ax.plot(hop_indices, utterances_with_scores, marker='o', linewidth=3,
-                color='green', label='With Scores', markersize=8)
-        ax.plot(hop_indices, utterances_without_scores, marker='s', linewidth=3,
-                color='red', label='Without Scores', markersize=8, linestyle='--')
-        
-        ax.set_xlabel('Hop Index', fontsize=12)
-        ax.set_ylabel('Number of Utterances', fontsize=12)
-        ax.set_title('CONTROL - Utterance Counts', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_indices)
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        # ===== BOTTOM ROW: TREATMENT =====
-        # Bottom-left: Treatment CiteDCG scores
-        ax = axes[1, 0]
-        per_hop = stats_treatment[k_values[0]].get(hop_key, {})
-        hop_avgs = [per_hop.get(str(i), {}).get("avg_all_scores")
-                    if per_hop.get(str(i), {}).get("avg_all_scores") is not None else np.nan
-                    for i in hop_indices]
-        
-        ax.plot(hop_indices, hop_avgs, marker='o', linewidth=3,
-                color='steelblue', label='All Results', markersize=8)
-        
-        for k in k_values:
-            per_hop = stats_treatment[k].get(hop_key, {})
-            hop_topk_avgs = [per_hop.get(str(i), {}).get("avg_topk_scores")
-                            if per_hop.get(str(i), {}).get("avg_topk_scores") is not None else np.nan
-                            for i in hop_indices]
-            ax.plot(hop_indices, hop_topk_avgs, marker='s', linewidth=2.5,
-                    linestyle='--', label=f'Top-{k}', markersize=7)
-        
-        ax.set_xlabel('Hop Index', fontsize=12)
-        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
-        ax.set_title('TREATMENT - CiteDCG Scores', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_indices)
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        # Bottom-right: Treatment utterance counts
-        ax = axes[1, 1]
-        per_hop = stats_treatment[k_values[0]].get(hop_key, {})
-        utterances_with_scores = [per_hop.get(str(i), {}).get("utterances_with_scores", 0)
-                                  for i in hop_indices]
-        utterances_without_scores = [per_hop.get(str(i), {}).get("utterances_without_scores", 0)
-                                     for i in hop_indices]
-        
-        ax.plot(hop_indices, utterances_with_scores, marker='o', linewidth=3,
-                color='green', label='With Scores', markersize=8)
-        ax.plot(hop_indices, utterances_without_scores, marker='s', linewidth=3,
-                color='red', label='Without Scores', markersize=8, linestyle='--')
-        
-        ax.set_xlabel('Hop Index', fontsize=12)
-        ax.set_ylabel('Number of Utterances', fontsize=12)
-        ax.set_title('TREATMENT - Utterance Counts', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_indices)
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        fig.suptitle(
-            f'Control vs Treatment: CiteDCG Score vs Hop Index (includes empty hops)\n'
-            f'Job: {job_id}',
-            fontsize=16, fontweight='bold', y=0.995
-        )
-        
-        plt.tight_layout()
-        plot_file = output_dir / f"{job_id}_comparison_hop_index.png"
-        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"  ✓ Saved: {plot_file.name}")
-    
-    # ========== PLOT 2: Hop Sequence (only non-empty hops) - 2x2 layout ==========
-    hop_key = "per_hop_sequence"
-    
-    # Collect hop numbers separately for each experiment (use sparse keys)
-    control_hop_numbers = set()
-    treatment_hop_numbers = set()
-    
-    for k in k_values:
-        per_hop = stats_control[k].get(hop_key, {})
-        control_hop_numbers.update(int(h) for h in per_hop.keys())
-        per_hop = stats_treatment[k].get(hop_key, {})
-        treatment_hop_numbers.update(int(h) for h in per_hop.keys())
-    
-    if control_hop_numbers or treatment_hop_numbers:
-        control_hop_nums = (
-            sorted(control_hop_numbers) if control_hop_numbers else []
-        )
-        treatment_hop_nums = (
-            sorted(treatment_hop_numbers) if treatment_hop_numbers else []
-        )
-        
-        fig, axes = plt.subplots(2, 2, figsize=(20, 14))
-        
-        # ===== TOP ROW: CONTROL =====
-        # Top-left: Control CiteDCG scores
-        ax = axes[0, 0]
-        if control_hop_nums:
-            per_hop = stats_control[k_values[0]].get(hop_key, {})
-            hop_avgs = [per_hop.get(str(hop_num), {}).get("avg_all_scores")
-                        if per_hop.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
-                        for hop_num in control_hop_nums]
-            
-            ax.plot(control_hop_nums, hop_avgs, marker='o', linewidth=2.5,
-                    color='steelblue', label='All Results', markersize=8)
-            
-            for k in k_values:
-                per_hop = stats_control[k].get(hop_key, {})
-                hop_topk_avgs = [per_hop.get(str(hop_num), {}).get("avg_topk_scores")
-                                if per_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
-                                for hop_num in control_hop_nums]
-                ax.plot(control_hop_nums, hop_topk_avgs, marker='s', linewidth=2.5,
-                        linestyle='--', label=f'Top-{k}', markersize=7)
-            
-            ax.set_xticks(control_hop_nums)
-        
-        ax.set_xlabel('Hop Sequence', fontsize=12)
-        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
-        ax.set_title('CONTROL - CiteDCG Scores', fontsize=13, fontweight='bold')
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        # Top-right: Control utterance counts
-        ax = axes[0, 1]
-        if control_hop_nums:
-            per_hop = stats_control[k_values[0]].get(hop_key, {})
-            utterances_with_scores = [per_hop.get(str(hop_num), {}).get("utterances_with_scores", 0)
-                                      for hop_num in control_hop_nums]
-            
-            ax.plot(control_hop_nums, utterances_with_scores, marker='o', linewidth=2.5,
-                    color='green', label='Utterances with Scores', markersize=8)
-            ax.set_xticks(control_hop_nums)
-        
-        ax.set_xlabel('Hop Sequence', fontsize=12)
-        ax.set_ylabel('Number of Utterances', fontsize=12)
-        ax.set_title('CONTROL - Utterance Counts', fontsize=13, fontweight='bold')
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        # ===== BOTTOM ROW: TREATMENT =====
-        # Bottom-left: Treatment CiteDCG scores
-        ax = axes[1, 0]
-        if treatment_hop_nums:
-            per_hop = stats_treatment[k_values[0]].get(hop_key, {})
-            hop_avgs = [per_hop.get(str(hop_num), {}).get("avg_all_scores")
-                        if per_hop.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
-                        for hop_num in treatment_hop_nums]
-            
-            ax.plot(treatment_hop_nums, hop_avgs, marker='o', linewidth=2.5,
-                    color='steelblue', label='All Results', markersize=8)
-            
-            for k in k_values:
-                per_hop = stats_treatment[k].get(hop_key, {})
-                hop_topk_avgs = [per_hop.get(str(hop_num), {}).get("avg_topk_scores")
-                                if per_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
-                                for hop_num in treatment_hop_nums]
-                ax.plot(treatment_hop_nums, hop_topk_avgs, marker='s', linewidth=2.5,
-                        linestyle='--', label=f'Top-{k}', markersize=7)
-            
-            ax.set_xticks(treatment_hop_nums)
-        
-        ax.set_xlabel('Hop Sequence', fontsize=12)
-        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
-        ax.set_title('TREATMENT - CiteDCG Scores', fontsize=13, fontweight='bold')
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        # Bottom-right: Treatment utterance counts
-        ax = axes[1, 1]
-        if treatment_hop_nums:
-            per_hop = stats_treatment[k_values[0]].get(hop_key, {})
-            utterances_with_scores = [
-                per_hop.get(str(hop_num), {}).get(
-                    "utterances_with_scores", 0
-                )
-                for hop_num in treatment_hop_nums
-            ]
-            
-            ax.plot(
-                treatment_hop_nums, utterances_with_scores,
-                marker='o', linewidth=2.5,
-                color='green', label='Utterances with Scores',
-                markersize=8
-            )
-            ax.set_xticks(treatment_hop_nums)
-        
-        ax.set_xlabel('Hop Sequence', fontsize=12)
-        ax.set_ylabel('Number of Utterances', fontsize=12)
-        ax.set_title(
-            'TREATMENT - Utterance Counts',
-            fontsize=13, fontweight='bold'
-        )
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        fig.suptitle(
-            f'Control vs Treatment: CiteDCG Score vs Hop Sequence (only non-empty hops)\n'
-            f'Job: {job_id}',
-            fontsize=16, fontweight='bold', y=0.995
-        )
-        
-        plt.tight_layout()
-        plot_file = output_dir / f"{job_id}_comparison_hop_sequence.png"
-        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"  ✓ Saved: {plot_file.name}")
-    
-    # ========== PLOT 3: Single-hop vs Multi-hop - 2x2 layout ==========
-    single_hop_control = stats_control[k_values[0]].get("single_hop", {})
-    multi_hop_control = stats_control[k_values[0]].get("multi_hop", {})
-    single_hop_treatment = stats_treatment[k_values[0]].get("single_hop", {})
-    multi_hop_treatment = stats_treatment[k_values[0]].get("multi_hop", {})
-    
-    if any([single_hop_control, multi_hop_control, single_hop_treatment, multi_hop_treatment]):
-        fig, axes = plt.subplots(2, 2, figsize=(20, 14))
-        
-        # Determine max hop across both experiments
-        max_hop = 1
-        if multi_hop_control:
-            max_hop = max(max_hop, max([int(h) for h in multi_hop_control.keys()]))
-        if multi_hop_treatment:
-            max_hop = max(max_hop, max([int(h) for h in multi_hop_treatment.keys()]))
-        
-        hop_positions = list(range(1, max_hop + 1))
-        
-        # Define styles
-        metric_styles = {
-            'all': {'marker': 'o', 'size': 12, 'linestyle': '-'},
-            1: {'marker': '^', 'size': 10, 'linestyle': '--'},
-            3: {'marker': 's', 'size': 9, 'linestyle': '-.'},
-            5: {'marker': 'D', 'size': 8, 'linestyle': ':'}
-        }
-        single_hop_color = 'green'
-        multi_hop_color = 'blue'
-        
-        # ===== TOP ROW: CONTROL =====
-        # Top-left: Control CiteDCG scores
-        ax = axes[0, 0]
-        
-        # Single-hop at hop 1
-        if single_hop_control:
-            hop_data = single_hop_control.get("1", {})
-            avg_all = hop_data.get("avg_all_scores")
-            if avg_all is not None:
-                style = metric_styles['all']
-                ax.plot([1], [avg_all], marker=style['marker'], linewidth=0,
-                        color=single_hop_color, label='All Results',
-                        markersize=style['size'], zorder=5)
-        
-        # Multi-hop progression
-        if multi_hop_control:
-            multi_hop_numbers = sorted([int(h) for h in multi_hop_control.keys()])
-            hop_avgs = [multi_hop_control.get(str(hop_num), {}).get("avg_all_scores")
-                       if multi_hop_control.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
-                       for hop_num in multi_hop_numbers]
-            style = metric_styles['all']
-            ax.plot(multi_hop_numbers, hop_avgs, marker=style['marker'],
-                    linewidth=3, color=multi_hop_color, label='All Results',
-                    markersize=style['size'], linestyle=style['linestyle'], zorder=5)
-        
-        # Top-k for single-hop
-        if single_hop_control:
-            for k in k_values:
-                style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
-                single_hop = stats_control[k].get("single_hop", {})
-                hop_data = single_hop.get("1", {})
-                avg_topk = hop_data.get("avg_topk_scores")
-                if avg_topk is not None:
-                    ax.plot([1], [avg_topk], marker=style['marker'], linewidth=0,
-                            color=single_hop_color, label=f'Top-{k}',
-                            markersize=style['size'], alpha=0.8, zorder=4)
-        
-        # Top-k for multi-hop
-        if multi_hop_control:
-            for k in k_values:
-                style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
-                multi_hop = stats_control[k].get("multi_hop", {})
-                hop_topk_avgs = [multi_hop.get(str(hop_num), {}).get("avg_topk_scores")
-                                if multi_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
-                                for hop_num in multi_hop_numbers]
-                ax.plot(multi_hop_numbers, hop_topk_avgs, marker=style['marker'],
-                        linewidth=2.5, linestyle=style['linestyle'],
-                        color=multi_hop_color, label=f'Top-{k}',
-                        markersize=style['size'], alpha=0.8, zorder=4)
-        
-        ax.set_xlabel('Hop Sequence', fontsize=12)
-        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
-        ax.set_title('CONTROL - CiteDCG Scores', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_positions)
-        
-        # Legend
-        single_hop_elements = [
-            Line2D([0], [0], marker='', color='none', linestyle='', label='Single-Hop')
-        ]
-        style = metric_styles['all']
-        single_hop_elements.append(Line2D([0], [0], marker=style['marker'],
-                                         color=single_hop_color, markersize=style['size'],
-                                         linestyle=style['linestyle'], label='All Results'))
-        for k in k_values:
-            style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
-            single_hop_elements.append(Line2D([0], [0], marker=style['marker'],
-                                             color=single_hop_color, markersize=style['size'],
-                                             linestyle=style['linestyle'], label=f'Top-{k}'))
-        
-        multi_hop_elements = [
-            Line2D([0], [0], marker='', color='none', linestyle='', label='Multi-Hop')
-        ]
-        style = metric_styles['all']
-        multi_hop_elements.append(Line2D([0], [0], marker=style['marker'],
-                                        color=multi_hop_color, markersize=style['size'],
-                                        linestyle=style['linestyle'], label='All Results'))
-        for k in k_values:
-            style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
-            multi_hop_elements.append(Line2D([0], [0], marker=style['marker'],
-                                            color=multi_hop_color, markersize=style['size'],
-                                            linestyle=style['linestyle'], label=f'Top-{k}'))
-        
-        legend_elements = single_hop_elements + multi_hop_elements
-        leg = ax.legend(handles=legend_elements, fontsize=9, loc='best',
-                       ncol=2, columnspacing=2.5, handlelength=2.5, handletextpad=0.5)
-        texts = leg.get_texts()
-        num_items_per_col = len(legend_elements) // 2
-        texts[0].set_weight('bold')
-        texts[num_items_per_col].set_weight('bold')
-        ax.grid(True, alpha=0.3)
-        
-        # Top-right: Control utterance counts
-        ax = axes[0, 1]
-        single_hop_counts = []
-        multi_hop_counts = []
-        for hop_num in hop_positions:
-            if hop_num == 1 and single_hop_control:
-                sh_data = single_hop_control.get("1", {})
-                single_count = sh_data.get("utterances_count", 0)
-            else:
-                single_count = 0
-            single_hop_counts.append(single_count)
-            
-            if multi_hop_control:
-                mh_data = multi_hop_control.get(str(hop_num), {})
-                multi_count = mh_data.get("utterances_count", 0)
-            else:
-                multi_count = 0
-            multi_hop_counts.append(multi_count)
-        
-        ax.plot(hop_positions, single_hop_counts, marker='o', linewidth=3,
-                color='green', label='Single-Hop', markersize=8)
-        ax.plot(hop_positions, multi_hop_counts, marker='s', linewidth=3,
-                color='blue', label='Multi-Hop', markersize=8, linestyle='--')
-        
-        ax.set_xlabel('Hop Sequence', fontsize=12)
-        ax.set_ylabel('Number of Utterances', fontsize=12)
-        ax.set_title('CONTROL - Utterance Counts', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_positions)
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        # ===== BOTTOM ROW: TREATMENT =====
-        # Bottom-left: Treatment CiteDCG scores
-        ax = axes[1, 0]
-        
-        # Single-hop at hop 1
-        if single_hop_treatment:
-            hop_data = single_hop_treatment.get("1", {})
-            avg_all = hop_data.get("avg_all_scores")
-            if avg_all is not None:
-                style = metric_styles['all']
-                ax.plot([1], [avg_all], marker=style['marker'], linewidth=0,
-                        color=single_hop_color, label='All Results',
-                        markersize=style['size'], zorder=5)
-        
-        # Multi-hop progression
-        if multi_hop_treatment:
-            multi_hop_numbers = sorted([int(h) for h in multi_hop_treatment.keys()])
-            hop_avgs = [multi_hop_treatment.get(str(hop_num), {}).get("avg_all_scores")
-                       if multi_hop_treatment.get(str(hop_num), {}).get("avg_all_scores") is not None else np.nan
-                       for hop_num in multi_hop_numbers]
-            style = metric_styles['all']
-            ax.plot(multi_hop_numbers, hop_avgs, marker=style['marker'],
-                    linewidth=3, color=multi_hop_color, label='All Results',
-                    markersize=style['size'], linestyle=style['linestyle'], zorder=5)
-        
-        # Top-k for single-hop
-        if single_hop_treatment:
-            for k in k_values:
-                style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
-                single_hop = stats_treatment[k].get("single_hop", {})
-                hop_data = single_hop.get("1", {})
-                avg_topk = hop_data.get("avg_topk_scores")
-                if avg_topk is not None:
-                    ax.plot([1], [avg_topk], marker=style['marker'], linewidth=0,
-                            color=single_hop_color, label=f'Top-{k}',
-                            markersize=style['size'], alpha=0.8, zorder=4)
-        
-        # Top-k for multi-hop
-        if multi_hop_treatment:
-            for k in k_values:
-                style = metric_styles.get(k, {'marker': 'x', 'size': 8, 'linestyle': '-'})
-                multi_hop = stats_treatment[k].get("multi_hop", {})
-                hop_topk_avgs = [multi_hop.get(str(hop_num), {}).get("avg_topk_scores")
-                                if multi_hop.get(str(hop_num), {}).get("avg_topk_scores") is not None else np.nan
-                                for hop_num in multi_hop_numbers]
-                ax.plot(multi_hop_numbers, hop_topk_avgs, marker=style['marker'],
-                        linewidth=2.5, linestyle=style['linestyle'],
-                        color=multi_hop_color, label=f'Top-{k}',
-                        markersize=style['size'], alpha=0.8, zorder=4)
-        
-        ax.set_xlabel('Hop Sequence', fontsize=12)
-        ax.set_ylabel('Utterance-Average CiteDCG Score', fontsize=12)
-        ax.set_title('TREATMENT - CiteDCG Scores', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_positions)
-        
-        # Legend (same structure)
-        leg = ax.legend(handles=legend_elements, fontsize=9, loc='best',
-                       ncol=2, columnspacing=2.5, handlelength=2.5, handletextpad=0.5)
-        texts = leg.get_texts()
-        texts[0].set_weight('bold')
-        texts[num_items_per_col].set_weight('bold')
-        ax.grid(True, alpha=0.3)
-        
-        # Bottom-right: Treatment utterance counts
-        ax = axes[1, 1]
-        single_hop_counts = []
-        multi_hop_counts = []
-        for hop_num in hop_positions:
-            if hop_num == 1 and single_hop_treatment:
-                sh_data = single_hop_treatment.get("1", {})
-                single_count = sh_data.get("utterances_count", 0)
-            else:
-                single_count = 0
-            single_hop_counts.append(single_count)
-            
-            if multi_hop_treatment:
-                mh_data = multi_hop_treatment.get(str(hop_num), {})
-                multi_count = mh_data.get("utterances_count", 0)
-            else:
-                multi_count = 0
-            multi_hop_counts.append(multi_count)
-        
-        ax.plot(hop_positions, single_hop_counts, marker='o', linewidth=3,
-                color='green', label='Single-Hop', markersize=8)
-        ax.plot(hop_positions, multi_hop_counts, marker='s', linewidth=3,
-                color='blue', label='Multi-Hop', markersize=8, linestyle='--')
-        
-        ax.set_xlabel('Hop Sequence', fontsize=12)
-        ax.set_ylabel('Number of Utterances', fontsize=12)
-        ax.set_title('TREATMENT - Utterance Counts', fontsize=13, fontweight='bold')
-        ax.set_xticks(hop_positions)
-        ax.legend(fontsize=10, loc='best')
-        ax.grid(True, alpha=0.3)
-        
-        fig.suptitle(
-            f'Control vs Treatment: Single-Hop vs Multi-Hop Analysis\n'
-            f'Job: {job_id}',
-            fontsize=16, fontweight='bold', y=0.995
-        )
-        
-        plt.tight_layout()
-        plot_file = output_dir / f"{job_id}_comparison_single_vs_multi.png"
-        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"  ✓ Saved: {plot_file.name}")
-
-
-def _generate_paired_utterances_plot(
-    paired_utterances_file: str,
-    output_dir: Path,
-    job_id: str,
-    k_values: List[int] = [1, 3, 5]
-):
-    """
-    Generate scatter plot showing control vs treatment scores for each paired utterance.
-    
-    X-axis: Each utterance (numbered sequentially)
-    Y-axis: CiteDCG scores
-    Markers: Different shapes for All Results vs Top-K values
-    Colors: Blue for control, orange for treatment
-    
-    Args:
-        paired_utterances_file: Path to paired utterances JSON file
-        output_dir: Directory to save the plot
-        job_id: SEVAL job ID for plot title
-        k_values: List of top-k values to plot
-    """
-    import json
-
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    # Load paired utterances data
-    with open(paired_utterances_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    paired_data = data.get("paired_data", [])
-    if not paired_data:
-        print("  ⚠ No paired utterances with scores found")
-        return
-    
-    metadata = data.get("metadata", {})
-    common_k = metadata.get("common_k_values", k_values)
-    
-    # Prepare data for plotting
-    num_utterances = len(paired_data)
-    x_positions = list(range(1, num_utterances + 1))
-    
-    # Define marker styles: circle for All Results, different shapes for Top-K
-    marker_styles = {
-        'all': {'marker': 'o', 'size': 8, 'label': 'All Results'},
-        1: {'marker': '^', 'size': 7, 'label': 'Top-1'},
-        3: {'marker': 's', 'size': 6, 'label': 'Top-3'},
-        5: {'marker': 'D', 'size': 5, 'label': 'Top-5'}
-    }
-    
-    control_color = '#1f77b4'  # Blue
-    treatment_color = '#ff7f0e'  # Orange
-    
-    fig, ax = plt.subplots(1, 1, figsize=(max(12, num_utterances * 0.15), 8))
-    
-    # Collect scores for each utterance
-    for idx, pair in enumerate(paired_data):
-        x_pos = x_positions[idx]
-        control_hops = pair.get("control", {}).get("hops", {})
-        treatment_hops = pair.get("treatment", {}).get("hops", {})
-        
-        # Get first hop with scores for each experiment
-        control_scores = {}
-        treatment_scores = {}
-        
-        for hop_idx, hop_data in control_hops.items():
-            # All Results score (k-independent, use k=1 data)
-            k1_data = hop_data.get("1", {})
-            if not k1_data.get("is_empty", True):
-                control_scores['all'] = k1_data.get("avg_all_scores")
-                # Top-K scores
-                for k in common_k:
-                    k_data = hop_data.get(str(k), {})
-                    if not k_data.get("is_empty", True):
-                        control_scores[k] = k_data.get("avg_topk_scores")
-                break  # Use first non-empty hop
-        
-        for hop_idx, hop_data in treatment_hops.items():
-            k1_data = hop_data.get("1", {})
-            if not k1_data.get("is_empty", True):
-                treatment_scores['all'] = k1_data.get("avg_all_scores")
-                for k in common_k:
-                    k_data = hop_data.get(str(k), {})
-                    if not k_data.get("is_empty", True):
-                        treatment_scores[k] = k_data.get("avg_topk_scores")
-                break
-        
-        # Plot control scores (slightly left offset)
-        offset = -0.15
-        for metric, score in control_scores.items():
-            if score is not None:
-                style = marker_styles.get(metric, marker_styles['all'])
-                ax.scatter(x_pos + offset, score, 
-                          marker=style['marker'], 
-                          s=style['size']**2,
-                          color=control_color,
-                          alpha=0.7,
-                          edgecolors='black',
-                          linewidths=0.5,
-                          zorder=3)
-        
-        # Plot treatment scores (slightly right offset)
-        offset = 0.15
-        for metric, score in treatment_scores.items():
-            if score is not None:
-                style = marker_styles.get(metric, marker_styles['all'])
-                ax.scatter(x_pos + offset, score,
-                          marker=style['marker'],
-                          s=style['size']**2,
-                          color=treatment_color,
-                          alpha=0.7,
-                          edgecolors='black',
-                          linewidths=0.5,
-                          zorder=3)
-    
-    # Configure axes
-    ax.set_xlabel('Utterance Index', fontsize=13)
-    ax.set_ylabel('CiteDCG Score (First Non-Empty Hop)', fontsize=13)
-    ax.set_title(
-        f'Control vs Treatment: Paired Utterances CiteDCG Scores\n'
-        f'Job: {job_id} | {num_utterances} paired utterances',
-        fontsize=14, fontweight='bold'
-    )
-    
-    # Set x-axis ticks
-    if num_utterances <= 50:
-        ax.set_xticks(x_positions)
-    else:
-        # Show every 5th or 10th tick for large datasets
-        step = 5 if num_utterances <= 100 else 10
-        ax.set_xticks(x_positions[::step])
-    
-    ax.grid(True, alpha=0.3, axis='y')
-    ax.set_xlim(0, num_utterances + 1)
-    
-    # Create custom legend
-    from matplotlib.lines import Line2D
-    legend_elements = []
-    
-    # Experiment colors
-    legend_elements.append(Line2D([0], [0], marker='o', color='w',
-                                 markerfacecolor=control_color,
-                                 markersize=8, label='Control',
-                                 markeredgecolor='black', markeredgewidth=0.5))
-    legend_elements.append(Line2D([0], [0], marker='o', color='w',
-                                 markerfacecolor=treatment_color,
-                                 markersize=8, label='Treatment',
-                                 markeredgecolor='black', markeredgewidth=0.5))
-    
-    # Add separator
-    legend_elements.append(Line2D([0], [0], marker='', color='none',
-                                 linestyle='', label=''))
-    
-    # Metric types
-    for metric_key in ['all'] + common_k:
-        style = marker_styles.get(metric_key, marker_styles['all'])
-        legend_elements.append(
-            Line2D([0], [0], marker=style['marker'], color='w',
-                  markerfacecolor='gray', markersize=style['size'],
-                  label=style['label'],
-                  markeredgecolor='black', markeredgewidth=0.5))
-    
-    ax.legend(handles=legend_elements, fontsize=10, loc='best',
-             ncol=2, framealpha=0.9)
-    
-    plt.tight_layout()
-    plot_file = output_dir / f"{job_id}_paired_utterances_comparison.png"
-    plt.savefig(plot_file, dpi=150, bbox_inches='tight')
-    plt.close()
-    
-    print(f"  ✓ Saved: {plot_file.name}")
 
 
 def process_seval_job_with_statistics_plots(
@@ -3315,8 +2187,8 @@ def process_seval_job_with_statistics_plots(
                     try:
                         stats = generate_plot_statistics_from_utterance_details(
                             utterance_details_file=utterance_details_files[exp],
-                            top_k=k,
-                            output_file=str(stats_file)
+                            k_value=k,
+                            output_json=str(stats_file)
                         )
                         stats_files_by_exp[exp][k] = str(stats_file)
                         print(f"    ✓ k={k}: {stats_file.name}")
@@ -3327,16 +2199,16 @@ def process_seval_job_with_statistics_plots(
             
             # Generate comparison plots from statistics files
             if len(experiments) == 1:
-                # Single experiment - use original 1x2 layout
-                _generate_statistics_plots(
+                # Single experiment - use original 1x2 layout with all k-values
+                generate_statistics_plots(
                     stats_files=stats_files_by_exp[experiments[0]],
                     output_dir=plots_dir,
                     job_id=job_id,
                     experiment=experiments[0]
                 )
             else:
-                # Both experiments - use 2x2 layout for comparison
-                _generate_statistics_plots_comparison(
+                # Both experiments - use 2x2 layout for comparison with all k-values
+                generate_comparison_plots(
                     stats_files_control=stats_files_by_exp["control"],
                     stats_files_treatment=stats_files_by_exp["treatment"],
                     output_dir=plots_dir,
@@ -3348,7 +2220,7 @@ def process_seval_job_with_statistics_plots(
                     print("")
                     print("  Generating paired utterances plot...")
                     try:
-                        _generate_paired_utterances_plot(
+                        generate_paired_utterances_plot(
                             paired_utterances_file=paired_utterances_file,
                             output_dir=plots_dir,
                             job_id=job_id,
