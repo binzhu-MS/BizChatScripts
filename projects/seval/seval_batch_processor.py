@@ -246,6 +246,8 @@ class ConversationExtractor(BaseProcessor):
         
         # Find files based on experiment type
         files = []
+        control_files = []
+        treatment_files = []
         control_count = 0
         treatment_count = 0
         
@@ -279,6 +281,10 @@ class ConversationExtractor(BaseProcessor):
         print(f"Experiment type:  {experiment}")
         print(f"Files to process: {len(files)}")
         
+        # Store file lists for later separation
+        self.control_files = set(str(f) for f in control_files)
+        self.treatment_files = set(str(f) for f in treatment_files)
+        
         # Process files
         process_func = lambda f: self._process_file(f, output_path, verbose)
         self.results = self._parallel_process(
@@ -290,7 +296,7 @@ class ConversationExtractor(BaseProcessor):
         )
         
         # Generate summary
-        self._generate_summary(output_path)
+        self._generate_summary(output_path, experiment)
         
         self._print_header("PROCESSING COMPLETE")
     
@@ -324,7 +330,8 @@ class ConversationExtractor(BaseProcessor):
             return self._analyze_conversation(
                 conv_data,
                 file_path.name,
-                str(output_file)
+                str(output_file),
+                str(file_path)
             )
         
         except json.JSONDecodeError as e:
@@ -338,7 +345,8 @@ class ConversationExtractor(BaseProcessor):
         self,
         conv_data: Dict,
         filename: str,
-        output_file: str
+        output_file: str,
+        source_file: str = None
     ) -> Dict[str, Any]:
         """Analyze extracted conversation data."""
         metadata = conv_data.get("metadata", {})
@@ -394,6 +402,7 @@ class ConversationExtractor(BaseProcessor):
         
         result = {
             "file": filename,
+            "source_file": source_file,
             "conversation_id": metadata.get("conversation_id", ""),
             "query_text": metadata.get("query_text", ""),
             "turn_count": len(turns),
@@ -412,98 +421,149 @@ class ConversationExtractor(BaseProcessor):
         
         return result
     
-    def _generate_summary(self, output_dir: Path) -> Dict[str, Any]:
+    def _generate_summary(self, output_dir: Path, experiment: str = "both") -> Dict[str, Any]:
         """Generate and save summary report."""
-        stats = self._calculate_statistics()
+        stats = self._calculate_statistics(experiment)
         self._print_statistics(stats, self.input_dir, self.output_dir)
         self._save_reports(stats, output_dir)
         return stats
     
-    def _calculate_statistics(self) -> Dict[str, Any]:
-        """Calculate processing statistics."""
-        total = len(self.results)
+    def _calculate_statistics(self, experiment: str = "both") -> Dict[str, Any]:
+        """Calculate processing statistics, separated by experiment type."""
         
-        # Count utterances by turn count (matching DCG extraction output)
-        turn_dist = {}
-        multi_turn_with_hops = 0  # Multi-turn utterances that have hops
-        
-        # Multi-turn hop pattern tracking
-        multiturn_verification = {
-            'total_multi_turn': 0,
-            'last_turn_has_hops': 0,
-            'first_turn_has_hops': 0,
-            'middle_turn_has_hops': 0,
-            'multiple_turns_with_hops': 0,
-            'pattern_by_turns': {}
-        }
-        
-        for r in self.results:
-            turns = r["turn_count"]
-            nonempty_hops = r.get("nonempty_hops", 0)
+        def calc_stats_for_results(results):
+            """Helper to calculate stats for a subset of results."""
+            total = len(results)
+            if total == 0:
+                return None
             
-            # Track turn distribution
-            turn_dist[turns] = turn_dist.get(turns, 0) + 1
+            # Count utterances by turn count
+            turn_dist = {}
+            multi_turn_with_hops = 0
             
-            # Count multi-turn utterances with hops
-            if turns > 1 and nonempty_hops > 0:
-                multi_turn_with_hops += 1
+            # Multi-turn hop pattern tracking
+            multiturn_verification = {
+                'total_multi_turn': 0,
+                'last_turn_has_hops': 0,
+                'first_turn_has_hops': 0,
+                'middle_turn_has_hops': 0,
+                'multiple_turns_with_hops': 0,
+                'pattern_by_turns': {}
+            }
             
-            # Track multi-turn hop patterns
-            if turns > 1:
-                multiturn_verification['total_multi_turn'] += 1
-                pattern = r.get("multiturn_pattern")
+            for r in results:
+                turns = r["turn_count"]
+                nonempty_hops = r.get("nonempty_hops", 0)
                 
-                if pattern == "last_turn_only":
-                    multiturn_verification['last_turn_has_hops'] += 1
-                elif pattern == "first_turn_only":
-                    multiturn_verification['first_turn_has_hops'] += 1
-                elif pattern == "middle_turn_only":
-                    multiturn_verification['middle_turn_has_hops'] += 1
-                elif pattern == "multiple_turns":
-                    multiturn_verification['multiple_turns_with_hops'] += 1
+                # Track turn distribution
+                turn_dist[turns] = turn_dist.get(turns, 0) + 1
                 
-                # Track pattern by number of turns
-                turns_key = f"{turns}_turns"
-                if turns_key not in multiturn_verification['pattern_by_turns']:
-                    multiturn_verification['pattern_by_turns'][turns_key] = {}
+                # Count multi-turn utterances with hops
+                if turns > 1 and nonempty_hops > 0:
+                    multi_turn_with_hops += 1
                 
-                if pattern:
-                    pattern_counts = multiturn_verification['pattern_by_turns'][turns_key]
-                    pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
-        
-        # Calculate totals
-        multi_turn = sum(1 for r in self.results if r.get("turn_count", 0) > 1)
-        total_hops = sum(r.get("total_hops", 0) for r in self.results)
-        total_nonempty = sum(r.get("nonempty_hops", 0) for r in self.results)
-        
-        # Hop distributions (for detailed analysis)
-        total_hop_dist = {}  # Distribution of total_hops (including empty)
-        nonempty_hop_dist = {}  # Distribution of nonempty_hops only
-        for r in self.results:
-            total_hops_count = r.get("total_hops", 0)
-            nonempty_hops_count = r.get("nonempty_hops", 0)
+                # Track multi-turn hop patterns
+                if turns > 1:
+                    multiturn_verification['total_multi_turn'] += 1
+                    pattern = r.get("multiturn_pattern")
+                    
+                    if pattern == "last_turn_only":
+                        multiturn_verification['last_turn_has_hops'] += 1
+                    elif pattern == "first_turn_only":
+                        multiturn_verification['first_turn_has_hops'] += 1
+                    elif pattern == "middle_turn_only":
+                        multiturn_verification['middle_turn_has_hops'] += 1
+                    elif pattern == "multiple_turns":
+                        multiturn_verification['multiple_turns_with_hops'] += 1
+                    
+                    # Track pattern by number of turns
+                    turns_key = f"{turns}_turns"
+                    if turns_key not in multiturn_verification['pattern_by_turns']:
+                        multiturn_verification['pattern_by_turns'][turns_key] = {}
+                    
+                    if pattern:
+                        pattern_counts = multiturn_verification['pattern_by_turns'][turns_key]
+                        pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
             
-            total_hop_dist[total_hops_count] = total_hop_dist.get(total_hops_count, 0) + 1
-            nonempty_hop_dist[nonempty_hops_count] = nonempty_hop_dist.get(nonempty_hops_count, 0) + 1
+            # Calculate totals
+            multi_turn = sum(1 for r in results if r.get("turn_count", 0) > 1)
+            total_hops = sum(r.get("total_hops", 0) for r in results)
+            total_nonempty = sum(r.get("nonempty_hops", 0) for r in results)
+            
+            # Hop distributions
+            total_hop_dist = {}
+            nonempty_hop_dist = {}
+            for r in results:
+                total_hops_count = r.get("total_hops", 0)
+                nonempty_hops_count = r.get("nonempty_hops", 0)
+                
+                total_hop_dist[total_hops_count] = total_hop_dist.get(total_hops_count, 0) + 1
+                nonempty_hop_dist[nonempty_hops_count] = nonempty_hop_dist.get(nonempty_hops_count, 0) + 1
+            
+            return {
+                "total_processed": total,
+                "multi_turn": multi_turn,
+                "single_turn": total - multi_turn,
+                "multi_turn_with_hops": multi_turn_with_hops,
+                "total_hops": total_hops,
+                "total_nonempty_hops": total_nonempty,
+                "avg_total_hops": total_hops / total if total > 0 else 0,
+                "avg_nonempty_hops": total_nonempty / total if total > 0 else 0,
+                "turn_distribution": turn_dist,
+                "total_hop_distribution": total_hop_dist,
+                "nonempty_hop_distribution": nonempty_hop_dist,
+                "multiturn_verification": multiturn_verification,
+            }
+        
+        # Separate results by experiment type
+        control_results = [r for r in self.results if r.get("source_file") in self.control_files]
+        treatment_results = [r for r in self.results if r.get("source_file") in self.treatment_files]
+        
+        # Calculate stats for each experiment type
+        control_stats = calc_stats_for_results(control_results) if control_results else None
+        treatment_stats = calc_stats_for_results(treatment_results) if treatment_results else None
+        combined_stats = calc_stats_for_results(self.results)
         
         return {
-            "total_processed": total,
-            "multi_turn": multi_turn,
-            "single_turn": total - multi_turn,
-            "multi_turn_with_hops": multi_turn_with_hops,
+            "experiment": experiment,
             "errors": len(self.errors),
-            "total_hops": total_hops,
-            "total_nonempty_hops": total_nonempty,
-            "avg_total_hops": total_hops / total if total > 0 else 0,
-            "avg_nonempty_hops": total_nonempty / total if total > 0 else 0,
-            "turn_distribution": turn_dist,
-            "total_hop_distribution": total_hop_dist,
-            "nonempty_hop_distribution": nonempty_hop_dist,
-            "multiturn_verification": multiturn_verification,
+            "combined": combined_stats,
+            "control": control_stats,
+            "treatment": treatment_stats,
         }
     
     def _print_statistics(self, stats: Dict[str, Any], input_dir: str = None, output_dir: str = None):
         """Print statistics to console (always displayed regardless of verbose)."""
+        
+        def print_stats_section(title: str, s: Dict[str, Any]):
+            """Helper to print a statistics section."""
+            if not s:
+                return
+            
+            print(f"\n{title}:")
+            print(f"  Total processed: {s['total_processed']}")
+            
+            # Utterance breakdown by # of turns
+            print(f"  Utterance breakdown by # of turns:")
+            print(f"    (Non-empty turn = turn with hop data structures, even if empty placeholders)")
+            total = s['total_processed']
+            for turns in sorted(s['turn_distribution'].keys()):
+                count = s['turn_distribution'][turns]
+                pct = (count / total * 100) if total > 0 else 0
+                if turns == 0:
+                    print(f"    {turns} turns (no data): {count} ({pct:.1f}%)")
+                elif turns == 1:
+                    print(f"    {turns} turn: {count} ({pct:.1f}%)")
+                else:
+                    print(f"    {turns} turns (1 non-empty: last turn has hops): {count} ({pct:.1f}%)")
+            
+            # Hop statistics
+            print(f"  Aggregate Hop Statistics:")
+            print(f"    Total hops: {s['total_hops']}")
+            print(f"    Non-empty hops: {s['total_nonempty_hops']}")
+            print(f"    Avg hops per conversation: {s['avg_total_hops']:.2f}")
+            print(f"    Avg non-empty hops per conversation: {s['avg_nonempty_hops']:.2f}")
+        
         print("=" * 80)
         print("SUMMARY REPORT")
         print("=" * 80)
@@ -511,72 +571,21 @@ class ConversationExtractor(BaseProcessor):
             print(f"Input dir:  {input_dir}")
         if output_dir:
             print(f"Output dir: {output_dir}")
-        if input_dir or output_dir:
-            print("-" * 80)
-        print(f"Total processed: {stats['total_processed']}")
-        print(f"Errors:          {stats['errors']}")
+        print("-" * 80)
+        print(f"Errors: {stats['errors']}")
         print("-" * 80)
         
-        # Utterance breakdown by # of turns (matching DCG extraction format)
-        print("Utterance breakdown by # of turns:")
-        total = stats['total_processed']
-        for turns in sorted(stats['turn_distribution'].keys()):
-            count = stats['turn_distribution'][turns]
-            pct = (count / total * 100) if total > 0 else 0
-            if turns == 0:
-                # No turns = failed/error conversations
-                print(f"  {turns} turns (no data): {count} ({pct:.1f}%)")
-            elif turns == 1:
-                print(f"  {turns} turn: {count} ({pct:.1f}%)")
-            else:
-                # Multi-turn = retries, always 1 non-empty turn
-                print(
-                    f"  {turns} turns (1 non-empty turn): "
-                    f"{count} ({pct:.1f}%)"
-                )
+        # Print combined statistics
+        if stats.get('combined'):
+            print_stats_section("COMBINED (Control + Treatment)", stats['combined'])
         
-        print("-" * 80)
+        # Print control statistics
+        if stats.get('control'):
+            print_stats_section("CONTROL", stats['control'])
         
-        # Hop statistics (aggregate metrics, not per-utterance)
-        print("Aggregate Hop Statistics:")
-        print(f"  Total hops across all conversations: {stats['total_hops']}")
-        print(f"  Non-empty hops across all conversations: {stats['total_nonempty_hops']}")
-        print(f"  Avg hops per conversation: {stats['avg_total_hops']:.2f}")
-        print(f"  Avg non-empty hops per conversation: {stats['avg_nonempty_hops']:.2f}")
-        
-        print("-" * 80)
-        
-        # Non-empty hop distribution (per utterance)
-        print("Non-empty Hop Distribution (per utterance):")
-        for hops in sorted(stats['nonempty_hop_distribution'].keys()):
-            count = stats['nonempty_hop_distribution'][hops]
-            pct = (count / total * 100) if total > 0 else 0
-            print(f"  {hops} hop(s): {count} ({pct:.1f}%)")
-        
-        # Multi-turn hop pattern verification
-        verification = stats.get('multiturn_verification', {})
-        if verification.get('total_multi_turn', 0) > 0:
-            print("-" * 80)
-            print("Multi-Turn Hop Pattern Verification:")
-            total_mt = verification['total_multi_turn']
-            print(f"  Total multi-turn conversations: {total_mt}")
-            
-            last_turn = verification['last_turn_has_hops']
-            pct = (last_turn / total_mt * 100) if total_mt > 0 else 0
-            print(f"  Last turn has hops: {last_turn} ({pct:.1f}%)")
-            
-            print(f"  First turn has hops: {verification['first_turn_has_hops']}")
-            print(f"  Middle turn has hops: {verification['middle_turn_has_hops']}")
-            print(f"  Multiple turns with hops: {verification['multiple_turns_with_hops']}")
-            
-            if verification['pattern_by_turns']:
-                print("")
-                print("  Pattern breakdown by # of turns:")
-                for turns_key in sorted(verification['pattern_by_turns'].keys()):
-                    patterns = verification['pattern_by_turns'][turns_key]
-                    print(f"    {turns_key}:")
-                    for pattern, count in sorted(patterns.items(), key=lambda x: -x[1]):
-                        print(f"      {pattern}: {count}")
+        # Print treatment statistics  
+        if stats.get('treatment'):
+            print_stats_section("TREATMENT", stats['treatment'])
     
     def _save_reports(self, stats: Dict[str, Any], output_dir: Path):
         """Save detailed reports."""
@@ -2486,9 +2495,10 @@ def _generate_paired_utterances_plot(
         k_values: List of top-k values to plot
     """
     import json
+
     import matplotlib.pyplot as plt
     import numpy as np
-    
+
     # Load paired utterances data
     with open(paired_utterances_file, 'r', encoding='utf-8') as f:
         data = json.load(f)

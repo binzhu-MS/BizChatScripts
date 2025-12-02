@@ -276,6 +276,7 @@ class PerResultCiteDCGExtractor:
         if stats['turn_stats']:
             print("")
             print("  Utterance breakdown by # of turns:")
+            print("    (Non-empty turn = turn with search results/CiteDCG scores)")
             total = stats['total']
             for num_turns in sorted(stats['turn_stats'].keys()):
                 count = stats['turn_stats'][num_turns]
@@ -285,9 +286,9 @@ class PerResultCiteDCGExtractor:
                         f"    {num_turns} turn: {count} ({ratio:.1f}%)"
                     )
                 else:
-                    # Multi-turn = retries, always 1 non-empty turn
+                    # Multi-turn = retries, only last turn has search results
                     print(
-                        f"    {num_turns} turns (1 non-empty turn): "
+                        f"    {num_turns} turns (1 non-empty: last turn has results): "
                         f"{count} ({ratio:.1f}%)"
                     )
         
