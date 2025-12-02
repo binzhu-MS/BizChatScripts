@@ -2087,7 +2087,7 @@ def process_seval_job_with_statistics_plots(
             if paired_file.exists() and both_details_reused:
                 # Both input files were reused, so paired file is still valid
                 can_reuse_paired = True
-                print("  \u2713 Reused existing paired file")
+                print("  ✓ Reused existing paired file")
                 print("")
                 
                 # Load the file to show summary
@@ -2107,7 +2107,7 @@ def process_seval_job_with_statistics_plots(
                         output_file=str(paired_file)
                     )
                     paired_utterances_file = str(paired_file)
-                    print("  \u2713 Generated paired utterances file")
+                    print("  ✓ Generated paired utterances file")
                     print("")
                 except Exception as e:
                     logger.error(f"Failed to find paired utterances: {e}")
@@ -2128,11 +2128,11 @@ def process_seval_job_with_statistics_plots(
                 pct = 100.0 * paired / max(1, total)
                 print("  Results:")
                 print(f"    Total unique queries: {total}")
-                print(f"    \u2713 Paired (scores in both): {paired} "
+                print(f"    ✓ Paired (scores in both): {paired} "
                       f"({pct:.1f}%)")
-                print(f"    \u2022 Control only: {control_only}")
-                print(f"    \u2022 Treatment only: {treatment_only}")
-                print(f"    \u2022 No scores: {no_scores}")
+                print(f"    • Control only: {control_only}")
+                print(f"    • Treatment only: {treatment_only}")
+                print(f"    • No scores: {no_scores}")
                 print("")
                 print("")
     
