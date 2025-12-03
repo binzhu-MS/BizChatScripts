@@ -1884,7 +1884,7 @@
                 "--top_k_list=1,3,5",
                 //"--clean=True",
                 "--threads=16",
-                "--verbose=False"
+                "--verbose=False" //False"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"

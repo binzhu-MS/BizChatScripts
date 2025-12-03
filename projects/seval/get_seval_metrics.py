@@ -71,15 +71,15 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# Add parent directory to path for utils imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 import fire
 import pandas as pd
 from fire.core import FireExit
 
 # Import from the utils package (sibling folder)
 from utils.statistics_utils import tdiff
+
+# Add parent directory to path for utils imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Set up logging
 logging.basicConfig(
@@ -101,13 +101,17 @@ class PerResultCiteDCGExtractor:
     - JSON output with per-result scores
     """
     
-    def __init__(self):
+    def __init__(self, verbose: bool = True):
         """
         Initialize extractor.
         
         Uses default base path: projects/seval/seval_data/
+        
+        Args:
+            verbose: If True, show detailed statistics. If False, minimal output.
         """
         self.base_path = Path("seval_data")
+        self.verbose = verbose
     
     def extract(
         self,
@@ -138,7 +142,8 @@ class PerResultCiteDCGExtractor:
             return 0
         
         print(f"Extracting CiteDCG scores for {experiment}...")
-        print(f"  → Reading from: {results_path}")
+        if self.verbose:
+            print(f"  → Reading from: {results_path}")
         logger.info(f"Reading CiteDCG data from: {results_path}")
         logger.info(f"  Metrics folder: {metrics_folder}, Experiment: {experiment}")
         if utterance:
@@ -179,47 +184,49 @@ class PerResultCiteDCGExtractor:
             return 0
         
         # Verify multi-turn hop pattern
-        print("")
-        print("=" * 60)
-        print("MULTI-TURN HOP PATTERN VERIFICATION")
-        print("=" * 60)
+        if self.verbose:
+            print("")
+            print("=" * 60)
+            print("MULTI-TURN HOP PATTERN VERIFICATION")
+            print("=" * 60)
         verification = self._verify_multiturn_hop_pattern(all_data)
         
-        print(
-            f"Total multi-turn conversations: "
-            f"{verification['total_multi_turn']}"
-        )
-        print(
-            f"  Last turn has hops: "
-            f"{verification['last_turn_has_hops']} "
-            f"({verification['last_turn_has_hops'] / max(1, verification['total_multi_turn']) * 100:.1f}%)"
-        )
-        print(
-            f"  First turn has hops: "
-            f"{verification['first_turn_has_hops']}"
-        )
-        print(
-            f"  Middle turn has hops: "
-            f"{verification['middle_turn_has_hops']}"
-        )
-        print(
-            f"  Multiple turns with hops: "
-            f"{verification['multiple_turns_with_hops']}"
-        )
-        
-        if verification['pattern_by_turns']:
+        if self.verbose:
+            print(
+                f"Total multi-turn conversations: "
+                f"{verification['total_multi_turn']}"
+            )
+            print(
+                f"  Last turn has hops: "
+                f"{verification['last_turn_has_hops']} "
+                f"({verification['last_turn_has_hops'] / max(1, verification['total_multi_turn']) * 100:.1f}%)"
+            )
+            print(
+                f"  First turn has hops: "
+                f"{verification['first_turn_has_hops']}"
+            )
+            print(
+                f"  Middle turn has hops: "
+                f"{verification['middle_turn_has_hops']}"
+            )
+            print(
+                f"  Multiple turns with hops: "
+                f"{verification['multiple_turns_with_hops']}"
+            )
+            
+            if verification['pattern_by_turns']:
+                print("")
+                print("Pattern breakdown by # of turns:")
+                for turns_key in sorted(verification['pattern_by_turns'].keys()):
+                    patterns = verification['pattern_by_turns'][turns_key]
+                    print(f"  {turns_key}:")
+                    for pattern, count in sorted(
+                        patterns.items(), key=lambda x: -x[1]
+                    ):
+                        print(f"    {pattern}: {count}")
+            
+            print("=" * 60)
             print("")
-            print("Pattern breakdown by # of turns:")
-            for turns_key in sorted(verification['pattern_by_turns'].keys()):
-                patterns = verification['pattern_by_turns'][turns_key]
-                print(f"  {turns_key}:")
-                for pattern, count in sorted(
-                    patterns.items(), key=lambda x: -x[1]
-                ):
-                    print(f"    {pattern}: {count}")
-        
-        print("=" * 60)
-        print("")
         
         # Filter by utterance if specified
         if utterance:
@@ -239,41 +246,60 @@ class PerResultCiteDCGExtractor:
         # Calculate statistics from grouped data (utterances)
         stats = self._calculate_utterance_stats(grouped_data)
         
-        print("=" * 60)
-        print("EXTRACTION STATISTICS:")
+        if self.verbose:
+            print("=" * 60)
+            print("EXTRACTION STATISTICS:")
         total = stats["total"]
-        print(f"  Total utterances: {total}")
+        if self.verbose:
+            print(f"  Total utterances: {total}")
         
         with_scores = stats["with_scores"]
         with_scores_pct = (with_scores / total * 100) if total > 0 else 0
+        
+        empty = stats["empty_results"]
+        no_searches = stats["no_searches"]
+        errors = stats["errors_count"]
+        
+        # Always show utterances with scores
         print(
             f"  Utterances with CiteDCG scores: "
             f"{with_scores} ({with_scores_pct:.1f}%)"
         )
         
-        empty = stats["empty_results"]
-        empty_pct = (empty / total * 100) if total > 0 else 0
+        # Calculate total without scores
+        total_no_scores = empty + no_searches + errors
+        no_scores_pct = (total_no_scores / total * 100) if total > 0 else 0
+        
+        # Always show total without scores
         print(
-            f"  Utterances without scores (empty search results): "
-            f"{empty} ({empty_pct:.1f}%)"
+            f"  Utterances without scores: "
+            f"{total_no_scores} ({no_scores_pct:.1f}%)"
         )
         
-        no_searches = stats["no_searches"]
-        no_searches_pct = (no_searches / total * 100) if total > 0 else 0
-        print(
-            f"  Utterances without scores (no searches): "
-            f"{no_searches} ({no_searches_pct:.1f}%)"
-        )
+        # For verbose=True, show breakdown
+        if self.verbose:
+            empty_pct = (empty / total * 100) if total > 0 else 0
+            print(
+                f"    - Empty search results: "
+                f"{empty} ({empty_pct:.1f}%)"
+            )
+            
+            no_searches_pct = (no_searches / total * 100) if total > 0 else 0
+            print(
+                f"    - No searches: "
+                f"{no_searches} ({no_searches_pct:.1f}%)"
+            )
+            
+            errors_pct = (errors / total * 100) if total > 0 else 0
+            print(
+                f"    - Errors (non-empty results, no labels): "
+                f"{errors} ({errors_pct:.1f}%)"
+            )
         
-        errors = stats["errors_count"]
-        errors_pct = (errors / total * 100) if total > 0 else 0
-        print(
-            f"  Utterances with errors (non-empty results, no labels): "
-            f"{errors} ({errors_pct:.1f}%)"
-        )
+        print("")  # Add blank line for separation
         
-        # Output turn statistics
-        if stats['turn_stats']:
+        # Output turn statistics (verbose only)
+        if self.verbose and stats['turn_stats']:
             print("")
             print("  Utterance breakdown by # of turns:")
             print("    (Non-empty turn = turn with search results/CiteDCG scores)")
@@ -292,7 +318,8 @@ class PerResultCiteDCGExtractor:
                         f"{count} ({ratio:.1f}%)"
                     )
         
-        if stats['error_examples']:
+        # Error examples (verbose only)
+        if self.verbose and stats['error_examples']:
             print("")
             print("  Error case examples:")
             for err in stats['error_examples'][:5]:  # Show first 5
@@ -314,7 +341,8 @@ class PerResultCiteDCGExtractor:
                 for plugin, count in sorted_plugins:
                     print(f"    - {plugin}: {count} results")
         
-        print("=" * 60)
+        if self.verbose:
+            print("=" * 60)
         
         self._write_json_output(grouped_data, output_file)
         logger.info(
@@ -2390,7 +2418,8 @@ def extract_per_result_citedcg(
     metrics_folder: str,
     experiment: str,
     output_file: str,
-    utterance: Optional[str] = None
+    utterance: Optional[str] = None,
+    verbose: bool = True
 ) -> int:
     """
     Extract per-result CiteDCG scores from SEVAL results.json.
@@ -2406,6 +2435,7 @@ def extract_per_result_citedcg(
         experiment: Experiment name - "control" or "treatment"
         output_file: Path for output JSONL file (one JSON object per line)
         utterance: Optional - filter results by utterance substring
+        verbose: If True, show detailed statistics. If False, minimal output.
     
     Example usage:
         # Extract all per-result CiteDCG scores for control experiment (module calling - preferred)
@@ -2434,7 +2464,7 @@ def extract_per_result_citedcg(
             --output_file="scorecard_scores.json"
     """
     try:
-        extractor = PerResultCiteDCGExtractor()
+        extractor = PerResultCiteDCGExtractor(verbose=verbose)
         count = extractor.extract(
             metrics_folder=metrics_folder,
             experiment=experiment,
@@ -2462,4 +2492,9 @@ if __name__ == "__main__":
         # Handle Fire's exit (including --help) gracefully in debug mode
         # FireExit with code 0 means successful exit (like --help)
         # FireExit with non-zero code means error exit
+        sys.exit(e.code)
+        sys.exit(e.code)
+        sys.exit(e.code)
+        sys.exit(e.code)
+        sys.exit(e.code)
         sys.exit(e.code)

@@ -62,14 +62,11 @@ logger = logging.getLogger(__name__)
 # Import after logging configuration
 from merge_seval_results import (
     generate_plot_statistics_from_utterance_details,
-    merge_citedcg_and_calculate_stats,
-)
+    merge_citedcg_and_calculate_stats)
 from seval_analysis_toolkit import SEVALAnalysisToolkit
-from seval_plotting import (
-    generate_comparison_plots,
-    generate_paired_utterances_plot,
-    generate_statistics_plots,
-)
+from seval_plotting import (generate_comparison_plots,
+                            generate_paired_utterances_plot,
+                            generate_statistics_plots)
 
 # ==========================================================================
 # Base Classes
@@ -209,6 +206,12 @@ class ConversationExtractor(BaseProcessor):
         self.multi_turn_or_hop_conversations: List[Dict] = []
         self.input_dir = None
         self.output_dir = None
+        self.verbose = False
+    
+    def vprint(self, *args, **kwargs):
+        """Print only when verbose=True (for detailed logs)"""
+        if self.verbose:
+            print(*args, **kwargs)
     
     def process(
         self,
@@ -235,6 +238,7 @@ class ConversationExtractor(BaseProcessor):
         """
         self._setup_logging(verbose)
         
+        self.verbose = verbose  # Store for use in helper methods
         self.input_dir = input_dir
         self.output_dir = output_dir
         
@@ -272,7 +276,7 @@ class ConversationExtractor(BaseProcessor):
                 # Try alternate naming convention
                 treatment_files = sorted(input_path.glob("experiment_*.json"))
                 if len(treatment_files) > 0:
-                    print(f"  (Using 'experiment_*' pattern for treatment)")
+                    self.vprint("  (Using 'experiment_*' pattern for treatment)")
             files.extend(treatment_files)
             treatment_count = len(treatment_files)
             print(f"  Found {treatment_count} treatment files")
@@ -283,11 +287,12 @@ class ConversationExtractor(BaseProcessor):
             logger.warning(f"No {experiment} files found in {input_dir}")
             return {}
         
-        self._print_header("BATCH CONVERSATION EXTRACTION")
-        print(f"Input dir:        {input_dir}")
-        print(f"Output dir:       {output_dir}")
-        print(f"Experiment type:  {experiment}")
-        print(f"Files to process: {len(files)}")
+        if self.verbose:
+            self._print_header("BATCH CONVERSATION EXTRACTION")
+            print(f"Input dir:        {input_dir}")
+            print(f"Output dir:       {output_dir}")
+            print(f"Experiment type:  {experiment}")
+            print(f"Files to process: {len(files)}")
         
         # Store file lists for later separation
         self.control_files = set(str(f) for f in control_files)
@@ -572,6 +577,7 @@ class ConversationExtractor(BaseProcessor):
             print(f"    Avg hops per conversation: {s['avg_total_hops']:.2f}")
             print(f"    Avg non-empty hops per conversation: {s['avg_nonempty_hops']:.2f}")
         
+        # Always print basic summary header and error count
         print("=" * 80)
         print("SUMMARY REPORT")
         print("=" * 80)
@@ -582,6 +588,10 @@ class ConversationExtractor(BaseProcessor):
         print("-" * 80)
         print(f"Errors: {stats['errors']}")
         print("-" * 80)
+        
+        # Only print detailed statistics when verbose=True
+        if not self.verbose:
+            return
         
         # Print combined statistics
         if stats.get('combined'):
@@ -679,6 +689,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
         self.top_k = 5  # Default value
         self.no_scores_count = 0  # Track files with no scores
         self.utterances_not_in_dcg = 0  # Track utterances not in DCG data
+        self.verbose = False  # Verbose flag for output control
     
     def process(
         self,
@@ -687,7 +698,6 @@ class MergeCiteDCGProcessor(BaseProcessor):
         citedcg_treatment_file: str,
         output_dir: str,
         threads: int = 8,
-        top_k: int = 5,
         verbose: bool = False
     ):
         """
@@ -699,12 +709,11 @@ class MergeCiteDCGProcessor(BaseProcessor):
             citedcg_treatment_file: CiteDCG scores for treatment
             output_dir: Output directory
             threads: Number of parallel threads
-            top_k: Top-k value for score calculation
             verbose: Enable verbose logging
         """
         self._setup_logging(verbose)
+        self.verbose = verbose  # Store for use in output methods
         
-        self.top_k = top_k  # Store for use in summary
         conv_path = Path(conv_dir)
         output_path = Path(output_dir)
         
@@ -762,9 +771,10 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 conv_path.glob("experiment_*_conv_details.json")
             )
         
-        print(f"Found {len(control_files)} control conversations")
-        print(f"Found {len(treatment_files)} treatment conversations")
-        print("=" * 80)
+        if self.verbose:
+            print(f"Found {len(control_files)} control conversations")
+            print(f"Found {len(treatment_files)} treatment conversations")
+            print("=" * 80)
         
         # Process control files (only if CiteDCG file provided)
         if self.citedcg_control_file:
@@ -777,7 +787,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 control_results = self._parallel_process(
                     control_files,
                     lambda f: self._process_file(
-                        f, control_output, "control", top_k, verbose
+                        f, control_output, "control", verbose
                     ),
                     threads,
                     verbose,
@@ -801,7 +811,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 treatment_results = self._parallel_process(
                     treatment_files,
                     lambda f: self._process_file(
-                        f, treatment_output, "treatment", top_k, verbose
+                        f, treatment_output, "treatment", verbose
                     ),
                     threads,
                     verbose,
@@ -821,7 +831,6 @@ class MergeCiteDCGProcessor(BaseProcessor):
         conv_file: Path,
         output_dir: Path,
         experiment_type: str,
-        top_k: int,
         verbose: bool
     ) -> Optional[Dict[str, Any]]:
         """Merge a single conversation file with CiteDCG scores."""
@@ -852,7 +861,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 citedcg_file=citedcg_file,
                 output_file=str(merged_file),
                 stats_file=str(stats_file),
-                top_k=top_k
+                top_k=5  # Default value, not used in merge, only for stats compatibility
             )
             
             # Load merged file to get statistics
@@ -942,9 +951,6 @@ class MergeCiteDCGProcessor(BaseProcessor):
         )
         
         print("")
-        print("=" * 80)
-        print("MERGE SUMMARY")
-        print("=" * 80)
         
         if total > 0:
             # Separate results by experiment
@@ -955,7 +961,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
             has_both = len(control_results) > 0 and len(treatment_results) > 0
             
             if has_both:
-                # Print summary for each experiment separately
+                # Print basic summary for each experiment (always shown)
                 for exp_name, exp_results in [("CONTROL", control_results), ("TREATMENT", treatment_results)]:
                     exp_total = len(exp_results)
                     exp_no_scores = sum(1 for r in exp_results if not r.get("has_scores", False))
@@ -963,7 +969,6 @@ class MergeCiteDCGProcessor(BaseProcessor):
                     exp_queries_no_match = sum(r.get("queries_no_match", 0) for r in exp_results)
                     exp_errors = sum(1 for e in self.errors if any(r.get("file") == e.get("file") for r in exp_results))
                     
-                    print("")
                     print(f"{exp_name} Experiment Summary:")
                     print("-" * 80)
                     print(f"Total conversations:     {exp_total}")
@@ -975,6 +980,11 @@ class MergeCiteDCGProcessor(BaseProcessor):
                         f"  Matching errors:       {exp_errors} "
                         f"(DCG exists but tools/queries/results don't match)"
                     )
+                    
+                    # Only show detailed statistics when verbose=True
+                    if not self.verbose:
+                        print("")
+                        continue
                     
                     # Hop and Turn Statistics for this experiment
                     exp_results_scored = sum(r.get("results_with_scores", 0) for r in exp_results)
@@ -1308,7 +1318,6 @@ def merge_citescg_scores(
     citedcg_treatment_file: str = "",
     output_dir: str = r"results\merged",
     threads: int = 8,
-    top_k: int = 5,
     verbose: bool = False
 ):
     """
@@ -1325,7 +1334,6 @@ def merge_citescg_scores(
         citedcg_treatment_file: Optional CiteDCG scores file for treatment
         output_dir: Output directory for merged results and statistics
         threads: Number of parallel threads
-        top_k: Top-k value for score calculation
         verbose: Enable verbose logging
         
     Example:
@@ -1343,30 +1351,32 @@ def merge_citescg_scores(
     processor = MergeCiteDCGProcessor()
     processor._setup_logging(verbose)
     
-    processor._print_header("BATCH CITEDCG MERGE")
-    print(f"Conversation dir:      {conv_dir}")
-    if citedcg_control_file:
-        print(f"Control CiteDCG:       {citedcg_control_file}")
-    if citedcg_treatment_file:
-        print(f"Treatment CiteDCG:     {citedcg_treatment_file}")
-    if not citedcg_control_file and not citedcg_treatment_file:
-        logger.error("At least one CiteDCG file must be provided")
-        return
-    print(f"Output dir:            {output_dir}")
-    print(f"Top-k:                 {top_k}")
-    print(f"Threads:               {threads}")
-    print("=" * 80)
+    if verbose:
+        processor._print_header("BATCH CITEDCG MERGE")
+        print(f"Conversation dir:      {conv_dir}")
+        if citedcg_control_file:
+            print(f"Control CiteDCG:       {citedcg_control_file}")
+        if citedcg_treatment_file:
+            print(f"Treatment CiteDCG:     {citedcg_treatment_file}")
+        if not citedcg_control_file and not citedcg_treatment_file:
+            logger.error("At least one CiteDCG file must be provided")
+            return
+        print(f"Output dir:            {output_dir}")
+        print(f"Threads:               {threads}")
+        print("=" * 80)
     
     # Always clean output directory to avoid mixing old/new results
     output_path = Path(output_dir)
     if output_path.exists():
         merged_files = list(output_path.rglob("*.json"))
         if merged_files:
-            print(f"Output dir contains {len(merged_files)} files, deleting...")
+            if verbose:
+                print(f"Output dir contains {len(merged_files)} files, deleting...")
             import shutil
             shutil.rmtree(output_path)
-            print("Done")
-            print("")
+            if verbose:
+                print("Done")
+                print("")
     
     processor.process(
         conv_dir=conv_dir,
@@ -1374,7 +1384,6 @@ def merge_citescg_scores(
         citedcg_treatment_file=citedcg_treatment_file,
         output_dir=output_dir,
         threads=threads,
-        top_k=top_k,
         verbose=verbose
     )
 
@@ -1506,7 +1515,6 @@ def process_seval_job_multihop_citedcg(
         citedcg_treatment_file=citedcg_files.get("treatment"),
         output_dir=merged_dir,
         threads=threads,
-        top_k=top_k,
         verbose=verbose
     )
     print("")
@@ -1620,16 +1628,25 @@ def process_seval_job_with_statistics_plots(
     # Create base output directory
     Path(output_base_dir).mkdir(parents=True, exist_ok=True)
     
-    print("=" * 80)
-    print(f"SEVAL JOB PROCESSING WITH MULTIPLE TOP-K VALUES: {job_id}")
-    print("=" * 80)
-    print(f"Raw data:      {raw_data_dir}")
-    print(f"Metrics:       seval_data/{metrics_dir}")
-    print(f"Experiment:    {experiment}")
-    print(f"Top-k values:  {k_values}")
-    print(f"Threads:       {threads}")
-    print(f"Clean existing: {clean}")
-    print("=" * 80)
+    # Helper function for verbose-controlled printing
+    def vprint(*args, **kwargs):
+        """Print only when verbose=True (for detailed logs)"""
+        if verbose:
+            print(*args, **kwargs)
+    
+    # Always show basic job info
+    if verbose:
+        print("Processing SEVAL data...")
+        print("=" * 80)
+        print(f"SEVAL JOB PROCESSING WITH MULTIPLE TOP-K VALUES: {job_id}")
+        print("=" * 80)
+        print(f"Raw data:      {raw_data_dir}")
+        print(f"Metrics:       seval_data/{metrics_dir}")
+        print(f"Experiment:    {experiment}")
+        print(f"Top-k values:  {k_values}")
+        print(f"Threads:       {threads}")
+        print(f"Clean existing: {clean}")
+        print("=" * 80)
     print("")
     
     # Determine which experiments to process
@@ -1654,9 +1671,9 @@ def process_seval_job_with_statistics_plots(
     # Clean existing directories if requested
     processor = BaseProcessor()
     if clean:
-        print("FORCING COMPLETE REGENERATION (--clean=True):")
-        print("  Deleting all intermediate files...")
-        print("")
+        vprint("FORCING COMPLETE REGENERATION (--clean=True):")
+        vprint("  Deleting all intermediate files...")
+        vprint("")
         
         # Clean all intermediate directories
         processor._clean_directory(
@@ -1668,7 +1685,7 @@ def process_seval_job_with_statistics_plots(
         processor._clean_directory(
             Path(merged_dir), "merged conversations with CiteDCG"
         )
-        print("")
+        vprint("")
         
         can_reuse_citedcg = False
         can_reuse_conv = False
@@ -1726,9 +1743,9 @@ def process_seval_job_with_statistics_plots(
             can_reuse_merged = False
         
         if can_reuse_citedcg or can_reuse_conv or can_reuse_merged:
-            print("REUSING EXISTING RESULTS:")
+            vprint("REUSING EXISTING RESULTS:")
             if can_reuse_citedcg:
-                print(f"  ✓ CiteDCG scores: {existing_citedcg_dir}")
+                vprint(f"  ✓ CiteDCG scores: {existing_citedcg_dir}")
             if can_reuse_conv:
                 control_conv = len(
                     list(conv_path.glob("control_*_conv_details.json"))
@@ -1747,7 +1764,7 @@ def process_seval_job_with_statistics_plots(
                     exp_info.append(f"control: {control_conv}")
                 if treatment_conv > 0:
                     exp_info.append(f"treatment: {treatment_conv}")
-                print(
+                vprint(
                     f"  ✓ Conversation files ({', '.join(exp_info)}): "
                     f"{existing_conv_dir}"
                 )
@@ -1765,19 +1782,19 @@ def process_seval_job_with_statistics_plots(
                     exp_info.append(f"control: {control_merged}")
                 if treatment_merged > 0:
                     exp_info.append(f"treatment: {treatment_merged}")
-                print(
+                vprint(
                     f"  ✓ Merged files ({', '.join(exp_info)}): "
                     f"{merged_dir}"
                 )
-            print("")
+            vprint("")
     
     # STEP 1: Extract CiteDCG scores ONCE (same for all top-k values)
     citedcg_files = {}
     
     if can_reuse_citedcg:
-        print("=" * 80)
-        print("STEP 1: REUSING EXISTING CITEDCG SCORES")
-        print("=" * 80)
+        vprint("=" * 80)
+        vprint("STEP 1: REUSING EXISTING CITEDCG SCORES")
+        vprint("=" * 80)
         for exp in experiments:
             citedcg_file = (
                 f"{existing_citedcg_dir}/{job_id}_citedcg_scores_{exp}.json"
@@ -1787,10 +1804,10 @@ def process_seval_job_with_statistics_plots(
                 with open(citedcg_file, 'r', encoding='utf-8') as f:
                     utterance_count = sum(1 for line in f if line.strip())
                 citedcg_files[exp] = citedcg_file
-                print(f"  ✓ {exp}: {citedcg_file} ({utterance_count} utterances)")
+                vprint(f"  ✓ {exp}: {citedcg_file} ({utterance_count} utterances)")
             else:
-                print(f"  ✗ {exp}: Not found, will extract")
-        print("")
+                vprint(f"  ✗ {exp}: Not found, will extract")
+        vprint("")
     
     # Extract CiteDCG if not reusing or if files missing
     if not can_reuse_citedcg or len(citedcg_files) < len(experiments):
@@ -1802,21 +1819,19 @@ def process_seval_job_with_statistics_plots(
         
         for exp in experiments:
             if exp in citedcg_files:
-                print(f"  Skipping {exp} (already exists)")
+                vprint(f"  Skipping {exp} (already exists)")
                 continue
-                
-            print(f"\n ***  Extracting {exp}...")
+            
             citedcg_file = f"{citedcg_dir}/{job_id}_citedcg_scores_{exp}.json"
             
             count = extract_per_result_citedcg(
                 metrics_folder=metrics_dir,
                 experiment=exp,
-                output_file=citedcg_file
+                output_file=citedcg_file,
+                verbose=verbose
             )
             
             citedcg_files[exp] = citedcg_file
-            print(f"    → Extracted {count} utterances")
-            print(f"    → Saved to: {citedcg_file}")
         print("")
     
     # Validate that we have all required CiteDCG files
@@ -1840,21 +1855,21 @@ def process_seval_job_with_statistics_plots(
     if can_reuse_conv:
         # Count conversation files
         conv_file_count = len(list(Path(existing_conv_dir).glob("*_conv_details.json")))
-        print("=" * 80)
-        print("STEP 2: REUSING EXISTING CONVERSATION DETAILS")
-        print("=" * 80)
-        print(f"  Location: {existing_conv_dir}")
-        print(f"  Files: {conv_file_count} conversation files")
-        print("")
+        vprint("=" * 80)
+        vprint("STEP 2: REUSING EXISTING CONVERSATION DETAILS")
+        vprint("=" * 80)
+        vprint(f"  Location: {existing_conv_dir}")
+        vprint(f"  Files: {conv_file_count} conversation files")
+        vprint("")
     else:
         print("=" * 80)
         print("STEP 2: EXTRACTING CONVERSATION DETAILS ...")
         print("=" * 80)
-        print(f"  Input:  {raw_data_dir}")
-        print(f"  Output: {conv_dir}")
-        print(f"  Experiments: {', '.join(experiments)}")
-        print(f"  Threads: {threads}")
-        print("")
+        vprint(f"  Input:  {raw_data_dir}")
+        vprint(f"  Output: {conv_dir}")
+        vprint(f"  Experiments: {', '.join(experiments)}")
+        vprint(f"  Threads: {threads}")
+        vprint("")
         
         extract_conversations(
             input_dir=raw_data_dir,
@@ -1898,12 +1913,12 @@ def process_seval_job_with_statistics_plots(
     if can_reuse_merged:
         # Count merged files
         merged_file_count = len(list(Path(merged_dir).rglob("*_merged.json")))
-        print("=" * 80)
-        print("STEP 3: REUSING EXISTING MERGED DATA")
-        print("=" * 80)
-        print(f"  Location: {merged_dir}")
-        print(f"  Files: {merged_file_count} merged files")
-        print("")
+        vprint("=" * 80)
+        vprint("STEP 3: REUSING EXISTING MERGED DATA")
+        vprint("=" * 80)
+        vprint(f"  Location: {merged_dir}")
+        vprint(f"  Files: {merged_file_count} merged files")
+        vprint("")
     else:
         print("=" * 80)
         print("STEP 3: MERGING CITEDCG WITH CONVERSATIONS (Extract CiteDCG scores for search results) ...")
@@ -1915,11 +1930,9 @@ def process_seval_job_with_statistics_plots(
             citedcg_treatment_file=citedcg_files.get("treatment"),
             output_dir=merged_dir,
             threads=threads,
-            top_k=5,  # Not used anymore, but keep for compatibility
             verbose=verbose
         )
-        print("")
-        print(f"✓ Merge complete: {merged_dir}")
+        vprint(f"✓ Merge complete: {merged_dir}")
         print("")
     
     # Validate merged files exist
@@ -1954,12 +1967,12 @@ def process_seval_job_with_statistics_plots(
     utterance_details_dir = Path(f"{output_base_dir}/{job_id}_utterance_hop_citedcg_scores")
     utterance_details_dir.mkdir(parents=True, exist_ok=True)
     
-    print(f"  Experiment: {experiment}")
-    print(f"  Reading from: {merged_dir}")
-    print(f"  Output to: {utterance_details_dir}")
-    print(f"  Top-k values: {k_values}")
-    print(f"  Merged files reused: {can_reuse_merged}")
-    print("")
+    vprint(f"  Experiment: {experiment}")
+    vprint(f"  Reading from: {merged_dir}")
+    vprint(f"  Output to: {utterance_details_dir}")
+    vprint(f"  Top-k values: {k_values}")
+    vprint(f"  Merged files reused: {can_reuse_merged}")
+    vprint("")
     
     # Build utterance details for each experiment
     utterance_details_files = {}  # {experiment: filepath}
@@ -1967,11 +1980,11 @@ def process_seval_job_with_statistics_plots(
     details_files_reused = {}
     
     for exp in experiments:
-        print(f"  Processing {exp.upper()}...")
+        vprint(f"Processing {exp.upper()}...")
         
         exp_merged_dir = Path(merged_dir) / exp
         if not exp_merged_dir.exists():
-            print(f"    ✗ No merged files found for {exp}")
+            vprint(f"    ✗ No merged files found for {exp}")
             continue
         
         # Define output file for this experiment in the dedicated folder
@@ -1996,16 +2009,16 @@ def process_seval_job_with_statistics_plots(
                     can_reuse = True
                     utterance_details_files[exp] = str(details_file)
                     details_files_reused[exp] = True
-                    print(f"    \u2713 Reused existing file: "
+                    vprint(f"    \u2713 Reused existing file: "
                           f"{details_file.name}")
                 elif requested_k > existing_k:
                     # Need to add new k-values
                     new_k = sorted(requested_k - existing_k)
-                    print(f"    \u27A4 Will update with new k-values: "
+                    vprint(f"    \u27A4 Will update with new k-values: "
                           f"{new_k}")
             except Exception as e:
                 logger.warning(f"Could not load existing file for {exp}: {e}")
-                print("    \u27A4 Will regenerate (existing file unreadable)")
+                vprint("    \u27A4 Will regenerate (existing file unreadable)")
         
         if not can_reuse:
             # Build or update the file
@@ -2032,14 +2045,13 @@ def process_seval_job_with_statistics_plots(
                 if existing_file:
                     new_k = sorted(set(k_values) - set(k_calculated))
                     if new_k:
-                        print(f"    \u2713 Updated with new k-values "
+                        vprint(f"    \u2713 Updated with new k-values "
                               f"{new_k}: {details_file.name}")
                     else:
-                        print(f"    \u2713 Regenerated: "
+                        vprint(f"    \u2713 Regenerated: "
                               f"{details_file.name}")
                 else:
-                    print(f"    \u2713 Generated new file: "
-                          f"{details_file.name}")
+                    print(f"    ✓ Generated new file: {details_file.name}")
                 
             except Exception as e:
                 msg = f"Failed to build utterance details for {exp}: {e}"
@@ -2047,12 +2059,12 @@ def process_seval_job_with_statistics_plots(
                 print(f"    ✗ Error: {e}")
                 details_files_reused[exp] = False
     
-    print("")
+    vprint("")
     if utterance_details_files:
         count = len(utterance_details_files)
-        print(f"✓ Utterance details built: {count} file(s)")
+        vprint(f"✓ Utterance details built: {count} file(s)")
     else:
-        print("⚠ No utterance details were created")
+        vprint("⚠ No utterance details were created")
     print("")
     
     # STEP 4-2: Find paired utterances (only if both experiments processed)
@@ -2072,10 +2084,10 @@ def process_seval_job_with_statistics_plots(
                 utterance_details_dir / f"{job_id}_paired_utterances.json"
             )
             
-            print(f"  Control: {Path(control_file).name}")
-            print(f"  Treatment: {Path(treatment_file).name}")
-            print(f"  Output: {paired_file.name}")
-            print("")
+            vprint(f"  Control: {Path(control_file).name}")
+            vprint(f"  Treatment: {Path(treatment_file).name}")
+            vprint(f"  Output: {paired_file.name}")
+            vprint("")
             
             # Check if we can reuse existing paired file
             can_reuse_paired = False
@@ -2087,8 +2099,8 @@ def process_seval_job_with_statistics_plots(
             if paired_file.exists() and both_details_reused:
                 # Both input files were reused, so paired file is still valid
                 can_reuse_paired = True
-                print("  ✓ Reused existing paired file")
-                print("")
+                vprint("  ✓ Reused existing paired file")
+                vprint("")
                 
                 # Load the file to show summary
                 try:
@@ -2107,8 +2119,8 @@ def process_seval_job_with_statistics_plots(
                         output_file=str(paired_file)
                     )
                     paired_utterances_file = str(paired_file)
-                    print("  ✓ Generated paired utterances file")
-                    print("")
+                    print(" ✓ Generated paired utterances file")
+                    vprint("")
                 except Exception as e:
                     logger.error(f"Failed to find paired utterances: {e}")
                     print(f"  ✗ Error: {e}")
@@ -2126,14 +2138,14 @@ def process_seval_job_with_statistics_plots(
                 no_scores = metadata.get("no_scores_in_either", 0)
                 
                 pct = 100.0 * paired / max(1, total)
-                print("  Results:")
+                vprint("")
+                vprint("  Results:")
                 print(f"    Total unique queries: {total}")
                 print(f"    ✓ Paired (scores in both): {paired} "
                       f"({pct:.1f}%)")
                 print(f"    • Control only: {control_only}")
                 print(f"    • Treatment only: {treatment_only}")
                 print(f"    • No scores: {no_scores}")
-                print("")
                 print("")
     
     # Step 5: Generate plots with plot-specific statistics
@@ -2155,20 +2167,19 @@ def process_seval_job_with_statistics_plots(
                 list(plots_dir.rglob("*.json"))
             )
             if old_files:
-                print(f"  Deleting {len(old_files)} old files from {plots_dir}")
+                vprint(f"  Deleting {len(old_files)} old files from {plots_dir}")
                 processor._clean_directory(plots_dir, "plots", silent=True)
         
         plots_dir.mkdir(parents=True, exist_ok=True)
         
-        print(f"  Experiment: {experiment}")
-        print(f"  Top-k values: {k_values}")
-        print(f"  Output directory: {plots_dir}")
-        print("")
+        vprint(f"  Experiment: {experiment}")
+        vprint(f"  Top-k values: {k_values}")
+        vprint(f"  Output directory: {plots_dir}")
+        vprint("")
         
         try:
-            from merge_seval_results import (
-                generate_plot_statistics_from_utterance_details,
-            )
+            from merge_seval_results import \
+                generate_plot_statistics_from_utterance_details
 
             # Generate plot-specific statistics for each experiment and k-value
             stats_files_by_exp = {}  # {experiment: {k: filepath}}
@@ -2177,7 +2188,7 @@ def process_seval_job_with_statistics_plots(
                 if exp not in utterance_details_files:
                     continue
                     
-                print(f"  Generating plot statistics for {exp.upper()}...")
+                vprint(f"  Generating plot statistics for {exp.upper()}...")
                 stats_files_by_exp[exp] = {}
                 
                 for k in k_values:
@@ -2191,11 +2202,11 @@ def process_seval_job_with_statistics_plots(
                             output_json=str(stats_file)
                         )
                         stats_files_by_exp[exp][k] = str(stats_file)
-                        print(f"    ✓ k={k}: {stats_file.name}")
+                        vprint(f"    ✓ k={k}: {stats_file.name}")
                     except Exception as e:
                         logger.error(f"Failed to generate plot stats for {exp} k={k}: {e}")
-                        print(f"    ✗ k={k}: Error: {e}")
-                print("")
+                        vprint(f"    ✗ k={k}: Error: {e}")
+                vprint("")
             
             # Generate comparison plots from statistics files
             if len(experiments) == 1:
@@ -2217,8 +2228,8 @@ def process_seval_job_with_statistics_plots(
                 
                 # Generate paired utterances comparison plot
                 if paired_utterances_file:
-                    print("")
-                    print("  Generating paired utterances plot...")
+                    vprint("")
+                    vprint("  Generating paired utterances plot...")
                     try:
                         generate_paired_utterances_plot(
                             paired_utterances_file=paired_utterances_file,
@@ -2228,9 +2239,9 @@ def process_seval_job_with_statistics_plots(
                         )
                     except Exception as e:
                         logger.error(f"Failed to generate paired utterances plot: {e}")
-                        print(f"  ✗ Error: {e}")
+                        vprint(f"  ✗ Error: {e}")
             
-            print(f"✓ Plots generated in: {plots_dir}")
+            vprint(f"✓ Plots generated in: {plots_dir}")
         except Exception as e:
             logger.error(f"Failed to generate plots: {e}")
             print(f"✗ Error generating plots: {e}")
@@ -2238,36 +2249,37 @@ def process_seval_job_with_statistics_plots(
             traceback.print_exc()
         print("")
     else:
-        print("")
-        print("⚠ Note: Plotting requires at least 2 different top-k values")
-        print(f"  You provided: {k_values}")
-        print("  Plots will not be generated")
-        print("")
+        vprint("")
+        vprint("⚠ Note: Plotting requires at least 2 different top-k values")
+        vprint(f"  You provided: {k_values}")
+        vprint("  Plots will not be generated")
+        vprint("")
     
     # Final summary
+    print("")
     print("=" * 80)
     print("✓ COMPLETE: SEVAL JOB PROCESSING WITH STATISTICS")
     print("=" * 80)
-    print(f"Job ID: {job_id}")
-    print(f"Experiment: {experiment}")
-    print(f"Top-k values: {k_values}")
-    print("")
+    vprint(f"Job ID: {job_id}")
+    vprint(f"Experiment: {experiment}")
+    vprint(f"Top-k values: {k_values}")
+    vprint("")
     
-    print("Generated files:")
+    vprint("Generated files:")
     
     # Utterance details files (per experiment in dedicated folder)
     if utterance_details_files:
-        print(f"  Utterance details folder ({utterance_details_dir}/):")
+        vprint(f"  Utterance details folder ({utterance_details_dir}/):")
         file_count = len(utterance_details_files)
         if paired_utterances_file:
             file_count += 1  # Include paired file
-        print(f"    {file_count} file(s)")
+        vprint(f"    {file_count} file(s)")
         for exp, filepath in utterance_details_files.items():
             filename = Path(filepath).name
-            print(f"    - {filename}")
+            vprint(f"    - {filename}")
         if paired_utterances_file:
             filename = Path(paired_utterances_file).name
-            print(f"    - {filename} (paired utterances)")
+            vprint(f"    - {filename} (paired utterances)")
     
     # Plot-specific statistics and plots (in same folder)
     if len(k_values) >= 2 and plots_dir.exists():
@@ -2275,13 +2287,12 @@ def process_seval_job_with_statistics_plots(
         plot_count = len(list(plots_dir.glob("*.png")))
         
         if stats_count > 0 or plot_count > 0:
-            print(f"  Plots folder ({plots_dir}/):")
+            vprint(f"  Plots folder ({plots_dir}/):")
             if stats_count > 0:
-                print(f"    Plot statistics: {stats_count} files")
+                vprint(f"    Plot statistics: {stats_count} files")
             if plot_count > 0:
-                print(f"    Plot images: {plot_count} files")
+                vprint(f"    Plot images: {plot_count} files")
     
-    print("=" * 80)
     print("=" * 80)
 
 
