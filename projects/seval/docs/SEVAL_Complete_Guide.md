@@ -1016,14 +1016,167 @@ To answer these, we need **CiteDCG quality scores** for each search result.
 
 ## CiteDCG File Structure
 
-### File Format
+### Raw DCG API Response Structure
 
-**Format**: JSONL (JSON Lines / Newline-Delimited JSON)
+The raw `results.json` files from the DCG API (before extraction) use a different structure than the extracted format. Understanding this is important when debugging extraction code.
+
+**File Format**: JSONL (newline-delimited JSON) - one conversation object per line  
+**File Location**: `seval_data/{job_id}_metrics/Consolidated NDCG and CiteDCG Labels {Experiment}/results.json`
+
+**Top-Level Structure**:
+```json
+{
+  "ConversationId": "uuid-string",
+  "AllSearchResults": {
+    "hop_number": {
+      "plugin_name": [
+        {
+          "PluginName": "plugin_name",
+          "Results": [
+            {
+              "Type": "File",
+              "Id": "original-item-id",
+              "ReferenceId": "ce602c01-e9b1-13dc-0433-e9fbf11e5787.1000.3",
+              "Rank": 0,  # 0-indexed position
+              "HitHighlightedSummary": "content preview...",
+              "Source": {...},
+              "Content": "full document content...",
+              "Metadata": {...},
+              "CiteDCGLLMLabel": 2.4,  # Citation quality (0-3): Should this be cited?
+              "LLMLabel": 2.2,  # Search quality (0-4): Is this a good search result?
+              ...
+            }
+          ],
+          "PluginInvocation": "office365_search({'domain': 'files', 'query': 'search query text', ...})"
+        }
+      ]
+    }
+  },
+  "signals": {...},
+  "QueryHash": "...",
+  "EvaluationData": {...},
+  "Utterance": "user query text",
+  "SydneyReply": "bot response text",
+  "SydneySuggestion": [...]
+}
+```
+
+**Concrete Example**:
+```json
+{
+  "ConversationId": "9bebdcb0-f8be-4de8-b3df-8296600af701",
+  "AllSearchResults": {
+    "1": {
+      "office365_search_files": [
+        {
+          "PluginName": "office365_search_files",
+          "Results": [
+            {
+              "ReferenceId": "Turn1Search1",
+              "CiteDCGLLMLabel": 2.4,
+              "Type": "File",
+              "Rank": 1
+            }
+          ],
+          "PluginInvocation": "office365_search({'domain': 'files', 'query': 'creatividad en programación OR creative programming', ...})"
+        }
+      ],
+      "office365_search_people": [
+        {
+          "PluginName": "office365_search_people",
+          "Results": [...]
+        }
+      ]
+    },
+    "2": {}
+  }
+}
+```
+  "Utterance": "user query text",
+  "SydneyReply": "bot response text",
+  "SydneySuggestion": [...]
+}
+```
+
+**Key Structure Elements**:
+
+1. **Top-level fields**:
+   - `ConversationId`: Conversation UUID
+   - `AllSearchResults`: Search results organized by hop and plugin
+   - `signals`: Metadata about search result types and user profile
+   - `EvaluationData`: Full evaluation data (same as conversation file)
+   - `Utterance`: User's query text
+   - `SydneyReply`: Bot's response text
+   - `SydneySuggestion`: Suggested follow-up queries
+
+2. **`AllSearchResults`**: Root object containing search results
+   - Key: `hop_number` (e.g., `"1"`, `"2"`) - **numeric string**, not `"hop0"`
+   - Each hop represents a conversation turn
+
+3. **`hop_number`** (e.g., `"1"`, `"2"`):
+   - Key: `plugin_name` (e.g., `"office365_search_files"`, `"office365_search_people"`)
+   - Value: **Array** of search objects (not a nested object)
+
+4. **Search object** (element in plugin array):
+   - `PluginName`: Plugin identifier (redundant with parent key)
+   - `Results`: Array of search result objects
+   - `PluginInvocation`: The full plugin call string with parameters (**query is embedded here**)
+
+5. **`Results`** array contains result objects with:
+   - `Type`: Content type (e.g., `"File"`, `"External_Connectors"`)
+   - `Id`: Original item ID from the source system
+   - `ReferenceId`: UUID format identifier (e.g., `"ce602c01-e9b1-13dc-0433-e9fbf11e5787.1000.3"`)
+   - `Rank`: Position in search results (**0-indexed**)
+   - `HitHighlightedSummary`: Content preview/snippet
+   - `Source`: Object containing URL, Title, FileType, ModifiedBy, etc.
+   - `Content`: Full document content
+   - `Metadata`: Detailed metadata object
+   - `CiteDCGLLMLabel`: **Citation quality score** (0-3 scale) - measures if this should be cited in the response
+   - `LLMLabel`: **Search result quality score** (0-4 scale) - measures if this is a good search result
+   - Additional fields: Prompts, Responses, and caching flags for both scoring systems
+   
+   **Note**: `CiteDCGLLMLabel` and `LLMLabel` are different scores - see [Two Scoring Systems](#two-scoring-systems) for details on the distinction between citation quality vs. search result quality.
+
+**Important Differences from Extracted Format**:
+- **PascalCase vs lowercase**: Raw uses `ReferenceId`, extracted uses `reference_id`
+- **Hierarchy**: Raw uses `AllSearchResults[hop][plugin][array_index]`, extracted uses flat `turnData[].searches[]`
+- **Field naming**: Raw uses `ConversationId`, extracted uses `conversation_id`
+- **Plugin structure**: Raw uses array of search objects per plugin, extracted flattens to searches array
+- **Score location**: `CiteDCGLLMLabel` is at the **result level**, not search level
+- **Additional content**: Raw includes full `Content`, `Metadata`, `EvaluationData`, `Utterance`, `SydneyReply`
+
+**Example Access Path**:
+```python
+# Raw structure access:
+hop_num = "1"
+plugin = "office365_search_files"
+search_index = 0  # First search in the array
+result_index = 0   # First result
+
+score = data["AllSearchResults"][hop_num][plugin][search_index]["Results"][result_index]["CiteDCGLLMLabel"]
+query = data["AllSearchResults"][hop_num][plugin][search_index]["Query"]
+
+# Extracted structure access:
+turn_index = 0     # turnData is 0-indexed
+search_index = 0
+result_index = 0
+
+score = data["turnData"][turn_index]["searches"][search_index]["results"][result_index]["CiteDCGLLMLabel"]
+query = data["turnData"][turn_index]["searches"][search_index]["query"]
+```
+
+---
+
+### Extracted CiteDCG File Structure
+
+After extraction by `extract_per_result_citedcg()`, the data is reorganized into a flatter, more accessible structure.
+
+**File Format**: JSONL (JSON Lines / Newline-Delimited JSON)
 - Each line is a complete, valid JSON object
 - One conversation per line
-- File location: `results/{job_id}_citedcg/{job_id}_citedcg_scores_{experiment}.json`
+- **File location**: `results/{job_id}_citedcg/{job_id}_citedcg_scores_{experiment}.json`
 
-### Top-Level Structure
+**Top-Level Structure**:
 
 ```json
 {
@@ -1131,9 +1284,42 @@ To answer these, we need **CiteDCG quality scores** for each search result.
 
 ## CiteDCG Score Interpretation
 
+### Two Scoring Systems
+
+The raw DCG data contains **two different quality scores** for each search result:
+
+#### 1. CiteDCG Score (`CiteDCGLLMLabel`)
+- **Purpose**: Citation quality score
+- **Question**: "Should this result be **cited** in the response?"
+- **Scale**: 0-3 (can be decimal like 2.4)
+- **Context**: Evaluates relevance for being cited in the bot's answer
+- **Prompt type**: "You are a **citation quality rater**"
+- **Fields**: `CiteDCGLLMLabel`, `CiteDCGLLMPrompt`, `CiteDCGLLMResponse`, `CiteDCGLLMCached`
+- **Use case**: Measuring citation quality in responses
+
+#### 2. Search Result Score (`LLMLabel`)
+- **Purpose**: Search result quality score  
+- **Question**: "Is this a good **search result** for the query?"
+- **Scale**: 0-4 (can be decimal like 2.2)
+- **Context**: Evaluates relevance to the search query
+- **Prompt type**: "You are an **enterprise search engine quality rater**"
+- **Fields**: `LLMLabel`, `LLMPrompt`, `LLMResponse`, `LLMCached`
+- **Use case**: Measuring search engine quality
+
+#### Why Two Scores?
+
+A result can be:
+- **Good search result but not cited** (relevant but not used in final answer)
+- **Cited with high quality** (relevant and actually used effectively)
+- **Good search result with poor citation** (found correctly but cited poorly)
+
+The scores may differ because:
+- Citation quality considers if the model **actually used** the information effectively
+- Search quality evaluates if the result **matches the query** semantically
+
 ### Score Scale
 
-CiteDCG scores (`CiteDCGLLMLabel` field):
+**CiteDCG scores** (`CiteDCGLLMLabel` field):
 
 | Score Range | Quality Level | Description                        |
 | ----------- | ------------- | ---------------------------------- |

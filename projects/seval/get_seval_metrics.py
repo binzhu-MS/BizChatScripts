@@ -623,6 +623,15 @@ class PerResultCiteDCGExtractor:
                     if results_list:
                         has_non_empty_results = True
                     
+                    # Extract ContentDomainName from first result (for Graph Connectors)
+                    # This is needed to match with conversation data
+                    content_domain_name = None
+                    if results_list and ("search_enterprise_connectors" in plugin_name or "search_enterprise" in plugin_name):
+                        first_result = results_list[0]
+                        content_domain = first_result.get("ContentDomain", {})
+                        if isinstance(content_domain, dict):
+                            content_domain_name = content_domain.get("Name")
+                    
                     for result in results_list:
                         if "CiteDCGLLMLabel" not in result:
                             # Collect results without scores for error tracking
@@ -635,6 +644,9 @@ class PerResultCiteDCGExtractor:
                                 plugin_invocation,
                                 include_null_score=True
                             )
+                            # Store content_domain_name temporarily for grouping (will be moved to search level)
+                            if content_domain_name:
+                                extracted["_content_domain_name"] = content_domain_name
                             results_without_scores.append(extracted)
                             continue
                         
@@ -645,9 +657,12 @@ class PerResultCiteDCGExtractor:
                             search_domain,
                             plugin_name,
                             query_string,
-                            plugin_invocation,
+                            plugin_invocation
                         )
                         extracted["num_turns"] = num_turns
+                        # Store content_domain_name temporarily for grouping (will be moved to search level)
+                        if content_domain_name:
+                            extracted["_content_domain_name"] = content_domain_name
                         results.append(extracted)
         
         # If no scoreable results found, add placeholder
@@ -773,6 +788,10 @@ class PerResultCiteDCGExtractor:
                                         # Try 'search_query' (bing_search)
                                         if 'search_query' in params:
                                             return str(params['search_query'])
+                                        
+                                        # Try 'querykeywords' (enterprise connectors)
+                                        if 'querykeywords' in params:
+                                            return str(params['querykeywords'])
                                 except (ValueError, SyntaxError):
                                     pass
                                 break
@@ -964,7 +983,7 @@ class PerResultCiteDCGExtractor:
                     "has_cite_dcg_scores": False,
                     "reason": group_data.get("reason", ""),
                     "total_results": 0,
-                    "results_by_domain": {},
+                    "results_by_plugin": {},
                     "searches": [],
                 }
                 grouped_list.append(ordered_group)
@@ -973,6 +992,7 @@ class PerResultCiteDCGExtractor:
             # Process results with search data (normal or error cases)
             search_groups = defaultdict(list)
             plugin_invocations = {}  # Store plugin_invocation per group
+            content_domain_names = {}  # Store content_domain_name per group (for Graph Connectors)
             for result in results:
                 domain = result.get("search_domain", "unknown")
                 query_string = result.get("query_string", "")
@@ -998,6 +1018,10 @@ class PerResultCiteDCGExtractor:
                 if key not in plugin_invocations:
                     plugin_invocations[key] = plugin_invocation
                 
+                # Store content_domain_name for this group (for Graph Connectors)
+                if key not in content_domain_names:
+                    content_domain_names[key] = result.get("_content_domain_name")
+                
                 # Remove redundant fields for result item
                 result_item = {
                     k: v
@@ -1011,6 +1035,7 @@ class PerResultCiteDCGExtractor:
                         "query_string",
                         "plugin_invocation",  # Now at search level
                         "is_error",  # Remove internal tracking field
+                        "_content_domain_name",  # Temporary field, now at search level
                     ]
                 }
                 search_groups[key].append(result_item)
@@ -1023,31 +1048,48 @@ class PerResultCiteDCGExtractor:
                 search_groups.items()
             ):
                 key = (hop, domain, query_string, plugin_name)
-                searches.append(
-                    {
-                        "hop": hop,
-                        "plugin_name": plugin_name,
-                        "search_domain": domain,
-                        "query_string": query_string,
-                        "plugin_invocation": plugin_invocations.get(key, ""),
-                        "result_count": len(search_results),
-                        "results": search_results,
-                    }
-                )
+                
+                # Get content_domain_name from stored dict (for Graph Connectors)
+                content_domain_name = content_domain_names.get(key)
+                
+                # For web searches, infer type from domain (reverse of extraction logic)
+                # This ensures matching works correctly with conversation data
+                result_type = None
+                if plugin_name == "search_web" and domain:
+                    result_type = f"search_web_{domain}"
+                
+                search_dict = {
+                    "hop": hop,
+                    "plugin_name": plugin_name,
+                    "query_string": query_string,
+                    "plugin_invocation": plugin_invocations.get(key, ""),
+                    "result_count": len(search_results),
+                    "results": search_results,
+                }
+                
+                # Add type for web searches (for matching with conversation data)
+                if result_type:
+                    search_dict["type"] = result_type
+                
+                # Add content_domain_name at search level for Graph Connectors
+                if content_domain_name:
+                    search_dict["content_domain_name"] = content_domain_name
+                
+                searches.append(search_dict)
                 
                 total_results += len(search_results)
             
-            # Sort searches by hop, then domain, then query_string
+            # Sort searches by hop, then plugin_name, then query_string
             searches.sort(
-                key=lambda x: (x["hop"], x["search_domain"], x["query_string"])
+                key=lambda x: (x["hop"], x["plugin_name"], x["query_string"])
             )
             
-            # Count results by domain
-            domain_counts = {}
+            # Count results by plugin
+            plugin_counts = {}
             for search in searches:
-                domain = search["search_domain"]
-                domain_counts[domain] = (
-                    domain_counts.get(domain, 0) + search["result_count"]
+                plugin = search["plugin_name"]
+                plugin_counts[plugin] = (
+                    plugin_counts.get(plugin, 0) + search["result_count"]
                 )
             
             # Calculate num_hops (unique hop numbers)
@@ -1066,7 +1108,7 @@ class PerResultCiteDCGExtractor:
                 "non_empty_turns": non_empty_turns,
                 "has_cite_dcg_scores": has_dcg,
                 "total_results": total_results,
-                "results_by_domain": domain_counts,
+                "results_by_plugin": plugin_counts,
                 "searches": searches,
             }
             grouped_list.append(ordered_group)

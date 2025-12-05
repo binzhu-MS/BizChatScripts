@@ -20,22 +20,20 @@ maintain correct turn/hop/invocation alignment.
 USAGE:
 
 Command line:
-    # Merge conversation with CiteDCG scores and calculate statistics
+    # Merge conversation with CiteDCG scores
     python merge_seval_results.py merge_citedcg_and_calculate_stats \\
         --conversation_file="conv_details.json" \\
         --citedcg_file="citedcg_scores.json" \\
-        --output_file="full_analysis.json" \\
-        --stats_file="statistics.json"
+        --output_file="full_analysis.json"
 
 Programmatic:
     from merge_seval_results import merge_citedcg_and_calculate_stats
     
-    # Merge conversation with CiteDCG and calculate statistics
-    merged_data, stats = merge_citedcg_and_calculate_stats(
+    # Merge conversation with CiteDCG scores
+    merged_data, _ = merge_citedcg_and_calculate_stats(
         conversation_file="conv_details.json",
         citedcg_file="citedcg_scores.json",
-        output_file="full_analysis.json",
-        stats_file="statistics.json"
+        output_file="full_analysis.json"
     )
 """
 
@@ -152,57 +150,54 @@ def _build_citedcg_query_map(
     citedcg_data: List[Dict]
 ) -> Dict[str, Dict]:
     """
-    Build mapping from utterance to search data with preserved order.
+    Build mapping from utterance to complete CiteDCG data.
     
-    IMPORTANT: Maintains search order for correct turn/hop/invocation matching.
-    The conversation structure has turns/hops/invocations, but CiteDCG data
-    only has searches grouped by utterance. Matching relies on processing
-    searches in the same order they appear in both structures.
+    Simply maps normalized utterance text to the full CiteDCG entry,
+    preserving all fields exactly as stored.
     
     Args:
-        citedcg_data: List of query groups with hierarchical search data
+        citedcg_data: List of CiteDCG entries from JSONL file
         
     Returns:
-        Dictionary mapping normalized utterance to search structure:
+        Dictionary mapping normalized utterance to full CiteDCG entry:
         {
-            utterance: {
-                'searches': [
-                    {
-                        'search_domain': 'office365_search_files',
-                        'plugin_name': 'office365_search_files',
-                        'query_string': 'actual query text',
-                        'results': [result1, result2, ...]
-                    },
-                    ...
-                ]
+            "utterance text": {
+                "utterance": "Utterance text",
+                "searches": [...],
+                "has_cite_dcg_scores": true,
+                ...all other fields...
             }
         }
     """
     query_map = {}
     duplicate_count = 0
     
-    for query_group in citedcg_data:
-        utterance = query_group.get('utterance', '').strip().lower()
-        searches = query_group.get('searches', [])
+    for entry in citedcg_data:
+        utterance = entry.get('utterance', '').strip().lower()
         
-        if utterance and searches:
-            if utterance in query_map:
-                # Handle duplicate utterance - merge searches
-                duplicate_count += 1
-                # Extend the existing searches list
-                query_map[utterance]['searches'].extend(searches)
-            else:
-                query_map[utterance] = {'searches': searches}
-        elif not utterance:
+        if not utterance:
             logger.warning(
                 f"Skipping CiteDCG entry with empty utterance "
-                f"({len(searches)} searches)"
+                f"({len(entry.get('searches', []))} searches)"
             )
+            continue
+        
+        if utterance in query_map:
+            # Duplicate utterance - merge searches
+            duplicate_count += 1
+            existing_searches = query_map[utterance].get('searches', [])
+            new_searches = entry.get('searches', [])
+            existing_searches.extend(new_searches)
+        else:
+            # Store the complete entry as-is
+            query_map[utterance] = entry
     
     if duplicate_count > 0:
         logger.info(
             f"Merged {duplicate_count} duplicate utterances in CiteDCG data"
         )
+    
+    return query_map
     
     return query_map
 
@@ -257,6 +252,11 @@ def _add_citedcg_scores_to_conversation(
     total_queries_matched = 0
     total_queries_no_match = 0
     utterances_not_in_dcg = 0  # Track utterances missing from DCG data
+    
+    # Track result count mismatch statistics (SEVAL bug workaround)
+    mismatch_utterances = set()  # Track unique utterances with mismatches
+    mismatch_queries = 0  # Count queries with mismatches
+    mismatch_details = []  # Store details for summary logging
     
     # Track multi-turn statistics
     is_multi_turn = False
@@ -330,10 +330,16 @@ def _add_citedcg_scores_to_conversation(
         # Format: List of dicts with normalized fields + usage tracking
         normalized_searches = []
         for search in searches:
+            # Get content_domain_name from search level (no fallback - exact match only)
+            content_domain_name = search.get('content_domain_name')
+            plugin_name = search.get('plugin_name', '')
+            
             normalized_searches.append({
                 'original': search,
-                'plugin_name': search.get('plugin_name', ''),
-                'search_domain': search.get('search_domain', ''),
+                'hop': search.get('hop', ''),  # Hop number from CiteDCG
+                'plugin_name': plugin_name,
+                'type': search.get('type', ''),  # For web search type matching (webpages, news, etc.)
+                'content_domain_name': content_domain_name,  # For Graph Connectors
                 'query_lower': search.get('query_string', '').lower(),
                 'query_original': search.get('query_string', ''),
                 'results': search.get('results', []),
@@ -379,28 +385,52 @@ def _add_citedcg_scores_to_conversation(
                     
                     # Search for matching CiteDCG entry
                     matched_search = None
+                    hop_number = hop.get('hop_number', '')
+                    
                     for norm_search in normalized_searches:
                         # Skip already-used searches
                         if norm_search['used']:
                             continue
                         
+                        # CRITICAL: Match hop number first
+                        # CiteDCG hop is stored as string (e.g., "1", "2")
+                        # Conversation hop_number is also string
+                        hop_match = (str(norm_search.get('hop', '')) == str(hop_number))
+                        if not hop_match:
+                            continue
+                        
                         # Match logic depends on plugin type:
-                        # For search_web: plugin_name must be "search_web", search_domain matches domain
-                        # For others: both plugin_name and search_domain = tool_domain combined
+                        # 1. search_web: Match on plugin_name="search_web", type (webpages/news/etc), and query
+                        # 2. office365_search: plugin_name = "office365_search_{domain}"
+                        # 3. Graph Connector (search_enterprise_connectors_*): 
+                        #    Match on ContentDomainName (e.g., "Viva Learning") extracted from both sides
                         plugin_match = False
                         domain_match = False
+                        type_match = True  # Default to True for non-web searches
                         
                         if invocation_tool == "search_web":
-                            # Web search: plugin stays "search_web", domain is separate
+                            # Web search: match plugin_name AND type (to distinguish webpages from news, etc.)
                             plugin_match = (norm_search['plugin_name'] == "search_web")
-                            domain_match = (norm_search['search_domain'] == query_domain)
+                            domain_match = True  # Domain not checked for web search
+                            
+                            # Match type: conversation has domain="webpages", CiteDCG has type="search_web_webpages"
+                            expected_type = f"search_web_{query_domain}"
+                            type_match = (norm_search.get('type') == expected_type)
+                        elif "search_enterprise_connectors" in invocation_tool or "search_enterprise" in invocation_tool:
+                            # Graph Connector: match on ContentDomainName
+                            # Conversation: tool_name="search_enterprise_connectors_LearningAppConnectorV12", 
+                            #               domain="Viva Learning" (extracted from sourceJson)
+                            # CiteDCG: plugin_name="search_enterprise_connectors_LearningAppConnectorV12", 
+                            #          content_domain_name="Viva Learning" (extracted from ContentDomain.Name)
+                            plugin_match = (norm_search['plugin_name'] == invocation_tool)
+                            domain_match = (norm_search.get('content_domain_name') == query_domain)
                         else:
-                            # Office365 and others: combined format
+                            # Office365 and others: combined format (plugin_name = tool_domain)
                             search_domain_key = f"{invocation_tool}_{query_domain}"
                             plugin_match = (norm_search['plugin_name'] == search_domain_key)
-                            domain_match = (norm_search['search_domain'] == search_domain_key)
+                            domain_match = True  # Domain is encoded in plugin_name
                         
-                        if (plugin_match and domain_match and 
+                        if (plugin_match and domain_match and type_match and 
                                 norm_search['query_lower'] == query_text_lower):
                             matched_search = norm_search
                             norm_search['used'] = True  # Mark as used
@@ -409,6 +439,9 @@ def _add_citedcg_scores_to_conversation(
                     # Build display key for logging
                     if invocation_tool == "search_web":
                         search_domain_key = f"{invocation_tool}:{query_domain}"
+                    elif "search_enterprise_connectors" in invocation_tool or "search_enterprise" in invocation_tool:
+                        # Graph Connector: show full tool name with connector
+                        search_domain_key = f"{invocation_tool}_{query_domain}"
                     else:
                         search_domain_key = f"{invocation_tool}_{query_domain}"
                     
@@ -420,32 +453,80 @@ def _add_citedcg_scores_to_conversation(
                         search_result_count = len(matched_search['results'])
                         conv_result_count = len(query_results)
                         
+                        # WORKAROUND: Handle result count mismatch due to SEVAL extraction bug
+                        # This should not occur - indicates bug in CiteDCG extraction or conversation extraction
+                        # When fixed upstream, this workaround can be removed.
                         if search_result_count != conv_result_count:
                             hop_number = hop.get('hop_number', 'unknown')
+                            
+                            # Track mismatch statistics
+                            mismatch_utterances.add(user_input[:100])  # Use truncated utterance as key
+                            mismatch_queries += 1
+                            mismatch_details.append({
+                                'conversation_id': conversation_id,
+                                'utterance': user_input[:50],
+                                'turn': turn_idx,
+                                'hop': hop_number,
+                                'tool_domain': search_domain_key,
+                                'query': query_text_lower[:60],
+                                'conv_results': conv_result_count,
+                                'citedcg_results': search_result_count
+                            })
+                            
                             logger.warning(
                                 f"Conversation ID: {conversation_id}\n"
-                                f"Result count mismatch:\n"
+                                f"Result count mismatch (SEVAL bug - applying workaround):\n"
                                 f"  Utterance: '{user_input[:50]}'\n"
                                 f"  Turn: {turn_idx}, Hop: {hop_number}\n"
                                 f"  Tool+Domain: {search_domain_key}\n"
                                 f"  Query: '{query_text_lower[:60]}'\n"
                                 f"  Conversation results: {conv_result_count}\n"
-                                f"  CiteDCG results: {search_result_count}"
+                                f"  CiteDCG results: {search_result_count}\n"
+                                f"  → Assigning top {conv_result_count} CiteDCG scores to conversation results"
                             )
                     else:
                         total_queries_no_match += 1
                         hop_number = hop.get('hop_number', 'unknown')
-                        logger.warning(
-                            f"Conversation ID: {conversation_id}\n"
-                            f"No CiteDCG match for conversation query:\n"
-                            f"  Utterance: '{user_input[:50]}'\n"
-                            f"  Turn: {turn_idx}, Hop: {hop_number}\n"
-                            f"  Tool+Domain: {search_domain_key}\n"
-                            f"  Query: '{query_text_lower[:60]}'\n"
-                            f"  Result count: {len(query_results)}"
+                        
+                        # For Graph Connectors, provide detailed debugging info
+                        if "search_enterprise_connectors" in invocation_tool or "search_enterprise" in invocation_tool:
+                            logger.warning(
+                                f"Conversation ID: {conversation_id}\n"
+                                f"No CiteDCG match for Graph Connector query:\n"
+                                f"  Utterance: '{user_input[:50]}'\n"
+                                f"  Turn: {turn_idx}, Hop: {hop_number}\n"
+                                f"  Tool: {invocation_tool}\n"
+                                f"  Domain: {query_domain}\n"
+                                f"  Query: '{query_text_lower[:60]}'\n"
+                                f"  Available CiteDCG searches: {len(normalized_searches)}\n"
+                                f"  (Check if content_domain_name exists in CiteDCG for this connector)"
+                            )
+                        else:
+                            logger.warning(
+                                f"Conversation ID: {conversation_id}\n"
+                                f"No CiteDCG match for conversation query:\n"
+                                f"  Utterance: '{user_input[:50]}'\n"
+                                f"  Turn: {turn_idx}, Hop: {hop_number}\n"
+                                f"  Tool+Domain: {search_domain_key}\n"
+                                f"  Query: '{query_text_lower[:60]}'\n"
+                                f"  Result count: {len(query_results)}"
                             )                    # Add scores to each result by matching position
                     if matched_search:
                         search_results = matched_search['results']
+                        
+                        # WORKAROUND: Handle result count mismatch
+                        # If CiteDCG has more results than conversation, assign top scores only
+                        # This shouldn't happen - indicates SEVAL bug in extraction
+                        if len(search_results) != len(query_results):
+                            # Sort CiteDCG results by score (descending) to get top scores
+                            sorted_search_results = sorted(
+                                search_results,
+                                key=lambda r: r.get('CiteDCGLLMLabel', 0),
+                                reverse=True
+                            )
+                            # Use top N scores where N = conversation result count
+                            search_results = sorted_search_results[:len(query_results)]
+                        
                         for idx, result in enumerate(query_results):
                             # Match by position in the search's results
                             if idx < len(search_results):
@@ -474,6 +555,8 @@ def _add_citedcg_scores_to_conversation(
     summary['utterances_not_in_dcg'] = utterances_not_in_dcg
     summary['queries_matched'] = total_queries_matched
     summary['queries_no_match'] = total_queries_no_match
+    summary['mismatch_queries'] = mismatch_queries
+    summary['mismatch_utterances'] = len(mismatch_utterances)
     
     # Add multi-turn statistics to summary
     if is_multi_turn:
@@ -561,6 +644,25 @@ def _add_citedcg_scores_to_conversation(
         logger.warning(
             "  ✗ Status: NO MATCHES - Check utterance and data alignment"
         )
+    
+    # Log result count mismatch summary (SEVAL bug workaround)
+    if mismatch_queries > 0:
+        logger.info("")
+        logger.info("="*70)
+        logger.info("  Result Count Mismatch Summary (SEVAL Bug Workaround):")
+        logger.info(
+            f"    Affected utterances: {len(mismatch_utterances)}"
+        )
+        logger.info(
+            f"    Affected queries: {mismatch_queries}"
+        )
+        logger.info(
+            f"    Workaround applied: Assigned top CiteDCG scores to conversation results"
+        )
+        logger.info(
+            f"    Note: This indicates a bug in SEVAL extraction - should be fixed upstream"
+        )
+        logger.info("="*70)
     
     # Reconstruct merged dict with proper key order:
     # cited_references_with_scores right after cited_reference_ids
@@ -843,14 +945,12 @@ def merge_citedcg_and_calculate_stats(
     output_file: str,
     stats_file: Optional[str] = None,
     top_k: int = 5
-) -> tuple[Dict, Dict[str, Any]]:
+) -> tuple[Dict, None]:
     """
-    Merge CiteDCG scores into conversation and calculate comprehensive
-    statistics.
+    Merge CiteDCG scores into conversation.
     
-    This is the main entry point that performs both operations:
-    1. Merges conversation details with CiteDCG scores
-    2. Calculates comprehensive statistics from merged data
+    Note: stats_file and top_k parameters are kept for backward compatibility
+    but are ignored. Statistics calculation has been moved to step 4/5.
     
     Args:
         conversation_file: Path to conversation details JSON
@@ -858,52 +958,36 @@ def merge_citedcg_and_calculate_stats(
         citedcg_file: Path to CiteDCG scores JSON
             (from get_seval_metrics.py extract_per_result_citedcg)
         output_file: Path for merged output JSON
-        stats_file: Optional path to save statistics JSON.
-            If None, statistics are returned but not saved.
-        top_k: Number of top results to consider for top-k average (default: 5)
+        stats_file: DEPRECATED - ignored for backward compatibility
+        top_k: DEPRECATED - ignored for backward compatibility
     
     Returns:
-        Tuple of (merged_data, statistics)
+        Tuple of (merged_data, None) for backward compatibility
     
     Example:
-        merged, stats = merge_citedcg_and_calculate_stats(
+        merged_data, _ = merge_citedcg_and_calculate_stats(
             conversation_file="130949_control_conv_details.json",
             citedcg_file="130949_citedcg_scores_control.json",
-            output_file="130949_merged_control.json",
-            stats_file="130949_statistics_control.json",
-            top_k=5
+            output_file="130949_merged_control.json"
         )
     """
     logger.info("="*70)
-    logger.info("SEVAL DATA PROCESSING")
+    logger.info("MERGING CITEDCG SCORES WITH CONVERSATION")
     logger.info("="*70)
     
-    # Step 1: Merge conversation with CiteDCG scores
-    logger.info("="*70)
-    logger.info("Step 1/2: Merging conversation with CiteDCG scores...")
     merged_data = _merge_citedcg_into_conversation(
         conversation_file=conversation_file,
         citedcg_file=citedcg_file,
         output_file=output_file
     )
     
-    # Step 2: Calculate CiteDCG statistics from merged data
-    logger.info("="*70)
-    logger.info("Step 2/2: Calculating CiteDCG statistics...")
-    stats = _calculate_citedcg_statistics(
-        merged_file=output_file,
-        output_file=stats_file
-    )
-    
     logger.info("\n" + "="*70)
-    logger.info("✓ PROCESSING COMPLETE")
+    logger.info("✓ MERGE COMPLETE")
     logger.info("="*70)
     logger.info(f"Merged data: {output_file}")
-    if stats_file:
-        logger.info(f"Statistics: {stats_file}")
     logger.info("="*70)
     
-    return merged_data, stats
+    return merged_data, None
 
 
 def calculate_statistics_from_merged(

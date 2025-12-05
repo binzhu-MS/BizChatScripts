@@ -838,10 +838,9 @@ class MergeCiteDCGProcessor(BaseProcessor):
             if verbose:
                 logger.debug(f"Merging: {conv_file.name}")
             
-            # Determine output files
+            # Determine output file
             base_name = conv_file.stem.replace("_conv_details", "")
             merged_file = output_dir / f"{base_name}_merged.json"
-            stats_file = output_dir / f"{base_name}_stats.json"
             
             # Select correct CiteDCG file path
             citedcg_file = (
@@ -856,12 +855,10 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 return None
             
             # Use merge_seval_results to do the actual merging
-            merged_data, stats = merge_citedcg_and_calculate_stats(
+            merged_data, _ = merge_citedcg_and_calculate_stats(
                 conversation_file=str(conv_file),
                 citedcg_file=citedcg_file,
-                output_file=str(merged_file),
-                stats_file=str(stats_file),
-                top_k=5  # Default value, not used in merge, only for stats compatibility
+                output_file=str(merged_file)
             )
             
             # Load merged file to get statistics
@@ -912,6 +909,8 @@ class MergeCiteDCGProcessor(BaseProcessor):
             summary = eval_results.get("summary", {})
             utterances_not_in_dcg = summary.get("utterances_not_in_dcg", 0)
             queries_no_match = summary.get("queries_no_match", 0)
+            mismatch_queries = summary.get("mismatch_queries", 0)
+            mismatch_utterances = summary.get("mismatch_utterances", 0)
             
             # Extract multi-turn turn information
             turn_used_for_scoring = summary.get("turn_used_for_scoring", None)
@@ -920,7 +919,6 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 "file": conv_file.name,
                 "experiment": experiment_type,
                 "merged_file": str(merged_file),
-                "stats_file": str(stats_file),
                 "results_with_scores": results_with_scores,
                 "total_turns": total_turns,
                 "total_hops": total_hops,
@@ -930,6 +928,8 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 "has_scores": has_scores,
                 "utterances_not_in_dcg": utterances_not_in_dcg,
                 "queries_no_match": queries_no_match,
+                "mismatch_queries": mismatch_queries,
+                "mismatch_utterances": mismatch_utterances,
                 "turn_used_for_scoring": turn_used_for_scoring,
             }
         
@@ -967,19 +967,19 @@ class MergeCiteDCGProcessor(BaseProcessor):
                     exp_no_scores = sum(1 for r in exp_results if not r.get("has_scores", False))
                     exp_not_in_dcg = sum(r.get("utterances_not_in_dcg", 0) for r in exp_results)
                     exp_queries_no_match = sum(r.get("queries_no_match", 0) for r in exp_results)
-                    exp_errors = sum(1 for e in self.errors if any(r.get("file") == e.get("file") for r in exp_results))
+                    exp_mismatch_queries = sum(r.get("mismatch_queries", 0) for r in exp_results)
+                    exp_mismatch_utterances = sum(r.get("mismatch_utterances", 0) for r in exp_results)
                     
                     print(f"{exp_name} Experiment Summary:")
                     print("-" * 80)
-                    print(f"Total conversations:     {exp_total}")
-                    print(f"  With CiteDCG scores:   {exp_total - exp_no_scores}")
-                    print(f"  Without scores:        {exp_no_scores}")
-                    print(f"  Not in DCG data:       {exp_not_in_dcg}")
-                    print(f"  Queries no match:      {exp_queries_no_match}")
-                    print(
-                        f"  Matching errors:       {exp_errors} "
-                        f"(DCG exists but tools/queries/results don't match)"
-                    )
+                    print(f"Total conversations:                         {exp_total}")
+                    print(f"  With CiteDCG scores:                       {exp_total - exp_no_scores}")
+                    print(f"  Without scores:                            {exp_no_scores}")
+                    print(f"")
+                    print(f"Matching Issues:")
+                    print(f"  Utterance not in DCG:                      {exp_not_in_dcg} utterances")
+                    print(f"  Result count mismatch:                     {exp_mismatch_utterances} utterances (with {exp_mismatch_queries} mismatched queries)")
+                    print(f"  All matched except result count:           {exp_queries_no_match} queries")
                     
                     # Only show detailed statistics when verbose=True
                     if not self.verbose:

@@ -4479,8 +4479,111 @@ class SEVALAnalysisToolkit:
                                     print(f"  Utterance: {user_input[:100]}...")
                                     print(f"  Turn: {turn_results.get('turn_number')}, Hop: {hop_results.get('hop_number')}")
                                     print(f"{'='*80}\n")
+                        
+                        # Check for Graph Connector searches (e.g., search_enterprise_connectors_*)
+                        # These have arguments and processedResult directly on tool_inv, not in batchedQueries
+                        if (not batched_queries and 
+                            "processedResult" in tool_inv and 
+                            tool_name != "search_web" and
+                            ("search_enterprise_connectors" in tool_name or 
+                             "search_enterprise" in tool_name)):
+                            
+                            # Extract query from arguments field
+                            arguments_str = tool_inv.get("arguments", "")
+                            query_text = ""
+                            query_keywords = ""
+                            
+                            if arguments_str:
+                                try:
+                                    arguments = json.loads(arguments_str)
+                                    query_text = arguments.get("query", arguments.get("QueryKeywords", ""))
+                                    query_keywords = arguments.get("QueryKeywords", "")
+                                except Exception:
+                                    pass
+                            
+                            # Parse processedResult to get results
+                            result_str = tool_inv.get("processedResult", "")
+                            if result_str:
+                                result_str = result_str.strip()
+                                if result_str:
+                                    try:
+                                        # Parse result JSON
+                                        result_data = json.loads(result_str)
+                                        
+                                        # Graph connector results are in "results" array
+                                        results = []
+                                        if isinstance(result_data, dict):
+                                            results = result_data.get("results", [])
+                                        
+                                        if results:
+                                            total_queries += 1
+                                            
+                                            # Extract ContentDomainName from first result's sourceJson
+                                            # This matches DCG structure where ContentDomain.Name is the domain
+                                            domain = None
+                                            if results and isinstance(results[0], dict):
+                                                source_json_str = results[0].get("sourceJson", "")
+                                                if source_json_str:
+                                                    try:
+                                                        source_json = json.loads(source_json_str)
+                                                        domain = source_json.get("ContentDomainName")
+                                                    except Exception:
+                                                        pass
+                                            
+                                            # If extraction failed, log error and skip this query
+                                            if not domain:
+                                                user_input = turn_results.get("user_input", "")
+                                                print(f"\n{'='*80}")
+                                                print("ERROR: Could not extract ContentDomainName from Graph Connector result")
+                                                print(f"  Conversation ID: {conversation_id}")
+                                                print(f"  Tool: {tool_name}")
+                                                print(f"  Utterance: {user_input[:100]}...")
+                                                print(f"  Turn: {turn_results.get('turn_number')}, Hop: {hop_results.get('hop_number')}")
+                                                print(f"{'='*80}\n")
+                                                continue
+                                            
+                                            # Create a query entry for this Graph Connector search
+                                            query_results = {
+                                                "query_number": len(invocation_results["queries"]) + 1,
+                                                "domain": domain,
+                                                "query": query_text or query_keywords,
+                                                "result_count": len(results),
+                                                "results": [],
+                                            }
+                                            
+                                            # Extract each result
+                                            for item in results:
+                                                result_item = {
+                                                    "reference_id": item.get("reference_id", ""),
+                                                    "type": item.get("type", "External"),
+                                                    "title": item.get("title", ""),
+                                                    "snippet": item.get("snippet", "")[:200],
+                                                    "author": "",
+                                                    "lastModifiedTime": item.get("lastModifiedTime", ""),
+                                                    "fileName": "",
+                                                    "fileType": "",
+                                                }
+                                                query_results["results"].append(result_item)
+                                            
+                                            invocation_results["queries"].append(query_results)
+                                            invocation_results["total_results"] += len(results)
+                                            hop_results["total_results"] += len(results)
+                                            turn_results["total_results"] += len(results)
+                                            total_results += len(results)
+                                    except Exception as e:
+                                        # Log error but continue processing
+                                        user_input = turn_results.get("user_input", "")
+                                        print(f"\n{'='*80}")
+                                        print("WARNING: Error parsing Graph Connector search result")
+                                        print(f"  Conversation ID: {conversation_id}")
+                                        print(f"  Experiment: {exp_name}")
+                                        print(f"  Tool: {tool_name}")
+                                        print(f"  Utterance: {user_input[:100]}...")
+                                        print(f"  Turn: {turn_results.get('turn_number')}, Hop: {hop_results.get('hop_number')}")
+                                        print(f"  Error: {e}")
+                                        print(f"{'='*80}\n")
 
-                        # Only add invocation if it has queries (either batched or web search)
+                        # Only add invocation if it has queries (batched, web search, or graph connector)
                         if invocation_results["queries"]:
                             hop_results["invocations"].append(invocation_results)
 
