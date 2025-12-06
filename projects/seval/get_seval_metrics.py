@@ -595,11 +595,19 @@ class PerResultCiteDCGExtractor:
                     continue
                 
                 for domain_item in domain_data:
-                    # Extract plugin metadata
+                    # Extract plugin metadata - preserve original format
                     plugin_name = domain_item.get("PluginName", "")
                     plugin_invocation = domain_item.get(
                         "PluginInvocation", ""
                     )
+                    
+                    # For office365_search, extract domain as separate field
+                    # The domain is inside PluginInvocation: 
+                    # office365_search({'queries': [{'domain': 'files', ...}]})
+                    # Matching logic will combine plugin_name + domain when needed
+                    search_domain_value = ""
+                    if plugin_name == "office365_search":
+                        search_domain_value = self._extract_domain_from_invocation(plugin_invocation)
                     
                     # Only extract queries from search plugins
                     # Skip non-search plugins (record_memory, fetch_*, etc.)
@@ -642,13 +650,15 @@ class PerResultCiteDCGExtractor:
                                 plugin_name,
                                 query_string,
                                 plugin_invocation,
-                                include_null_score=True
+                                include_null_score=True,
+                                domain=search_domain_value
                             )
                             # Store content_domain_name temporarily for grouping (will be moved to search level)
                             if content_domain_name:
                                 extracted["_content_domain_name"] = content_domain_name
                             results_without_scores.append(extracted)
                             continue
+
                         
                         has_results_with_scores = True
                         extracted = self._extract_single_result(
@@ -657,7 +667,8 @@ class PerResultCiteDCGExtractor:
                             search_domain,
                             plugin_name,
                             query_string,
-                            plugin_invocation
+                            plugin_invocation,
+                            domain=search_domain_value
                         )
                         extracted["num_turns"] = num_turns
                         # Store content_domain_name temporarily for grouping (will be moved to search level)
@@ -852,6 +863,94 @@ class PerResultCiteDCGExtractor:
             )
         
         return ""
+
+    def _extract_domain_from_invocation(self, invocation_str: str) -> str:
+        """Extract domain from PluginInvocation field for office365_search.
+        
+        The domain (files, people, events, etc.) is stored inside the invocation string:
+        office365_search({'queries': [{'domain': 'files', 'query': '...'}]})
+        
+        This is needed for matching with conversation data which uses format:
+        office365_search_files, office365_search_people, etc.
+        
+        Args:
+            invocation_str: The PluginInvocation string
+            
+        Returns:
+            The domain string (e.g., 'files', 'people') or empty string if not found
+        """
+        if not invocation_str:
+            return ""
+        
+        try:
+            import ast
+            import re
+
+            # Find the dict/parameter part: function_name({...})
+            paren_start = invocation_str.find('(')
+            if paren_start != -1:
+                # Find matching closing paren
+                brace_count = 0
+                in_string = False
+                string_char = None
+                escaped = False
+                
+                for i in range(paren_start + 1, len(invocation_str)):
+                    char = invocation_str[i]
+                    
+                    if escaped:
+                        escaped = False
+                        continue
+                    
+                    if char == '\\':
+                        escaped = True
+                        continue
+                    
+                    if char in ('"', "'"):
+                        if not in_string:
+                            in_string = True
+                            string_char = char
+                        elif char == string_char:
+                            in_string = False
+                            string_char = None
+                        continue
+                    
+                    if not in_string:
+                        if char == '(':
+                            brace_count += 1
+                        elif char == ')':
+                            if brace_count == 0:
+                                dict_str = invocation_str[paren_start + 1:i]
+                                try:
+                                    params = ast.literal_eval(dict_str)
+                                    if isinstance(params, dict):
+                                        # Try 'domain' directly
+                                        if 'domain' in params:
+                                            return str(params['domain'])
+                                        # Try 'queries' list (office365_search format)
+                                        if 'queries' in params and isinstance(params['queries'], list):
+                                            for q in params['queries']:
+                                                if isinstance(q, dict) and 'domain' in q:
+                                                    return str(q['domain'])
+                                except (ValueError, SyntaxError):
+                                    pass
+                                break
+                            else:
+                                brace_count -= 1
+            
+            # Fallback: regex extraction
+            match = re.search(r"'domain':\s*'([^']+)'", invocation_str)
+            if match:
+                return match.group(1)
+            
+            match = re.search(r'"domain":\s*"([^"]+)"', invocation_str)
+            if match:
+                return match.group(1)
+                
+        except Exception as e:
+            logger.debug(f"Error extracting domain from invocation: {e}")
+        
+        return ""
     
     def _extract_single_result(
         self,
@@ -862,6 +961,7 @@ class PerResultCiteDCGExtractor:
         query_string: str = "",
         plugin_invocation: str = "",
         include_null_score: bool = False,
+        domain: str = "",
     ) -> dict:
         """Extract relevant fields from a single result."""
         # Set default CiteDCG label based on whether we're including nulls
@@ -871,6 +971,7 @@ class PerResultCiteDCGExtractor:
             "turn_index": turn_index,
             "search_domain": search_domain,
             "plugin_name": plugin_name,
+            "domain": domain,  # Extracted from PluginInvocation for office365_search
             "query_string": query_string,
             "plugin_invocation": plugin_invocation,
             # Extract reference_id: Office365 uses "ReferenceId" (PascalCase),
@@ -993,26 +1094,29 @@ class PerResultCiteDCGExtractor:
             search_groups = defaultdict(list)
             plugin_invocations = {}  # Store plugin_invocation per group
             content_domain_names = {}  # Store content_domain_name per group (for Graph Connectors)
+            extracted_domains = {}  # Store extracted domain (files/people/etc.) for office365_search
             for result in results:
-                domain = result.get("search_domain", "unknown")
+                search_domain_key = result.get("search_domain", "unknown")
                 query_string = result.get("query_string", "")
                 plugin_name = result.get("plugin_name", "")
                 plugin_invocation = result.get("plugin_invocation", "")
                 hop = result.get("turn_index", "")
+                extracted_domain = result.get("domain", "")  # Extracted from PluginInvocation
                 
                 # For web searches, extract domain from Type field for grouping
                 # This matches the conversation structure which has separate queries
                 # for different web search types (webpages, news, questionsandanswers)
                 # BUT keep original plugin_name ("search_web") to match raw data
                 result_type = result.get("Type", "")
+                grouping_domain = search_domain_key
                 if plugin_name == "search_web" and result_type:
                     # Extract the domain from Type to create separate groups
                     # Type format: "search_web_<domain>" -> extract domain part
                     if result_type.startswith("search_web_"):
-                        domain = result_type.replace("search_web_", "")
+                        grouping_domain = result_type.replace("search_web_", "")
                 
                 # Use domain in grouping key but preserve original plugin_name
-                key = (hop, domain, query_string, plugin_name)
+                key = (hop, grouping_domain, query_string, plugin_name)
                 
                 # Store plugin_invocation for this group (same for all results in group)
                 if key not in plugin_invocations:
@@ -1021,6 +1125,10 @@ class PerResultCiteDCGExtractor:
                 # Store content_domain_name for this group (for Graph Connectors)
                 if key not in content_domain_names:
                     content_domain_names[key] = result.get("_content_domain_name")
+                
+                # Store extracted domain for this group (for office365_search)
+                if key not in extracted_domains:
+                    extracted_domains[key] = extracted_domain
                 
                 # Remove redundant fields for result item
                 result_item = {
@@ -1032,6 +1140,7 @@ class PerResultCiteDCGExtractor:
                         "timestamp",
                         "search_domain",
                         "plugin_name",
+                        "domain",  # Now at search level
                         "query_string",
                         "plugin_invocation",  # Now at search level
                         "is_error",  # Remove internal tracking field
@@ -1044,19 +1153,22 @@ class PerResultCiteDCGExtractor:
             searches = []
             total_results = 0
             
-            for (hop, domain, query_string, plugin_name), search_results in (
+            for (hop, grouping_domain, query_string, plugin_name), search_results in (
                 search_groups.items()
             ):
-                key = (hop, domain, query_string, plugin_name)
+                key = (hop, grouping_domain, query_string, plugin_name)
                 
                 # Get content_domain_name from stored dict (for Graph Connectors)
                 content_domain_name = content_domain_names.get(key)
                 
+                # Get extracted domain for office365_search (files/people/etc.)
+                extracted_domain = extracted_domains.get(key, "")
+                
                 # For web searches, infer type from domain (reverse of extraction logic)
                 # This ensures matching works correctly with conversation data
                 result_type = None
-                if plugin_name == "search_web" and domain:
-                    result_type = f"search_web_{domain}"
+                if plugin_name == "search_web" and grouping_domain:
+                    result_type = f"search_web_{grouping_domain}"
                 
                 search_dict = {
                     "hop": hop,
@@ -1066,6 +1178,11 @@ class PerResultCiteDCGExtractor:
                     "result_count": len(search_results),
                     "results": search_results,
                 }
+                
+                # Add domain for office365_search (extracted from PluginInvocation)
+                # This is used for matching with conversation data
+                if extracted_domain:
+                    search_dict["domain"] = extracted_domain
                 
                 # Add type for web searches (for matching with conversation data)
                 if result_type:

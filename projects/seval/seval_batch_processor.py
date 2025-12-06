@@ -909,6 +909,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
             summary = eval_results.get("summary", {})
             utterances_not_in_dcg = summary.get("utterances_not_in_dcg", 0)
             queries_no_match = summary.get("queries_no_match", 0)
+            no_match_utterances = summary.get("no_match_utterances", 0)
             mismatch_queries = summary.get("mismatch_queries", 0)
             mismatch_utterances = summary.get("mismatch_utterances", 0)
             
@@ -928,6 +929,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
                 "has_scores": has_scores,
                 "utterances_not_in_dcg": utterances_not_in_dcg,
                 "queries_no_match": queries_no_match,
+                "no_match_utterances": no_match_utterances,
                 "mismatch_queries": mismatch_queries,
                 "mismatch_utterances": mismatch_utterances,
                 "turn_used_for_scoring": turn_used_for_scoring,
@@ -969,6 +971,7 @@ class MergeCiteDCGProcessor(BaseProcessor):
                     exp_queries_no_match = sum(r.get("queries_no_match", 0) for r in exp_results)
                     exp_mismatch_queries = sum(r.get("mismatch_queries", 0) for r in exp_results)
                     exp_mismatch_utterances = sum(r.get("mismatch_utterances", 0) for r in exp_results)
+                    exp_no_match_utterances = sum(r.get("no_match_utterances", 0) for r in exp_results)
                     
                     print(f"{exp_name} Experiment Summary:")
                     print("-" * 80)
@@ -978,8 +981,8 @@ class MergeCiteDCGProcessor(BaseProcessor):
                     print(f"")
                     print(f"Matching Issues:")
                     print(f"  Utterance not in DCG:                      {exp_not_in_dcg} utterances")
-                    print(f"  Result count mismatch:                     {exp_mismatch_utterances} utterances (with {exp_mismatch_queries} mismatched queries)")
-                    print(f"  All matched except result count:           {exp_queries_no_match} queries")
+                    print(f"  No matching CiteDCG entry:                 {exp_no_match_utterances} utterances ({exp_queries_no_match} queries)")
+                    print(f"  Result count mismatch (workaround applied):{exp_mismatch_utterances} utterances ({exp_mismatch_queries} queries)")
                     
                     # Only show detailed statistics when verbose=True
                     if not self.verbose:

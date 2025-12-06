@@ -4330,6 +4330,141 @@ class SEVALAnalysisToolkit:
                             turn_results["total_results"] += len(results)
                             total_results += len(results)
 
+                        # Fallback: When batchedQueries is empty, extract from toolInvocations directly
+                        # This handles GPT-5 treatment cases where batchedQueries is [] but data exists in arguments/processedResult
+                        if not batched_queries and tool_name == "office365_search" and "processedResult" in tool_inv:
+                            # Extract queries from arguments field
+                            arguments_str = tool_inv.get("arguments", "")
+                            queries_list = []
+                            
+                            if arguments_str:
+                                try:
+                                    if isinstance(arguments_str, str):
+                                        arguments = json.loads(arguments_str)
+                                    else:
+                                        arguments = arguments_str
+                                    queries_list = arguments.get("queries", [])
+                                except Exception:
+                                    pass
+                            
+                            # Extract all results from processedResult
+                            processed_result_str = tool_inv.get("processedResult", "")
+                            all_results = []
+                            
+                            if processed_result_str:
+                                try:
+                                    if isinstance(processed_result_str, str):
+                                        processed_data = json.loads(processed_result_str)
+                                    else:
+                                        processed_data = processed_result_str
+                                    if isinstance(processed_data, dict):
+                                        all_results = processed_data.get("results", [])
+                                except Exception:
+                                    pass
+                            
+                            # Process each query from the queries list
+                            for query_idx, query_item in enumerate(queries_list):
+                                total_queries += 1
+                                
+                                # Handle query_item being string or dict
+                                if isinstance(query_item, str):
+                                    try:
+                                        query_item = json.loads(query_item)
+                                    except Exception:
+                                        query_item = {}
+                                
+                                if not isinstance(query_item, dict):
+                                    query_item = {}
+                                
+                                domain = query_item.get("domain", "unknown")
+                                query_text = query_item.get("query", "")
+                                
+                                # Note: We cannot accurately split results per-query when batchedQueries is empty
+                                # For single-query cases, all results belong to that query
+                                # For multi-query cases, we assign all results to the first query only
+                                # to avoid inflating result counts
+                                if query_idx == 0:
+                                    results_for_query = all_results
+                                else:
+                                    results_for_query = []  # Don't duplicate results for other queries
+                                
+                                query_results = {
+                                    "query_number": query_idx + 1,
+                                    "domain": domain,
+                                    "query": query_text,
+                                    "result_count": len(results_for_query),
+                                    "results": [],
+                                }
+                                
+                                # Extract key info from each result
+                                for result in results_for_query:
+                                    if not isinstance(result, dict):
+                                        continue
+                                    
+                                    result_type = result.get("type", "")
+                                    
+                                    # Handle PeopleInferenceAnswer differently
+                                    if result_type == "PeopleInferenceAnswer":
+                                        display_name = result.get("displayName", "")
+                                        if display_name:
+                                            display_name = display_name.replace("<Person>", "").replace("</Person>", "")
+                                        
+                                        result_data = {
+                                            "reference_id": result.get("reference_id", ""),
+                                            "type": result_type,
+                                            "title": display_name,
+                                            "snippet": result.get("profession", ""),
+                                            "author": result.get("userPrincipalName", ""),
+                                            "lastModifiedTime": "",
+                                            "fileName": result.get("companyName", ""),
+                                            "fileType": result.get("department", ""),
+                                            "emailAddresses": result.get("emailAddresses", ""),
+                                            "officeLocation": result.get("officeLocation", ""),
+                                        }
+                                    elif result_type == "TeamsMessage":
+                                        result_data = {
+                                            "reference_id": result.get("reference_id", ""),
+                                            "type": result_type,
+                                            "title": result.get("title", ""),
+                                            "snippet": result.get("snippet", "")[:200] if result.get("snippet") else "",
+                                            "author": result.get("to", ""),
+                                            "lastModifiedTime": result.get("dateTimeSent", ""),
+                                            "fileName": "",
+                                            "fileType": "",
+                                        }
+                                    elif result_type == "EmailMessage":
+                                        date_time = result.get("dateTimeReceived") or result.get("dateTimeSent", "")
+                                        result_data = {
+                                            "reference_id": result.get("reference_id", ""),
+                                            "type": result_type,
+                                            "title": result.get("subject", ""),
+                                            "snippet": result.get("snippet", "")[:200] if result.get("snippet") else "",
+                                            "author": result.get("from", ""),
+                                            "lastModifiedTime": date_time,
+                                            "fileName": "",
+                                            "fileType": "",
+                                        }
+                                    else:
+                                        # Generic extraction for other types (File, etc.)
+                                        result_data = {
+                                            "reference_id": result.get("reference_id", ""),
+                                            "type": result_type,
+                                            "title": result.get("title", ""),
+                                            "snippet": result.get("snippet", "")[:200] if result.get("snippet") else "",
+                                            "author": result.get("author", ""),
+                                            "lastModifiedTime": result.get("lastModifiedTime", ""),
+                                            "fileName": result.get("fileName", ""),
+                                            "fileType": result.get("fileType", ""),
+                                        }
+                                    
+                                    query_results["results"].append(result_data)
+                                
+                                invocation_results["queries"].append(query_results)
+                                invocation_results["total_results"] += len(results_for_query)
+                                hop_results["total_results"] += len(results_for_query)
+                                turn_results["total_results"] += len(results_for_query)
+                                total_results += len(results_for_query)
+
                         # Check for web search results (search_web pattern)
                         # Web search stores results in 'processedResult' field, not batchedQueries
                         if not batched_queries and "processedResult" in tool_inv and tool_name == "search_web":

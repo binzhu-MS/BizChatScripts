@@ -252,6 +252,7 @@ def _add_citedcg_scores_to_conversation(
     total_queries_matched = 0
     total_queries_no_match = 0
     utterances_not_in_dcg = 0  # Track utterances missing from DCG data
+    no_match_utterances = set()  # Track unique utterances with queries that didn't match
     
     # Track result count mismatch statistics (SEVAL bug workaround)
     mismatch_utterances = set()  # Track unique utterances with mismatches
@@ -338,6 +339,7 @@ def _add_citedcg_scores_to_conversation(
                 'original': search,
                 'hop': search.get('hop', ''),  # Hop number from CiteDCG
                 'plugin_name': plugin_name,
+                'domain': search.get('domain', ''),  # For office365_search domain matching (files/people/etc.)
                 'type': search.get('type', ''),  # For web search type matching (webpages, news, etc.)
                 'content_domain_name': content_domain_name,  # For Graph Connectors
                 'query_lower': search.get('query_string', '').lower(),
@@ -401,7 +403,8 @@ def _add_citedcg_scores_to_conversation(
                         
                         # Match logic depends on plugin type:
                         # 1. search_web: Match on plugin_name="search_web", type (webpages/news/etc), and query
-                        # 2. office365_search: plugin_name = "office365_search_{domain}"
+                        # 2. office365_search: Match on plugin_name="office365_search" AND domain (files/people/etc)
+                        #    OR match combined format plugin_name="office365_search_files" etc.
                         # 3. Graph Connector (search_enterprise_connectors_*): 
                         #    Match on ContentDomainName (e.g., "Viva Learning") extracted from both sides
                         plugin_match = False
@@ -424,8 +427,24 @@ def _add_citedcg_scores_to_conversation(
                             #          content_domain_name="Viva Learning" (extracted from ContentDomain.Name)
                             plugin_match = (norm_search['plugin_name'] == invocation_tool)
                             domain_match = (norm_search.get('content_domain_name') == query_domain)
+                        elif invocation_tool == "office365_search":
+                            # Office365: Two possible formats in CiteDCG data:
+                            # Format 1 (separate): plugin_name="office365_search", domain="files"
+                            # Format 2 (combined): plugin_name="office365_search_files", domain=""
+                            # Conversation always uses: tool_name="office365_search", domain="files"
+                            citedcg_plugin = norm_search['plugin_name']
+                            citedcg_domain = norm_search.get('domain', '')
+                            
+                            # Check Format 1: separate plugin_name and domain
+                            if citedcg_plugin == "office365_search" and citedcg_domain == query_domain:
+                                plugin_match = True
+                                domain_match = True
+                            # Check Format 2: combined plugin_name (e.g., "office365_search_files")
+                            elif citedcg_plugin == f"office365_search_{query_domain}":
+                                plugin_match = True
+                                domain_match = True
                         else:
-                            # Office365 and others: combined format (plugin_name = tool_domain)
+                            # Other plugins: combined format (plugin_name = tool_domain)
                             search_domain_key = f"{invocation_tool}_{query_domain}"
                             plugin_match = (norm_search['plugin_name'] == search_domain_key)
                             domain_match = True  # Domain is encoded in plugin_name
@@ -486,6 +505,7 @@ def _add_citedcg_scores_to_conversation(
                             )
                     else:
                         total_queries_no_match += 1
+                        no_match_utterances.add(user_input[:100])  # Track unique utterances
                         hop_number = hop.get('hop_number', 'unknown')
                         
                         # For Graph Connectors, provide detailed debugging info
@@ -555,6 +575,7 @@ def _add_citedcg_scores_to_conversation(
     summary['utterances_not_in_dcg'] = utterances_not_in_dcg
     summary['queries_matched'] = total_queries_matched
     summary['queries_no_match'] = total_queries_no_match
+    summary['no_match_utterances'] = len(no_match_utterances)  # Utterances with unmatched queries
     summary['mismatch_queries'] = mismatch_queries
     summary['mismatch_utterances'] = len(mismatch_utterances)
     
@@ -627,23 +648,6 @@ def _add_citedcg_scores_to_conversation(
     logger.info(
         f"    ✗ Not matched: {total_results_without_scores}"
     )
-    
-    # Determine overall matching status
-    logger.info("")
-    if (total_queries_matched == total_queries_processed and 
-        total_results_with_scores == total_results):
-        logger.info(
-            "  ✓ Status: PERFECT MATCH - All queries and results matched"
-        )
-    elif total_results_with_scores > 0:
-        logger.info(
-            f"  ⚠️ Status: PARTIAL MATCH - "
-            f"{query_match_pct:.1f}% queries, {result_match_pct:.1f}% results"
-        )
-    else:
-        logger.warning(
-            "  ✗ Status: NO MATCHES - Check utterance and data alignment"
-        )
     
     # Log result count mismatch summary (SEVAL bug workaround)
     if mismatch_queries > 0:
