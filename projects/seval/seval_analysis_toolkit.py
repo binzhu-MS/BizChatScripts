@@ -4178,12 +4178,102 @@ class SEVALAnalysisToolkit:
                             "total_results": 0,
                         }
                         
-                        # Check for batchedQueries (office365_search pattern)
+                        # Check for batchedQueries (office365_search and search_web patterns)
                         batched_queries = tool_inv.get("batchedQueries", [])
 
                         for query_idx, batched_query in enumerate(
                             batched_queries
                         ):
+                            # Handle search_web batchedQueries differently
+                            # search_web has: arguments=plain query string, processedResult={WebPages, News, Sports, etc.}
+                            if tool_name == "search_web":
+                                # For search_web, arguments is a plain query string, not JSON
+                                query_text = batched_query.get("arguments", "")
+                                
+                                # Parse processedResult which has WebPages, News, Sports, etc.
+                                processed_result_str = batched_query.get(
+                                    "processedResult", ""
+                                )
+                                
+                                if processed_result_str:
+                                    try:
+                                        processed_data = json.loads(processed_result_str)
+                                        
+                                        # Extract results by type (same as non-batched search_web)
+                                        results_by_type = {}
+                                        
+                                        if isinstance(processed_data, dict):
+                                            # Extract all possible result types from the dict
+                                            if "QuestionsAndAnswers" in processed_data:
+                                                results_by_type["questionsandanswers"] = processed_data.get("QuestionsAndAnswers", [])
+                                            if "WebPages" in processed_data:
+                                                results_by_type["webpages"] = processed_data.get("WebPages", [])
+                                            if "News" in processed_data:
+                                                results_by_type["news"] = processed_data.get("News", [])
+                                            if "Sports" in processed_data:
+                                                results_by_type["sports"] = processed_data.get("Sports", [])
+                                        
+                                        # Create separate query entries for each type
+                                        for search_type, items in results_by_type.items():
+                                            if not items:
+                                                continue
+                                            
+                                            total_queries += 1
+                                            query_results = {
+                                                "query_number": len(invocation_results["queries"]) + 1,
+                                                "domain": search_type,
+                                                "query": query_text,
+                                                "result_count": len(items),
+                                                "results": [],
+                                            }
+                                            
+                                            # Extract each result for this type
+                                            for item in items:
+                                                # Determine display type
+                                                if search_type == "questionsandanswers":
+                                                    item_type = "QA"
+                                                elif search_type == "news":
+                                                    item_type = "News"
+                                                elif search_type == "sports":
+                                                    item_type = "Sports"
+                                                else:
+                                                    item_type = "WebPage"
+                                                
+                                                # Extract snippets if available
+                                                snippets = item.get("snippets", [])
+                                                snippet_text = ""
+                                                if snippets:
+                                                    snippet_text = " ".join(str(s) for s in snippets)[:200]
+                                                
+                                                result_item = {
+                                                    "reference_id": item.get("reference_id", ""),
+                                                    "type": item_type,
+                                                    "title": item.get("title", ""),
+                                                    "snippet": snippet_text,
+                                                    "author": "",
+                                                    "lastModifiedTime": "",
+                                                    "fileName": "",
+                                                    "fileType": "",
+                                                    "url": item.get("url", ""),
+                                                }
+                                                query_results["results"].append(result_item)
+                                            
+                                            invocation_results["queries"].append(query_results)
+                                            invocation_results["total_results"] += len(items)
+                                            hop_results["total_results"] += len(items)
+                                            turn_results["total_results"] += len(items)
+                                            total_results += len(items)
+                                    except Exception as e:
+                                        # Log error but continue
+                                        user_input = turn_results.get("user_input", "")
+                                        print(f"\nWARNING: Error parsing batched search_web result")
+                                        print(f"  Conversation ID: {conversation_id}")
+                                        print(f"  Error: {e}")
+                                
+                                # Continue to next batched query (skip office365_search logic)
+                                continue
+                            
+                            # office365_search pattern: arguments is JSON with domain/query, processedResult has results array
                             total_queries += 1
                             # Parse arguments to get query details
                             arguments_str = batched_query.get("arguments", "")

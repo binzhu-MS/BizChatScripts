@@ -419,6 +419,37 @@ def _add_citedcg_scores_to_conversation(
                             # Match type: conversation has domain="webpages", CiteDCG has type="search_web_webpages"
                             expected_type = f"search_web_{query_domain}"
                             type_match = (norm_search.get('type') == expected_type)
+                            
+                            # WORKAROUND: CiteDCG data for search_web has empty PluginInvocation
+                            # (PluginInvocation is literally "search_web({})"), so query_string is empty.
+                            # Fall back to matching by result reference_ids when query is unavailable.
+                            if not norm_search['query_lower']:
+                                # Extract reference_ids from conversation results
+                                conv_ref_ids = set()
+                                for result in query.get('results', []):
+                                    ref_id = result.get('reference_id', '')
+                                    if ref_id:
+                                        conv_ref_ids.add(ref_id.lower())
+                                
+                                # Extract reference_ids from CiteDCG results
+                                dcg_ref_ids = set()
+                                for result in norm_search.get('results', []):
+                                    ref_id = result.get('reference_id', '')
+                                    if ref_id:
+                                        dcg_ref_ids.add(ref_id.lower())
+                                
+                                # Match if there's significant overlap in reference_ids
+                                # (at least one common reference_id, or both are empty)
+                                if conv_ref_ids and dcg_ref_ids:
+                                    ref_id_match = len(conv_ref_ids & dcg_ref_ids) > 0
+                                else:
+                                    # Both empty - not a valid match
+                                    ref_id_match = False
+                                
+                                if plugin_match and domain_match and type_match and ref_id_match:
+                                    matched_search = norm_search
+                                    norm_search['used'] = True  # Mark as used
+                                    break  # Found match via reference_ids, skip query_text check
                         elif "search_enterprise_connectors" in invocation_tool or "search_enterprise" in invocation_tool:
                             # Graph Connector: match on ContentDomainName
                             # Conversation: tool_name="search_enterprise_connectors_LearningAppConnectorV12", 
