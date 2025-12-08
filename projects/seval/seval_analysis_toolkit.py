@@ -2324,6 +2324,391 @@ class SEVALAnalysisToolkit:
             f"Model statistics extraction completed successfully. Results saved to: {output_file}"
         )
 
+    def extract_model_usage_statistics(
+        self,
+        input_dir: str,
+        output_file: str,
+        exp: str = "both",
+        threads: int = 8,
+    ):
+        """
+        Extract detailed model usage statistics from SEVAL JSON files.
+
+        This function extracts model information for EACH occurrence (each iteration and modelAction)
+        from the path: evaluationData -> turnData -> orchestrationIterations -> modelActions -> model
+
+        Unlike extract_model_statistics() which finds only the first reasoning model per file,
+        this function collects ALL model invocations to provide complete usage statistics.
+
+        Args:
+            input_dir: Directory containing SEVAL JSON files to analyze
+            output_file: Path where TSV results file will be saved
+            exp: Filter by experiment type ('control', 'experiment', or 'both') (default: 'both')
+            threads: Number of threads for parallel processing (default: 8)
+
+        Output:
+            - Per-file detailed model usage (iterations, model calls, latencies)
+            - Aggregate statistics by experiment group
+            - Model distribution across all iterations
+        """
+        import concurrent.futures
+        from collections import defaultdict
+        from datetime import datetime
+        from pathlib import Path
+
+        logger.info(f"Extracting detailed model usage statistics from: {input_dir}")
+        logger.info(f"Output file: {output_file}")
+        logger.info(f"Using {threads} threads")
+        logger.info(f"Experiment filter: {exp}")
+
+        if not os.path.exists(input_dir):
+            logger.error(f"Input directory not found: {input_dir}")
+            return
+
+        # Validate exp parameter
+        if exp not in ["control", "experiment", "both"]:
+            logger.error(
+                f"Invalid exp parameter '{exp}'. Must be 'control', 'experiment', or 'both'"
+            )
+            return
+
+        # Find JSON files based on experiment type filter
+        json_files = []
+        search_path = Path(input_dir)
+
+        # Determine file patterns based on exp filter
+        if exp == "both":
+            file_patterns = [
+                "control_sydney_response_*.json",
+                "experiment_sydney_response_*.json",
+            ]
+        elif exp == "control":
+            file_patterns = ["control_sydney_response_*.json"]
+        elif exp == "experiment":
+            file_patterns = ["experiment_sydney_response_*.json"]
+
+        # Collect files matching the patterns
+        for pattern in file_patterns:
+            matching_files = list(search_path.glob(pattern))
+            json_files.extend([str(f) for f in matching_files])
+            logger.info(
+                f"Found {len(matching_files)} files matching pattern: {pattern}"
+            )
+
+        logger.info(f"Found {len(json_files)} JSON files total")
+
+        if not json_files:
+            logger.warning("No JSON files found in the directory.")
+            return
+
+        def extract_all_model_usages(file_path):
+            """Extract ALL model usage information from a single file."""
+            try:
+                data = self._read_json_file_safely(file_path)
+                
+                # Determine experiment type from filename
+                filename = os.path.basename(file_path)
+                if filename.startswith("control_"):
+                    exp_type = "control"
+                elif filename.startswith("experiment_"):
+                    exp_type = "experiment"
+                else:
+                    exp_type = "unknown"
+
+                # Extract utterance
+                utterance = data.get("query", {}).get("id", "No utterance found")
+
+                # Check conversation success
+                conversation_success = data.get("conversation_success", True)
+                is_success = data.get("is_success", True)
+
+                model_usages = []
+                total_iterations = 0
+                total_model_actions = 0
+
+                # Navigate to orchestrationIterations
+                try:
+                    requests = data.get("requests", [])
+                    if requests:
+                        response_body = requests[0].get("response_body", {})
+                        messages = response_body.get("messages", [])
+                        
+                        # Find message with evaluationData (usually the last one)
+                        for msg in messages:
+                            eval_data = msg.get("evaluationData", {})
+                            turn_data = eval_data.get("turnData", [])
+                            
+                            for turn_idx, turn in enumerate(turn_data):
+                                orch_iterations = turn.get("orchestrationIterations", [])
+                                
+                                for orch_iter in orch_iterations:
+                                    iteration_num = orch_iter.get("iteration", 0)
+                                    total_iterations += 1
+                                    
+                                    iter_start = orch_iter.get("startTime", "")
+                                    iter_end = orch_iter.get("endTime", "")
+                                    
+                                    model_actions = orch_iter.get("modelActions", [])
+                                    
+                                    for action_idx, action in enumerate(model_actions):
+                                        total_model_actions += 1
+                                        
+                                        model_name = action.get("model", "").strip()
+                                        tag = action.get("tag", "")
+                                        model_tags = action.get("modelTags", [])
+                                        model_api = action.get("modelApi", "")
+                                        latency_ms = action.get("latencyMilliseconds", 0)
+                                        action_start = action.get("startTime", "")
+                                        action_end = action.get("endTime", "")
+                                        
+                                        # Extract token usage from additionalMetrics if available
+                                        additional_metrics = action.get("additionalMetrics", {})
+                                        metrics = additional_metrics.get("metrics", {})
+                                        input_tokens = metrics.get("DeepLeoInputPrompt", 0)
+                                        output_tokens = metrics.get("DeepLeoOutputStream", 0)
+                                        
+                                        # Check for tool invocations
+                                        tool_invocations = action.get("toolInvocations", [])
+                                        num_tool_calls = len(tool_invocations) if tool_invocations else 0
+                                        
+                                        model_usages.append({
+                                            "iteration": iteration_num,
+                                            "action_index": action_idx,
+                                            "model": model_name,
+                                            "tag": tag,
+                                            "model_api": model_api,
+                                            "latency_ms": latency_ms,
+                                            "input_tokens": input_tokens,
+                                            "output_tokens": output_tokens,
+                                            "num_tool_calls": num_tool_calls,
+                                            "start_time": action_start,
+                                            "end_time": action_end,
+                                        })
+                                        
+                except Exception as e:
+                    logger.debug(f"Error extracting model usages from {file_path}: {e}")
+
+                return {
+                    "file": file_path,
+                    "filename": filename,
+                    "exp_type": exp_type,
+                    "utterance": utterance,
+                    "conversation_success": conversation_success and is_success,
+                    "total_iterations": total_iterations,
+                    "total_model_actions": total_model_actions,
+                    "model_usages": model_usages,
+                    "error": None,
+                }
+
+            except Exception as e:
+                return {
+                    "file": file_path,
+                    "filename": os.path.basename(file_path),
+                    "exp_type": "unknown",
+                    "utterance": "Error",
+                    "conversation_success": False,
+                    "total_iterations": 0,
+                    "total_model_actions": 0,
+                    "model_usages": [],
+                    "error": str(e),
+                }
+
+        # Process files with threading
+        all_results = []
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+            future_to_file = {
+                executor.submit(extract_all_model_usages, file_path): file_path
+                for file_path in json_files
+            }
+
+            for future in concurrent.futures.as_completed(future_to_file):
+                try:
+                    result = future.result()
+                    all_results.append(result)
+                except Exception as e:
+                    file_path = future_to_file[future]
+                    logger.error(f"Error processing {file_path}: {e}")
+
+        # Aggregate statistics by experiment type
+        stats_by_exp = defaultdict(lambda: {
+            "total_files": 0,
+            "successful_files": 0,
+            "failed_files": 0,
+            "files_with_model_actions": 0,
+            "files_without_model_actions": 0,
+            "total_iterations": 0,
+            "total_model_actions": 0,
+            "model_counts": defaultdict(int),
+            "tag_counts": defaultdict(int),
+            "total_latency_ms": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_tool_calls": 0,
+            "latencies": [],
+        })
+
+        # Process results
+        for result in all_results:
+            exp_type = result["exp_type"]
+            stats = stats_by_exp[exp_type]
+            
+            stats["total_files"] += 1
+            
+            if result["conversation_success"]:
+                stats["successful_files"] += 1
+            else:
+                stats["failed_files"] += 1
+            
+            if result["total_model_actions"] > 0:
+                stats["files_with_model_actions"] += 1
+            else:
+                stats["files_without_model_actions"] += 1
+            
+            stats["total_iterations"] += result["total_iterations"]
+            stats["total_model_actions"] += result["total_model_actions"]
+            
+            for usage in result["model_usages"]:
+                model = usage["model"]
+                tag = usage["tag"]
+                
+                if model:
+                    stats["model_counts"][model] += 1
+                if tag:
+                    stats["tag_counts"][tag] += 1
+                
+                stats["total_latency_ms"] += usage["latency_ms"]
+                stats["total_input_tokens"] += usage["input_tokens"]
+                stats["total_output_tokens"] += usage["output_tokens"]
+                stats["total_tool_calls"] += usage["num_tool_calls"]
+                
+                if usage["latency_ms"] > 0:
+                    stats["latencies"].append(usage["latency_ms"])
+
+        # Create output directory if needed
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else ".", exist_ok=True)
+
+        # Write results to TSV file
+        with open(output_file, "w", encoding="utf-8", newline="") as f:
+            f.write("# SEVAL Model Usage Statistics Report\n")
+            f.write(f"# Generated at: {datetime.now()}\n")
+            f.write(f"# Input directory: {input_dir}\n")
+            f.write(f"# Experiment filter: {exp}\n")
+            f.write(f"# Total files processed: {len(all_results)}\n")
+            f.write("\n")
+
+            # Write aggregate statistics for each experiment type
+            for exp_type in sorted(stats_by_exp.keys()):
+                stats = stats_by_exp[exp_type]
+                
+                f.write(f"# ========== {exp_type.upper()} GROUP STATISTICS ==========\n")
+                f.write(f"# Total files: {stats['total_files']}\n")
+                f.write(f"# Successful conversations: {stats['successful_files']}\n")
+                f.write(f"# Failed conversations: {stats['failed_files']}\n")
+                f.write(f"# Files with model actions: {stats['files_with_model_actions']}\n")
+                f.write(f"# Files without model actions: {stats['files_without_model_actions']}\n")
+                f.write(f"# Total orchestration iterations: {stats['total_iterations']}\n")
+                f.write(f"# Total model actions: {stats['total_model_actions']}\n")
+                
+                if stats['total_model_actions'] > 0:
+                    avg_actions_per_file = stats['total_model_actions'] / stats['total_files']
+                    f.write(f"# Avg model actions per file: {avg_actions_per_file:.2f}\n")
+                
+                # Model distribution
+                f.write(f"#\n# Model Distribution:\n")
+                for model, count in sorted(stats["model_counts"].items(), key=lambda x: -x[1]):
+                    pct = (count / stats['total_model_actions'] * 100) if stats['total_model_actions'] > 0 else 0
+                    f.write(f"#   {model}: {count} ({pct:.1f}%)\n")
+                
+                # Tag distribution
+                f.write(f"#\n# Tag Distribution:\n")
+                for tag, count in sorted(stats["tag_counts"].items(), key=lambda x: -x[1]):
+                    pct = (count / stats['total_model_actions'] * 100) if stats['total_model_actions'] > 0 else 0
+                    f.write(f"#   {tag}: {count} ({pct:.1f}%)\n")
+                
+                # Latency statistics
+                if stats["latencies"]:
+                    avg_latency = sum(stats["latencies"]) / len(stats["latencies"])
+                    min_latency = min(stats["latencies"])
+                    max_latency = max(stats["latencies"])
+                    sorted_latencies = sorted(stats["latencies"])
+                    p50 = sorted_latencies[len(sorted_latencies) // 2]
+                    p90_idx = int(len(sorted_latencies) * 0.9)
+                    p90 = sorted_latencies[p90_idx] if p90_idx < len(sorted_latencies) else max_latency
+                    
+                    f.write(f"#\n# Latency Statistics (ms):\n")
+                    f.write(f"#   Avg: {avg_latency:.0f}, Min: {min_latency}, Max: {max_latency}\n")
+                    f.write(f"#   P50: {p50}, P90: {p90}\n")
+                
+                # Token statistics
+                f.write(f"#\n# Token Usage:\n")
+                f.write(f"#   Total input tokens: {stats['total_input_tokens']:,}\n")
+                f.write(f"#   Total output tokens: {stats['total_output_tokens']:,}\n")
+                f.write(f"#   Total tool calls: {stats['total_tool_calls']:,}\n")
+                
+                if stats['total_model_actions'] > 0:
+                    avg_input = stats['total_input_tokens'] / stats['total_model_actions']
+                    avg_output = stats['total_output_tokens'] / stats['total_model_actions']
+                    f.write(f"#   Avg input tokens per action: {avg_input:.0f}\n")
+                    f.write(f"#   Avg output tokens per action: {avg_output:.0f}\n")
+                
+                f.write("\n")
+
+            # Write detailed per-file results header
+            f.write("# ========== DETAILED PER-FILE RESULTS ==========\n")
+            f.write("exp_type\tutterance\tfilename\tconversation_success\ttotal_iterations\ttotal_model_actions\t")
+            f.write("iteration\taction_index\tmodel\ttag\tmodel_api\tlatency_ms\tinput_tokens\toutput_tokens\tnum_tool_calls\n")
+
+            # Write detailed results for each file
+            for result in sorted(all_results, key=lambda x: (x["exp_type"], x["filename"])):
+                exp_type = result["exp_type"]
+                utterance = result["utterance"].replace("\t", " ").replace("\n", " ").strip()
+                filename = result["filename"]
+                success = result["conversation_success"]
+                total_iters = result["total_iterations"]
+                total_actions = result["total_model_actions"]
+                
+                if result["model_usages"]:
+                    # Write one row per model action
+                    for usage in result["model_usages"]:
+                        f.write(f"{exp_type}\t{utterance}\t{filename}\t{success}\t{total_iters}\t{total_actions}\t")
+                        f.write(f"{usage['iteration']}\t{usage['action_index']}\t{usage['model']}\t{usage['tag']}\t")
+                        f.write(f"{usage['model_api']}\t{usage['latency_ms']}\t{usage['input_tokens']}\t")
+                        f.write(f"{usage['output_tokens']}\t{usage['num_tool_calls']}\n")
+                else:
+                    # Write a single row for files with no model actions
+                    f.write(f"{exp_type}\t{utterance}\t{filename}\t{success}\t{total_iters}\t{total_actions}\t")
+                    f.write("0\t0\t\t\t\t0\t0\t0\t0\n")
+
+        # Print summary to console
+        print(f"\n{'='*60}")
+        print("SEVAL Model Usage Statistics Report")
+        print(f"{'='*60}")
+        print(f"Input directory: {input_dir}")
+        print(f"Experiment filter: {exp}")
+        print(f"Total files processed: {len(all_results)}")
+
+        for exp_type in sorted(stats_by_exp.keys()):
+            stats = stats_by_exp[exp_type]
+            print(f"\n--- {exp_type.upper()} GROUP ---")
+            print(f"Total files: {stats['total_files']}")
+            print(f"Files with model actions: {stats['files_with_model_actions']} ({stats['files_with_model_actions']/stats['total_files']*100:.1f}%)")
+            print(f"Total orchestration iterations: {stats['total_iterations']}")
+            print(f"Total model actions: {stats['total_model_actions']}")
+            
+            if stats["model_counts"]:
+                print("\nTop models:")
+                for model, count in sorted(stats["model_counts"].items(), key=lambda x: -x[1])[:5]:
+                    pct = (count / stats['total_model_actions'] * 100) if stats['total_model_actions'] > 0 else 0
+                    print(f"  {model}: {count} ({pct:.1f}%)")
+            
+            if stats["latencies"]:
+                avg_latency = sum(stats["latencies"]) / len(stats["latencies"])
+                print(f"\nAvg latency: {avg_latency:.0f}ms")
+
+        print(f"\nResults written to: {output_file}")
+        logger.info(f"Model usage statistics extraction completed. Results saved to: {output_file}")
+
     def analyze_search_results(
         self,
         mappings_file: str = "results/query_file_mappings.tsv",

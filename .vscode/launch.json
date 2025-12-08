@@ -1561,6 +1561,25 @@
             }
         },
         {
+            "name": "🔬 SEVAL - Extract Model Usage Statistics (Per-Iteration)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_analysis_toolkit.py",
+            "args": [
+                "extract_model_usage_statistics",
+                "--input_dir=seval_data/133560_scraping_raw_data_output", //135056_scraping_raw_data_output",
+                "--output_file=results/133560_model_usage_stats.tsv",
+                "--exp=both",
+                "--threads=16"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
             "name": "🔬 SEVAL - Search Results Analysis (Debugging)",
             "type": "debugpy",
             "request": "launch",
@@ -1886,7 +1905,7 @@
             "justMyCode": true,
             "args": [
                 "process_seval_job_with_statistics_plots",
-                "--job_id=133560", // 132951", //130949", 
+                "--job_id=135056", //133560", // 132951", //130949", 
                 "--experiment=both", //control",
                 "--top_k_list=1,3,5",
                 //"--clean=True",
