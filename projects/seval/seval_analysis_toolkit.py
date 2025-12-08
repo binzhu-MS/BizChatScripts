@@ -4808,6 +4808,81 @@ class SEVALAnalysisToolkit:
                                         print(f"  Error: {e}")
                                         print(f"{'='*80}\n")
 
+                        # Handle fetch_file invocations
+                        # fetch_file retrieves a file by ID/name and returns content
+                        # CiteDCG evaluates these fetched files with scores
+                        if (not batched_queries and 
+                            "processedResult" in tool_inv and 
+                            tool_name == "fetch_file"):
+                            
+                            # Parse processedResult to get results
+                            result_str = tool_inv.get("processedResult", "")
+                            if result_str:
+                                result_str = result_str.strip()
+                                if result_str:
+                                    # Skip known non-JSON error responses (expired, failed, etc.)
+                                    if result_str.lower() in ('expired', 'failed', 'error', 'null', 'none'):
+                                        # Silently skip - this is expected for failed fetches
+                                        pass
+                                    else:
+                                        try:
+                                            # Parse result JSON
+                                            result_data = json.loads(result_str)
+                                            
+                                            # fetch_file results are in "results" array
+                                            results = []
+                                            if isinstance(result_data, dict):
+                                                results = result_data.get("results", [])
+                                            
+                                            if results:
+                                                total_queries += 1
+                                                
+                                                # Create a query entry for this fetch_file invocation
+                                                # Domain is "fetch_file" to match CiteDCG plugin_name
+                                                query_results = {
+                                                    "query_number": len(invocation_results["queries"]) + 1,
+                                                    "domain": "fetch_file",
+                                                    "query": "",  # fetch_file has no query string
+                                                    "result_count": len(results),
+                                                    "results": [],
+                                                }
+                                                
+                                                # Extract each result
+                                                for item in results:
+                                                    # Get title from various possible fields
+                                                    title = item.get("title", "") or item.get("fileName", "") or item.get("name", "")
+                                                    
+                                                    result_item = {
+                                                        "reference_id": item.get("reference_id", ""),
+                                                        "type": "fetch_file_results",  # Match CiteDCG Type
+                                                        "title": title,
+                                                        "snippet": item.get("snippet", item.get("content", ""))[:200],
+                                                        "author": item.get("author", ""),
+                                                        "lastModifiedTime": item.get("lastModifiedTime", ""),
+                                                        "fileName": item.get("fileName", item.get("name", "")),
+                                                        "fileType": item.get("fileType", item.get("type", "")),
+                                                        "itemId": item.get("itemId", item.get("id", "")),
+                                                    }
+                                                    query_results["results"].append(result_item)
+                                                
+                                                invocation_results["queries"].append(query_results)
+                                                invocation_results["total_results"] += len(results)
+                                                hop_results["total_results"] += len(results)
+                                                turn_results["total_results"] += len(results)
+                                                total_results += len(results)
+                                        except json.JSONDecodeError:
+                                            # Non-JSON result string - silently skip
+                                            # This includes error messages like "Expired", "Failed", etc.
+                                            pass
+                                        except Exception as e:
+                                            # Log unexpected errors but continue processing
+                                            user_input = turn_results.get("user_input", "")
+                                            logger.warning(
+                                                f"Unexpected error parsing fetch_file result: {e}, "
+                                                f"conv_id={conversation_id}, "
+                                                f"turn={turn_results.get('turn_number')}"
+                                            )
+
                         # Only add invocation if it has queries (batched, web search, or graph connector)
                         if invocation_results["queries"]:
                             hop_results["invocations"].append(invocation_results)

@@ -474,13 +474,25 @@ def _add_citedcg_scores_to_conversation(
                             elif citedcg_plugin == f"office365_search_{query_domain}":
                                 plugin_match = True
                                 domain_match = True
+                        elif invocation_tool == "fetch_file":
+                            # fetch_file: Match on plugin_name only (no query or domain)
+                            # CiteDCG: plugin_name="fetch_file", query_string="" (empty)
+                            # Conversation: tool_name="fetch_file", domain="fetch_file", query="" (empty)
+                            plugin_match = (norm_search['plugin_name'] == "fetch_file")
+                            domain_match = True  # No domain check for fetch_file
                         else:
                             # Other plugins: combined format (plugin_name = tool_domain)
                             search_domain_key = f"{invocation_tool}_{query_domain}"
                             plugin_match = (norm_search['plugin_name'] == search_domain_key)
                             domain_match = True  # Domain is encoded in plugin_name
                         
-                        if (plugin_match and domain_match and type_match and 
+                        # For fetch_file, match by hop and plugin only (no query text)
+                        if invocation_tool == "fetch_file":
+                            if plugin_match and domain_match and type_match:
+                                matched_search = norm_search
+                                norm_search['used'] = True  # Mark as used
+                                break
+                        elif (plugin_match and domain_match and type_match and 
                                 norm_search['query_lower'] == query_text_lower):
                             matched_search = norm_search
                             norm_search['used'] = True  # Mark as used
