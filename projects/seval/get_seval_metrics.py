@@ -653,6 +653,148 @@ class PerResultCiteDCGExtractor:
         
         return query_map
     
+    def _build_block_to_query_map(self, data: dict) -> dict:
+        """
+        Build a mapping from (hop, plugin, block_index) to query string.
+        
+        This matches AllSearchResults blocks to batchedQueries using ref_id overlap.
+        Each block in AllSearchResults corresponds to one batchedQuery, but ref_ids
+        can be reused across different batchedQueries. We use overlap scoring to
+        find the best match.
+        
+        The approach:
+        1. Collect all ref_ids per batchedQuery from processedResult
+        2. For each block in AllSearchResults, find the batchedQuery with highest
+           ref_id overlap
+        3. Return mapping of (hop, plugin, block_index) -> query_string
+        
+        Args:
+            data: The full raw DCG data containing AllSearchResults and EvaluationData
+            
+        Returns:
+            dict mapping (hop, plugin_name, block_index) -> query_string
+        """
+        block_to_query = {}
+        
+        evaluation_data = data.get("EvaluationData", {})
+        turn_data = evaluation_data.get("turnData", [])
+        all_search_results = data.get("AllSearchResults", {})
+        
+        # Step 1: Collect ref_ids and queries per batchedQuery, organized by hop and tool
+        # Structure: {hop: {tool_name: [(query, set_of_ref_ids), ...]}}
+        bq_data_by_hop = {}
+        
+        flattened_turn_idx = 0
+        for turn in turn_data:
+            orchestration_iterations = turn.get("orchestrationIterations", [])
+            
+            for iteration in orchestration_iterations:
+                flattened_turn_idx += 1
+                hop_key = str(flattened_turn_idx)
+                
+                if hop_key not in bq_data_by_hop:
+                    bq_data_by_hop[hop_key] = {}
+                
+                model_actions = iteration.get("modelActions", [])
+                
+                for action in model_actions:
+                    tool_invocations = action.get("toolInvocations", [])
+                    
+                    for invocation in tool_invocations:
+                        tool_name = invocation.get("function", "") or invocation.get("name", "")
+                        
+                        if tool_name not in bq_data_by_hop[hop_key]:
+                            bq_data_by_hop[hop_key][tool_name] = []
+                        
+                        batched_queries = invocation.get("batchedQueries", [])
+                        
+                        for batch_query in batched_queries:
+                            # Extract query from arguments
+                            arguments = batch_query.get("arguments", "")
+                            query_string = ""
+                            if isinstance(arguments, str) and arguments:
+                                try:
+                                    parsed = json.loads(arguments)
+                                    if isinstance(parsed, dict):
+                                        query_string = (
+                                            parsed.get("query") or
+                                            parsed.get("search_query") or
+                                            parsed.get("queries") or
+                                            arguments
+                                        )
+                                    else:
+                                        query_string = arguments
+                                except (json.JSONDecodeError, TypeError):
+                                    query_string = arguments
+                            elif isinstance(arguments, dict):
+                                query_string = arguments.get("query", str(arguments))
+                            
+                            # Collect ALL ref_ids from processedResult
+                            all_refs = set()
+                            processed_result = batch_query.get("processedResult", "")
+                            if processed_result:
+                                try:
+                                    if isinstance(processed_result, str):
+                                        processed_data = json.loads(processed_result)
+                                    else:
+                                        processed_data = processed_result
+                                    
+                                    if isinstance(processed_data, dict):
+                                        for result_type, items in processed_data.items():
+                                            if isinstance(items, list):
+                                                for item in items:
+                                                    if isinstance(item, dict):
+                                                        ref_id = item.get("reference_id", "")
+                                                        if ref_id:
+                                                            all_refs.add(ref_id)
+                                except (json.JSONDecodeError, TypeError, AttributeError):
+                                    pass
+                            
+                            bq_data_by_hop[hop_key][tool_name].append((query_string, all_refs))
+        
+        # Step 2: For each block in AllSearchResults, find best matching batchedQuery
+        for hop_key, hop_data in all_search_results.items():
+            if not isinstance(hop_data, dict):
+                continue
+            
+            for plugin_name, blocks in hop_data.items():
+                if not isinstance(blocks, list):
+                    continue
+                
+                # Normalize plugin name for lookup in batchedQueries
+                # AllSearchResults uses "office365_search_files" but batchedQueries uses "office365_search"
+                normalized_plugin_name = plugin_name
+                if plugin_name.startswith("office365_search_"):
+                    normalized_plugin_name = "office365_search"
+                
+                # Get batchedQueries for this hop and tool
+                bq_list = bq_data_by_hop.get(hop_key, {}).get(normalized_plugin_name, [])
+                
+                for block_idx, block in enumerate(blocks):
+                    # Collect ref_ids from this block
+                    block_refs = set()
+                    results_list = block.get("Results", [])
+                    for result in results_list:
+                        ref_id = result.get("reference_id", "")
+                        if ref_id:
+                            block_refs.add(ref_id)
+                    
+                    # Find batchedQuery with highest overlap
+                    best_query = ""
+                    best_overlap = 0
+                    
+                    for query, bq_refs in bq_list:
+                        overlap = len(block_refs & bq_refs)
+                        if overlap > best_overlap:
+                            best_overlap = overlap
+                            best_query = query
+                    
+                    # Store the mapping
+                    key = (hop_key, plugin_name, block_idx)
+                    block_to_query[key] = best_query
+        
+        return block_to_query
+    
     def _build_first_ref_to_query_map(self, evaluation_data: dict) -> dict:
         """
         Build a mapping from first reference_id of each search to query string.
@@ -814,12 +956,9 @@ class PerResultCiteDCGExtractor:
         turn_data = evaluation_data.get("turnData", [])
         num_turns = len(turn_data) if turn_data else 1
         
-        # Build query map from batchedQueries (fallback for empty PluginInvocation)
-        batched_query_map = self._extract_queries_from_batched_queries(data)
-        
-        # Build first_reference_id to query map from batchedQueries.processedResult
-        # This is the most reliable fallback for search_web with empty PluginInvocation
-        first_ref_to_query_map = self._build_first_ref_to_query_map(evaluation_data)
+        # Build block-to-query map using ref_id overlap matching
+        # This is the primary method for resolving queries for blocks
+        block_to_query_map = self._build_block_to_query_map(data)
         
         # Build reference_id to query map from attributions (fallback for remaining cases)
         ref_to_query_map = self._build_ref_to_query_map(evaluation_data)
@@ -836,19 +975,11 @@ class PerResultCiteDCGExtractor:
         # Also collect results without scores for error cases
         results_without_scores = []
         
-        # Track overall query index across all searches in a turn
-        # This maps to the batched queries index
-        query_index_per_turn = {}
-        
         for turn_index, query_data in all_search_results.items():
             if not query_data:
                 continue
             
             has_any_searches = True
-            
-            # Initialize query index for this turn
-            if turn_index not in query_index_per_turn:
-                query_index_per_turn[turn_index] = 0
             
             for search_domain, domain_data in query_data.items():
                 if not isinstance(domain_data, list):
@@ -889,28 +1020,17 @@ class PerResultCiteDCGExtractor:
                             plugin_invocation, plugin_name
                         )
                         
-                        # Fallback 1: If PluginInvocation is empty (e.g., 'search_web({})'),
-                        # use the batchedQueries map from EvaluationData
+                        # Fallback: Use block-to-query map (matches blocks via ref_id overlap)
+                        # This correctly handles cases where ref_ids are reused across queries
                         if not query_string:
-                            query_key = (turn_index, query_index_per_turn[turn_index])
-                            query_string = batched_query_map.get(query_key, "")
+                            block_key = (turn_index, plugin_name, domain_item_idx)
+                            query_string = block_to_query_map.get(block_key, "")
                         
-                        # Fallback 2: If still empty, try reference_id lookup from first result
-                        # using attribution-based mapping
+                        # Fallback 2: Try reference_id lookup from attributions
                         if not query_string and results_list:
                             first_ref_id = results_list[0].get("reference_id", "")
                             if first_ref_id:
                                 query_string = ref_to_query_map.get(first_ref_id, "")
-                        
-                        # Fallback 3: Try first_ref_to_query_map from batchedQueries.processedResult
-                        # This is last resort for search_web cases
-                        if not query_string and results_list:
-                            first_ref_id = results_list[0].get("reference_id", "")
-                            if first_ref_id:
-                                query_string = first_ref_to_query_map.get(first_ref_id, "")
-                        
-                        # Increment query index for this turn
-                        query_index_per_turn[turn_index] += 1
                     
                     # Track if this search has non-empty results
                     if results_list:
@@ -938,6 +1058,8 @@ class PerResultCiteDCGExtractor:
                                 include_null_score=True,
                                 domain=search_domain_value
                             )
+                            # Store block_index to preserve original AllSearchResults block structure
+                            extracted["_block_index"] = domain_item_idx
                             # Store content_domain_name temporarily for grouping (will be moved to search level)
                             if content_domain_name:
                                 extracted["_content_domain_name"] = content_domain_name
@@ -956,6 +1078,8 @@ class PerResultCiteDCGExtractor:
                             domain=search_domain_value
                         )
                         extracted["num_turns"] = num_turns
+                        # Store block_index to preserve original AllSearchResults block structure
+                        extracted["_block_index"] = domain_item_idx
                         # Store content_domain_name temporarily for grouping (will be moved to search level)
                         if content_domain_name:
                             extracted["_content_domain_name"] = content_domain_name
@@ -1376,7 +1500,7 @@ class PerResultCiteDCGExtractor:
                 continue
             
             # Process results with search data (normal or error cases)
-            search_groups = defaultdict(list)
+            search_groups = {}  # Use regular dict since we initialize each key explicitly
             plugin_invocations = {}  # Store plugin_invocation per group
             content_domain_names = {}  # Store content_domain_name per group (for Graph Connectors)
             extracted_domains = {}  # Store extracted domain (files/people/etc.) for office365_search
@@ -1387,25 +1511,28 @@ class PerResultCiteDCGExtractor:
                 plugin_invocation = result.get("plugin_invocation", "")
                 hop = result.get("turn_index", "")
                 extracted_domain = result.get("domain", "")  # Extracted from PluginInvocation
+                block_index = result.get("_block_index", 0)  # Block index from AllSearchResults
+                result_type = result.get("Type", "")  # e.g., "search_web_webpages", "search_web_news"
                 
-                # For web searches, extract domain from Type field for grouping
-                # This matches the conversation structure which has separate queries
-                # for different web search types (webpages, news, questionsandanswers)
-                # BUT keep original plugin_name ("search_web") to match raw data
-                result_type = result.get("Type", "")
-                grouping_domain = search_domain_key
+                # Grouping strategy:
+                # - For search_web: group by (hop, type, query_string, plugin_name) 
+                #   This matches conversation data which has separate queries for webpages/news
+                # - For others: group by (hop, search_domain_key, block_index, plugin_name)
+                #   This preserves AllSearchResults block structure
                 if plugin_name == "search_web" and result_type:
-                    # Extract the domain from Type to create separate groups
-                    # Type format: "search_web_<domain>" -> extract domain part
-                    if result_type.startswith("search_web_"):
-                        grouping_domain = result_type.replace("search_web_", "")
-                
-                # Use domain in grouping key but preserve original plugin_name
-                key = (hop, grouping_domain, query_string, plugin_name)
+                    # Use Type and query to create separate groups
+                    key = (hop, result_type, query_string, plugin_name)
+                else:
+                    # Use block_index for non-web searches
+                    key = (hop, search_domain_key, block_index, plugin_name)
                 
                 # Store plugin_invocation for this group (same for all results in group)
                 if key not in plugin_invocations:
                     plugin_invocations[key] = plugin_invocation
+                
+                # Store query_string for this group - only initialize once per key
+                if key not in search_groups or not isinstance(search_groups[key], dict):
+                    search_groups[key] = {"_query": query_string, "results": [], "_types": []}
                 
                 # Store content_domain_name for this group (for Graph Connectors)
                 if key not in content_domain_names:
@@ -1414,6 +1541,11 @@ class PerResultCiteDCGExtractor:
                 # Store extracted domain for this group (for office365_search)
                 if key not in extracted_domains:
                     extracted_domains[key] = extracted_domain
+                
+                # Track Type values for this group (for web searches)
+                result_type = result.get("Type", "")
+                if result_type:
+                    search_groups[key]["_types"].append(result_type)
                 
                 # Remove redundant fields for result item
                 result_item = {
@@ -1430,18 +1562,27 @@ class PerResultCiteDCGExtractor:
                         "plugin_invocation",  # Now at search level
                         "is_error",  # Remove internal tracking field
                         "_content_domain_name",  # Temporary field, now at search level
+                        "_block_index",  # Internal field for grouping
                     ]
                 }
-                search_groups[key].append(result_item)
+                search_groups[key]["results"].append(result_item)
             
             # Create search entries
             searches = []
             total_results = 0
             
-            for (hop, grouping_domain, query_string, plugin_name), search_results in (
-                search_groups.items()
-            ):
-                key = (hop, grouping_domain, query_string, plugin_name)
+            for key, search_group_data in search_groups.items():
+                # Key structure varies:
+                # - For search_web: (hop, result_type, query_string, plugin_name)
+                # - For others: (hop, search_domain_key, block_index, plugin_name)
+                hop = key[0]
+                second_element = key[1]  # result_type for search_web, search_domain_key for others
+                third_element = key[2]  # query_string for search_web, block_index for others
+                plugin_name = key[3]
+                
+                query_string = search_group_data.get("_query", "")
+                search_results = search_group_data.get("results", [])
+                type_list = search_group_data.get("_types", [])
                 
                 # Get content_domain_name from stored dict (for Graph Connectors)
                 content_domain_name = content_domain_names.get(key)
@@ -1449,11 +1590,12 @@ class PerResultCiteDCGExtractor:
                 # Get extracted domain for office365_search (files/people/etc.)
                 extracted_domain = extracted_domains.get(key, "")
                 
-                # For web searches, infer type from domain (reverse of extraction logic)
-                # This ensures matching works correctly with conversation data
+                # Determine the type for web searches
+                # For search_web, second_element IS the result_type (from grouping key)
                 result_type = None
-                if plugin_name == "search_web" and grouping_domain:
-                    result_type = f"search_web_{grouping_domain}"
+                if plugin_name == "search_web":
+                    # The second element is the result_type for search_web
+                    result_type = second_element if isinstance(second_element, str) and second_element.startswith("search_web_") else None
                 
                 search_dict = {
                     "hop": hop,
@@ -1464,14 +1606,14 @@ class PerResultCiteDCGExtractor:
                     "results": search_results,
                 }
                 
+                # Add type for web searches (for matching with conversation data)
+                if result_type:
+                    search_dict["type"] = result_type
+                
                 # Add domain for office365_search (extracted from PluginInvocation)
                 # This is used for matching with conversation data
                 if extracted_domain:
                     search_dict["domain"] = extracted_domain
-                
-                # Add type for web searches (for matching with conversation data)
-                if result_type:
-                    search_dict["type"] = result_type
                 
                 # Add content_domain_name at search level for Graph Connectors
                 if content_domain_name:
@@ -1481,9 +1623,9 @@ class PerResultCiteDCGExtractor:
                 
                 total_results += len(search_results)
             
-            # Sort searches by hop, then plugin_name, then query_string
+            # Sort searches by hop, then plugin_name, then block_index to preserve order
             searches.sort(
-                key=lambda x: (x["hop"], x["plugin_name"], x["query_string"])
+                key=lambda x: (x["hop"], x["plugin_name"], x.get("query_string", ""))
             )
             
             # Count results by plugin
@@ -1597,10 +1739,19 @@ def extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data: dict) -> dict:
     
     result['num_turns'] = len(turn_data)
     
-    # Step 1: Build reference_id -> query mapping from batchedQueries
-    ref_to_query = _build_ref_to_query_map(turn_data)
+    # Step 1: Build block-index -> query mapping from batchedQueries
+    # This maps (turn_key, plugin_name, block_index) -> query_string
+    # to align AllSearchResults blocks with batchedQueries by index
+    block_to_query = _build_block_to_query_map(turn_data)
+    
+    # Also build first_ref -> query map as fallback for cases where
+    # block alignment doesn't work (e.g., different plugin ordering)
+    first_ref_to_query = _build_first_ref_to_query_map_unified(turn_data)
     
     # Step 2: Process AllSearchResults to get DCG scores and merge with queries
+    # Track block index per (turn_key, plugin_name) for alignment
+    block_indices = {}
+    
     for turn_key, search_data in sorted(all_search.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
         for domain, items in search_data.items():
             if not isinstance(items, list):
@@ -1614,16 +1765,45 @@ def extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data: dict) -> dict:
                 if not results_list:
                     continue
                 
+                # Track block index for this (turn_key, plugin_name)
+                block_key = (turn_key, plugin_name)
+                if block_key not in block_indices:
+                    block_indices[block_key] = 0
+                current_block_idx = block_indices[block_key]
+                block_indices[block_key] += 1
+                
                 # Try to extract query from PluginInvocation first
                 query_from_invocation = _extract_query_from_invocation_unified(
                     plugin_invocation, plugin_name
                 )
                 
+                # Fallback 1: Use block-index alignment with batchedQueries
+                block_query = ''
+                if not query_from_invocation:
+                    # Normalize plugin name for lookup (AllSearchResults uses 'office365_search_files'
+                    # but batchedQueries uses 'office365_search')
+                    normalized_plugin = plugin_name
+                    if plugin_name.startswith('office365_search_'):
+                        normalized_plugin = 'office365_search'
+                    block_query_key = (turn_key, normalized_plugin, current_block_idx)
+                    block_query = block_to_query.get(block_query_key, '')
+                
+                # Fallback 2: Use first result's reference_id to find query
+                first_ref_query = ''
+                if not query_from_invocation and not block_query:
+                    first_ref = results_list[0].get('reference_id', '')
+                    if first_ref:
+                        first_ref_query = first_ref_to_query.get(first_ref, '')
+                
+                # Determine the query to use for all results in this block
+                # Priority: PluginInvocation > block-index alignment > first_ref lookup
+                block_level_query = query_from_invocation or block_query or first_ref_query
+                
                 # Group results and determine query for each
                 search_entry = {
                     'hop': turn_key,
                     'plugin_name': plugin_name,
-                    'query_string': query_from_invocation,  # May be empty
+                    'query_string': block_level_query,
                     'plugin_invocation': plugin_invocation,
                     'result_count': len(results_list),
                     'results': []
@@ -1633,19 +1813,12 @@ def extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data: dict) -> dict:
                     ref_id = r.get('reference_id', '')
                     dcg_label = r.get('CiteDCGLLMLabel')
                     
-                    # If no query from invocation, try to get from ref_to_query map
-                    result_query = query_from_invocation
-                    if not result_query and ref_id:
-                        result_query = ref_to_query.get(ref_id, '')
-                    
-                    # Update search_entry query if we found one via ref_id
-                    if not search_entry['query_string'] and result_query:
-                        search_entry['query_string'] = result_query
-                    
+                    # All results in the same block get the same query
+                    # (Don't do per-result ref_id lookup as it can be wrong)
                     result_entry = {
                         'reference_id': ref_id,
                         'CiteDCGLLMLabel': dcg_label,
-                        'query_string': result_query,  # Per-result query
+                        'query_string': block_level_query,  # Same query for all results in block
                         'ResultType': r.get('ResultType', ''),
                         'Type': r.get('Type', ''),
                         'Title': r.get('Title', ''),
@@ -1660,6 +1833,110 @@ def extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data: dict) -> dict:
                 result['searches'].append(search_entry)
     
     return result
+
+
+def _build_block_to_query_map(turn_data: list) -> dict:
+    """
+    Build a mapping from (turn_key, plugin_name, block_index) to query string.
+    
+    This enables alignment between AllSearchResults blocks and batchedQueries
+    by block index within each (turn, plugin) combination.
+    
+    Args:
+        turn_data: List of turn data from EvaluationData.turnData
+        
+    Returns:
+        dict mapping (turn_key, plugin_name, block_index) -> query_string
+    """
+    block_to_query = {}
+    
+    # Track the flattened turn index (1-based, matching AllSearchResults keys)
+    flattened_turn_idx = 0
+    
+    for turn in turn_data:
+        orchestration_iterations = turn.get('orchestrationIterations', [])
+        
+        for iteration in orchestration_iterations:
+            flattened_turn_idx += 1
+            turn_key = str(flattened_turn_idx)
+            
+            # Track block index per plugin_name within this turn
+            plugin_block_indices = {}
+            
+            model_actions = iteration.get('modelActions', [])
+            
+            for action in model_actions:
+                tool_invocations = action.get('toolInvocations', [])
+                
+                for invocation in tool_invocations:
+                    tool_name = invocation.get('function', '') or invocation.get('name', '')
+                    batched_queries = invocation.get('batchedQueries', [])
+                    
+                    # Normalize tool name to match AllSearchResults plugin names
+                    plugin_name = tool_name  # e.g., 'search_web'
+                    
+                    if plugin_name not in plugin_block_indices:
+                        plugin_block_indices[plugin_name] = 0
+                    
+                    for bq in batched_queries:
+                        query = bq.get('arguments', '')
+                        
+                        # Store with (turn_key, plugin_name, block_index)
+                        block_idx = plugin_block_indices[plugin_name]
+                        key = (turn_key, plugin_name, block_idx)
+                        block_to_query[key] = query
+                        plugin_block_indices[plugin_name] += 1
+    
+    return block_to_query
+
+
+def _build_first_ref_to_query_map_unified(turn_data: list) -> dict:
+    """
+    Build a mapping from first reference_id of each search to query string.
+    
+    This extracts queries from batchedQueries and maps them to the first
+    reference_id found in processedResult (WebPages or News).
+    
+    Args:
+        turn_data: List of turn data from EvaluationData.turnData
+        
+    Returns:
+        dict mapping first_reference_id -> query_string
+    """
+    first_ref_to_query = {}
+    
+    for turn in turn_data:
+        for iteration in turn.get('orchestrationIterations', []):
+            for action in iteration.get('modelActions', []):
+                for inv in action.get('toolInvocations', []):
+                    for bq in inv.get('batchedQueries', []):
+                        query = bq.get('arguments', '')
+                        processed = bq.get('processedResult', '')
+                        
+                        if not query or not processed:
+                            continue
+                        
+                        # Parse processedResult
+                        try:
+                            if isinstance(processed, str):
+                                processed = json.loads(processed)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        
+                        if not isinstance(processed, dict):
+                            continue
+                        
+                        # Get first ref from WebPages or News (not all refs!)
+                        # This is used as fallback when block alignment fails
+                        for result_type in ['WebPages', 'News', 'Videos', 'QuestionsAndAnswers']:
+                            items = processed.get(result_type, [])
+                            if items and isinstance(items, list):
+                                first_ref = items[0].get('reference_id', '')
+                                if first_ref and first_ref not in first_ref_to_query:
+                                    first_ref_to_query[first_ref] = query
+                                break  # Only use first available result type
+    
+    return first_ref_to_query
 
 
 def _build_ref_to_query_map(turn_data: list) -> dict:
