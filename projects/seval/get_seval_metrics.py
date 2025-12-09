@@ -67,6 +67,7 @@ B. Per-Result CiteDCG Score Extraction (new functionality):
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -105,12 +106,15 @@ class PerResultCiteDCGExtractor:
         """
         Initialize extractor.
         
-        Uses default base path: projects/seval/seval_data/
+        Uses base path relative to this module: module_dir/seval_data/
+        This ensures paths work regardless of current working directory.
         
         Args:
             verbose: If True, show detailed statistics. If False, minimal output.
         """
-        self.base_path = Path("seval_data")
+        # Use path relative to this module location (projects/seval/)
+        self.module_dir = Path(__file__).parent
+        self.base_path = self.module_dir / "seval_data"
         self.verbose = verbose
     
     def extract(
@@ -557,6 +561,244 @@ class PerResultCiteDCGExtractor:
         
         return verification
     
+    def _extract_queries_from_batched_queries(self, data: dict) -> dict:
+        """Extract query strings from EvaluationData.batchedQueries.
+        
+        This handles the case where PluginInvocation in AllSearchResults is empty
+        (e.g., 'search_web({})') but the actual queries are stored in 
+        EvaluationData.turnData[].orchestrationIterations[].modelActions[]
+            .toolInvocations[].batchedQueries[].arguments
+        
+        Note: AllSearchResults uses a flattened turn index that corresponds to
+        orchestration iterations across all turns, not just turnData index.
+        For example, if turnData[0] has 4 iterations, AllSearchResults will have
+        turns "1", "2", "3", "4" corresponding to those iterations.
+        
+        Returns:
+            dict mapping (turn_index, query_index) to query_string
+            where turn_index matches AllSearchResults keys and query_index
+            corresponds to the order within that turn's search results
+        """
+        query_map = {}
+        
+        evaluation_data = data.get("EvaluationData", {})
+        turn_data = evaluation_data.get("turnData", [])
+        
+        # Track the flattened turn index (1-based, matching AllSearchResults)
+        flattened_turn_idx = 0
+        
+        for turn in turn_data:
+            orchestration_iterations = turn.get("orchestrationIterations", [])
+            
+            for iteration in orchestration_iterations:
+                flattened_turn_idx += 1
+                turn_key = str(flattened_turn_idx)
+                
+                # Track query index within this iteration/turn
+                query_idx = 0
+                
+                model_actions = iteration.get("modelActions", [])
+                
+                for action in model_actions:
+                    tool_invocations = action.get("toolInvocations", [])
+                    
+                    for invocation in tool_invocations:
+                        batched_queries = invocation.get("batchedQueries", [])
+                        # Get tool/function name from either 'function' or 'name' field
+                        tool_name = invocation.get("function", "") or invocation.get("name", "")
+                        
+                        # Only process search-related tools
+                        is_search_tool = any(
+                            search_type in tool_name.lower()
+                            for search_type in ['search', 'bing']
+                        ) if tool_name else True  # Default to True if no tool name
+                        
+                        if not is_search_tool:
+                            continue
+                        
+                        # Map each batched query to its index
+                        for batch_query in batched_queries:
+                            arguments = batch_query.get("arguments", "")
+                            
+                            # Parse arguments to extract the query
+                            query_string = ""
+                            if isinstance(arguments, str) and arguments:
+                                # Try to parse as JSON first (search_web uses JSON string)
+                                try:
+                                    parsed = json.loads(arguments)
+                                    if isinstance(parsed, dict):
+                                        query_string = (
+                                            parsed.get("query") or
+                                            parsed.get("search_query") or
+                                            parsed.get("queries") or
+                                            arguments  # fallback to original string
+                                        )
+                                    else:
+                                        query_string = arguments
+                                except (json.JSONDecodeError, TypeError):
+                                    query_string = arguments
+                            elif isinstance(arguments, dict):
+                                # Try common query field names
+                                query_string = (
+                                    arguments.get("query") or
+                                    arguments.get("search_query") or
+                                    arguments.get("queries") or
+                                    str(arguments)
+                                )
+                            
+                            # Store with composite key
+                            key = (turn_key, query_idx)
+                            query_map[key] = query_string
+                            query_idx += 1
+        
+        return query_map
+    
+    def _build_first_ref_to_query_map(self, evaluation_data: dict) -> dict:
+        """
+        Build a mapping from first reference_id of each search to query string.
+        
+        This extracts queries from batchedQueries in EvaluationData.
+        For each batchedQuery, we extract:
+        - The query string from 'arguments'
+        - The first reference_id from processedResult (WebPages, News, etc.)
+        
+        This allows us to match AllSearchResults entries (which have the first reference_id
+        but empty PluginInvocation for search_web) to their actual query strings.
+        
+        Args:
+            evaluation_data: The EvaluationData dict containing turnData with batchedQueries
+            
+        Returns:
+            dict mapping first_reference_id -> query_string
+        """
+        first_ref_to_query = {}
+        
+        turn_data = evaluation_data.get("turnData", [])
+        
+        for turn in turn_data:
+            orchestration_iterations = turn.get("orchestrationIterations", [])
+            
+            for iteration in orchestration_iterations:
+                model_actions = iteration.get("modelActions", [])
+                
+                for action in model_actions:
+                    tool_invocations = action.get("toolInvocations", [])
+                    
+                    for invocation in tool_invocations:
+                        tool_name = invocation.get("function", "") or invocation.get("name", "")
+                        
+                        # Only process search_web (the problematic case with empty PluginInvocation)
+                        if "search_web" not in tool_name.lower():
+                            continue
+                        
+                        batched_queries = invocation.get("batchedQueries", [])
+                        
+                        for batch_query in batched_queries:
+                            # Extract query from arguments
+                            arguments = batch_query.get("arguments", "")
+                            query_string = ""
+                            if isinstance(arguments, str) and arguments:
+                                # Try to parse as JSON first (search_web uses JSON string)
+                                try:
+                                    parsed = json.loads(arguments)
+                                    if isinstance(parsed, dict):
+                                        query_string = (
+                                            parsed.get("query") or
+                                            parsed.get("search_query") or
+                                            parsed.get("queries") or
+                                            arguments  # fallback to original string
+                                        )
+                                    else:
+                                        query_string = arguments
+                                except (json.JSONDecodeError, TypeError):
+                                    query_string = arguments
+                            elif isinstance(arguments, dict):
+                                query_string = arguments.get("query", str(arguments))
+                            
+                            if not query_string:
+                                continue
+                            
+                            # Parse processedResult to get reference_ids
+                            processed_result = batch_query.get("processedResult", "")
+                            if not processed_result:
+                                continue
+                            
+                            try:
+                                if isinstance(processed_result, str):
+                                    processed_data = json.loads(processed_result)
+                                else:
+                                    processed_data = processed_result
+                                
+                                # Extract first reference_id from any result type
+                                # (WebPages, News, QuestionsAndAnswers, etc.)
+                                if isinstance(processed_data, dict):
+                                    for result_type in ["WebPages", "News", "QuestionsAndAnswers", "Sports", "Videos"]:
+                                        items = processed_data.get(result_type, [])
+                                        if items and isinstance(items, list):
+                                            first_ref = items[0].get("reference_id", "")
+                                            if first_ref:
+                                                first_ref_to_query[first_ref] = query_string
+                                                # Don't break - store all first refs from all types
+                            except (json.JSONDecodeError, TypeError, AttributeError):
+                                continue
+        
+        return first_ref_to_query
+    
+    def _build_ref_to_query_map(self, evaluation_data: dict) -> dict:
+        """
+        Build a mapping from reference_id to query string.
+        
+        This extracts queries from citedResponseAttributions and uncitedResponseAttributions
+        in EvaluationData. Each attribution has a 'searchQuery' field and a 'referenceMetadata'
+        field containing the 'citationRefId' (e.g., 'turn1search9').
+        
+        This is the most reliable source for query-to-reference mapping as it comes directly
+        from the response attribution data.
+        
+        Args:
+            evaluation_data: The EvaluationData dict containing attribution arrays
+            
+        Returns:
+            dict mapping reference_id -> query_string
+        """
+        ref_to_query = {}
+        
+        # Process both cited and uncited attributions
+        attribution_sources = [
+            evaluation_data.get('citedResponseAttributions', []),
+            evaluation_data.get('uncitedResponseAttributions', [])
+        ]
+        
+        for attributions in attribution_sources:
+            if not attributions:
+                continue
+                
+            for attr in attributions:
+                search_query = attr.get('searchQuery', '')
+                if not search_query:
+                    continue
+                    
+                # Extract citationRefId from referenceMetadata
+                ref_metadata = attr.get('referenceMetadata', '')
+                if not ref_metadata:
+                    continue
+                    
+                # referenceMetadata is a JSON string containing citationRefId
+                # e.g., '{"type":"Web",...,"citationRefId":"turn1search9"}'
+                try:
+                    if isinstance(ref_metadata, str):
+                        metadata_dict = json.loads(ref_metadata)
+                    else:
+                        metadata_dict = ref_metadata
+                        
+                    citation_ref_id = metadata_dict.get('citationRefId', '')
+                    if citation_ref_id:
+                        ref_to_query[citation_ref_id] = search_query
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        
+        return ref_to_query
+    
     def _extract_cite_dcg_data(self, data: dict) -> list:
         """
         Extract CiteDCG scores from JSON structure.
@@ -572,6 +814,16 @@ class PerResultCiteDCGExtractor:
         turn_data = evaluation_data.get("turnData", [])
         num_turns = len(turn_data) if turn_data else 1
         
+        # Build query map from batchedQueries (fallback for empty PluginInvocation)
+        batched_query_map = self._extract_queries_from_batched_queries(data)
+        
+        # Build first_reference_id to query map from batchedQueries.processedResult
+        # This is the most reliable fallback for search_web with empty PluginInvocation
+        first_ref_to_query_map = self._build_first_ref_to_query_map(evaluation_data)
+        
+        # Build reference_id to query map from attributions (fallback for remaining cases)
+        ref_to_query_map = self._build_ref_to_query_map(evaluation_data)
+        
         # If no utterance, skip this entry entirely
         if not utterance:
             return results
@@ -584,17 +836,25 @@ class PerResultCiteDCGExtractor:
         # Also collect results without scores for error cases
         results_without_scores = []
         
+        # Track overall query index across all searches in a turn
+        # This maps to the batched queries index
+        query_index_per_turn = {}
+        
         for turn_index, query_data in all_search_results.items():
             if not query_data:
                 continue
             
             has_any_searches = True
             
+            # Initialize query index for this turn
+            if turn_index not in query_index_per_turn:
+                query_index_per_turn[turn_index] = 0
+            
             for search_domain, domain_data in query_data.items():
                 if not isinstance(domain_data, list):
                     continue
                 
-                for domain_item in domain_data:
+                for domain_item_idx, domain_item in enumerate(domain_data):
                     # Extract plugin metadata - preserve original format
                     plugin_name = domain_item.get("PluginName", "")
                     plugin_invocation = domain_item.get(
@@ -609,6 +869,9 @@ class PerResultCiteDCGExtractor:
                     if plugin_name == "office365_search":
                         search_domain_value = self._extract_domain_from_invocation(plugin_invocation)
                     
+                    # Get results list early (needed for reference_id fallback)
+                    results_list = domain_item.get("Results", [])
+                    
                     # Only extract queries from search plugins
                     # Skip non-search plugins (record_memory, fetch_*, etc.)
                     is_search_plugin = any(
@@ -621,11 +884,33 @@ class PerResultCiteDCGExtractor:
                     
                     query_string = ""
                     if is_search_plugin:
+                        # First try to extract from PluginInvocation
                         query_string = self._extract_query_from_invocation(
                             plugin_invocation, plugin_name
                         )
-                    
-                    results_list = domain_item.get("Results", [])
+                        
+                        # Fallback 1: If PluginInvocation is empty (e.g., 'search_web({})'),
+                        # use the batchedQueries map from EvaluationData
+                        if not query_string:
+                            query_key = (turn_index, query_index_per_turn[turn_index])
+                            query_string = batched_query_map.get(query_key, "")
+                        
+                        # Fallback 2: If still empty, try reference_id lookup from first result
+                        # using attribution-based mapping
+                        if not query_string and results_list:
+                            first_ref_id = results_list[0].get("reference_id", "")
+                            if first_ref_id:
+                                query_string = ref_to_query_map.get(first_ref_id, "")
+                        
+                        # Fallback 3: Try first_ref_to_query_map from batchedQueries.processedResult
+                        # This is last resort for search_web cases
+                        if not query_string and results_list:
+                            first_ref_id = results_list[0].get("reference_id", "")
+                            if first_ref_id:
+                                query_string = first_ref_to_query_map.get(first_ref_id, "")
+                        
+                        # Increment query index for this turn
+                        query_index_per_turn[turn_index] += 1
                     
                     # Track if this search has non-empty results
                     if results_list:
@@ -1239,6 +1524,487 @@ class PerResultCiteDCGExtractor:
         with open(output_file, 'w', encoding='utf-8') as f:
             for item in data:
                 f.write(json.dumps(item, ensure_ascii=False) + '\n')
+
+
+def extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data: dict) -> dict:
+    """
+    Extract unified conversation details and CiteDCG scores from raw results.json.
+    
+    Extracts BOTH conversation metadata and per-result DCG scores from a single
+    raw data record, enabling unified analysis without cross-referencing multiple
+    data sources. Uses reference_id mapping to resolve queries for plugins with
+    empty PluginInvocation (e.g., search_web({})).
+    
+    Query Resolution Strategy:
+        1. Primary: Extract from PluginInvocation (office365_search, bing_search, etc.)
+        2. Fallback: Map reference_id -> query via batchedQueries.processedResult.WebPages
+    
+    Args:
+        raw_data: A single parsed JSON record from results.json containing:
+            - Utterance, ConversationId: Conversation metadata
+            - EvaluationData.turnData: Turn and query information
+            - AllSearchResults: Search results with CiteDCG scores
+        
+    Returns:
+        dict: Unified extraction result with structure:
+            {
+                'utterance': str,           # Original user query
+                'conversation_id': str,     # Unique conversation identifier
+                'num_turns': int,           # Number of conversation turns
+                'has_cite_dcg_scores': bool,# Whether any results have DCG labels
+                'total_results': int,       # Total search results count
+                'searches': [               # List of search operations
+                    {
+                        'hop': str,             # Search hop/turn index
+                        'plugin_name': str,     # Plugin used (search_web, etc.)
+                        'query_string': str,    # Resolved query string
+                        'plugin_invocation': str,# Raw plugin invocation
+                        'result_count': int,    # Results in this search
+                        'results': [            # Individual search results
+                            {
+                                'reference_id': str,        # Result reference ID
+                                'CiteDCGLLMLabel': float|None, # DCG score (0-4)
+                                'query_string': str,        # Query for this result
+                                'ResultType': str,          # Result type category
+                                'Type': str,                # Content type
+                                'Title': str,               # Result title
+                            }
+                        ]
+                    }
+                ]
+            }
+    
+    Example:
+        >>> with open('results.json') as f:
+        ...     for line in f:
+        ...         record = json.loads(line)
+        ...         extracted = extract_conv_details_and_dcg_from_raw_dcgfiles(record)
+        ...         print(f"Utterance: {extracted['utterance'][:50]}...")
+        ...         print(f"Total results: {extracted['total_results']}")
+    """
+    result = {
+        'utterance': raw_data.get('Utterance', ''),
+        'conversation_id': raw_data.get('ConversationId', ''),
+        'num_turns': 0,
+        'has_cite_dcg_scores': False,
+        'total_results': 0,
+        'searches': []
+    }
+    
+    eval_data = raw_data.get('EvaluationData', {})
+    turn_data = eval_data.get('turnData', [])
+    all_search = raw_data.get('AllSearchResults', {})
+    
+    result['num_turns'] = len(turn_data)
+    
+    # Step 1: Build reference_id -> query mapping from batchedQueries
+    ref_to_query = _build_ref_to_query_map(turn_data)
+    
+    # Step 2: Process AllSearchResults to get DCG scores and merge with queries
+    for turn_key, search_data in sorted(all_search.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
+        for domain, items in search_data.items():
+            if not isinstance(items, list):
+                continue
+            
+            for item_idx, item in enumerate(items):
+                plugin_name = item.get('PluginName', '')
+                plugin_invocation = item.get('PluginInvocation', '')
+                results_list = item.get('Results', [])
+                
+                if not results_list:
+                    continue
+                
+                # Try to extract query from PluginInvocation first
+                query_from_invocation = _extract_query_from_invocation_unified(
+                    plugin_invocation, plugin_name
+                )
+                
+                # Group results and determine query for each
+                search_entry = {
+                    'hop': turn_key,
+                    'plugin_name': plugin_name,
+                    'query_string': query_from_invocation,  # May be empty
+                    'plugin_invocation': plugin_invocation,
+                    'result_count': len(results_list),
+                    'results': []
+                }
+                
+                for r in results_list:
+                    ref_id = r.get('reference_id', '')
+                    dcg_label = r.get('CiteDCGLLMLabel')
+                    
+                    # If no query from invocation, try to get from ref_to_query map
+                    result_query = query_from_invocation
+                    if not result_query and ref_id:
+                        result_query = ref_to_query.get(ref_id, '')
+                    
+                    # Update search_entry query if we found one via ref_id
+                    if not search_entry['query_string'] and result_query:
+                        search_entry['query_string'] = result_query
+                    
+                    result_entry = {
+                        'reference_id': ref_id,
+                        'CiteDCGLLMLabel': dcg_label,
+                        'query_string': result_query,  # Per-result query
+                        'ResultType': r.get('ResultType', ''),
+                        'Type': r.get('Type', ''),
+                        'Title': r.get('Title', ''),
+                    }
+                    
+                    if dcg_label is not None:
+                        result['has_cite_dcg_scores'] = True
+                    
+                    search_entry['results'].append(result_entry)
+                    result['total_results'] += 1
+                
+                result['searches'].append(search_entry)
+    
+    return result
+
+
+def _build_ref_to_query_map(turn_data: list) -> dict:
+    """
+    Build a mapping from reference_id to query string.
+    
+    This extracts queries from batchedQueries in EvaluationData and maps them
+    to reference_ids found in processedResult.WebPages.
+    
+    Args:
+        turn_data: List of turn data from EvaluationData.turnData
+        
+    Returns:
+        dict mapping reference_id -> query_string
+    """
+    ref_to_query = {}
+    
+    for turn in turn_data:
+        for iteration in turn.get('orchestrationIterations', []):
+            for action in iteration.get('modelActions', []):
+                for inv in action.get('toolInvocations', []):
+                    for bq in inv.get('batchedQueries', []):
+                        query = bq.get('arguments', '')
+                        processed = bq.get('processedResult', '')
+                        
+                        # processedResult might be a JSON string
+                        if isinstance(processed, str):
+                            try:
+                                processed = json.loads(processed)
+                            except (json.JSONDecodeError, TypeError):
+                                continue
+                        
+                        if isinstance(processed, dict):
+                            webpages = processed.get('WebPages', [])
+                            for wp in webpages:
+                                ref_id = wp.get('reference_id', '')
+                                if ref_id:
+                                    ref_to_query[ref_id] = query
+    
+    return ref_to_query
+
+
+def _extract_query_from_invocation_unified(invocation_str: str, plugin_name: str = "") -> str:
+    """
+    Extract query from PluginInvocation string.
+    
+    Args:
+        invocation_str: The PluginInvocation string (e.g., "office365_search({...})")
+        plugin_name: Name of the plugin (for context)
+        
+    Returns:
+        Extracted query string, or empty string if not found
+    """
+    if not invocation_str:
+        return ""
+    
+    # Check for empty invocation like "search_web({})"
+    if invocation_str.endswith("({})"):
+        return ""
+    
+    try:
+        import ast
+        import re
+
+        # Find the dict/parameter part: function_name({...})
+        paren_start = invocation_str.find('(')
+        if paren_start == -1:
+            return ""
+        
+        # Extract content between parentheses
+        paren_end = invocation_str.rfind(')')
+        if paren_end <= paren_start:
+            return ""
+        
+        dict_str = invocation_str[paren_start + 1:paren_end]
+        
+        try:
+            params = ast.literal_eval(dict_str)
+            if isinstance(params, dict):
+                # Try 'query' first (office365_search, etc.)
+                if 'query' in params:
+                    return str(params['query'])
+                # Try 'search_query' (bing_search)
+                if 'search_query' in params:
+                    return str(params['search_query'])
+                # Try 'querykeywords' (enterprise connectors)
+                if 'querykeywords' in params:
+                    return str(params['querykeywords'])
+        except (ValueError, SyntaxError):
+            pass
+        
+        # Fallback: regex extraction
+        match = re.search(r"'query':\s*['\"]([^'\"]+)['\"]", invocation_str)
+        if match:
+            return match.group(1)
+        
+        match = re.search(r"'search_query':\s*['\"]([^'\"]+)['\"]", invocation_str)
+        if match:
+            return match.group(1)
+        
+    except Exception:
+        pass
+    
+    return ""
+
+
+def extract_conv_details_and_dcg_from_raw(
+    raw_file: str,
+    output_file: str = None,
+    utterance_filter: str = None
+) -> list:
+    """
+    CLI wrapper to extract unified conversation + DCG data from raw results.json.
+    
+    Processes a raw SEVAL results file (JSONL format) and extracts both
+    conversation details and CiteDCG scores in a unified structure.
+    
+    Args:
+        raw_file: Path to raw file. Supports both:
+            - JSONL format (one JSON record per line, like results.json)
+            - Single JSON file (one complete JSON object)
+        output_file: Optional path for JSON output. If None, prints to stdout.
+        utterance_filter: Optional substring to filter by utterance text
+        
+    Returns:
+        list: List of extracted records
+        
+    Example:
+        python get_seval_metrics.py extract_conv_details_and_dcg_from_raw \\
+            --raw_file=../../temp/dcg_catering_raw.json \\
+            --output_file=results/unified_output.json
+    """
+    if not os.path.exists(raw_file):
+        print(f"Error: File not found: {raw_file}")
+        return []
+    
+    results = []
+    
+    # Try to detect file format: JSONL vs single JSON
+    with open(raw_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Try parsing as single JSON object first
+    try:
+        raw_data = json.loads(content)
+        # If it's a dict with expected keys, treat as single record
+        if isinstance(raw_data, dict) and ('Utterance' in raw_data or 'AllSearchResults' in raw_data):
+            utterance = raw_data.get('Utterance', '')
+            if not utterance_filter or utterance_filter.lower() in utterance.lower():
+                extracted = extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data)
+                results.append(extracted)
+        # If it's a list, treat each item as a record
+        elif isinstance(raw_data, list):
+            for item in raw_data:
+                if isinstance(item, dict):
+                    utterance = item.get('Utterance', '')
+                    if utterance_filter and utterance_filter.lower() not in utterance.lower():
+                        continue
+                    extracted = extract_conv_details_and_dcg_from_raw_dcgfiles(item)
+                    results.append(extracted)
+    except json.JSONDecodeError:
+        # Fall back to JSONL format (one JSON object per line)
+        for line_num, line in enumerate(content.split('\n'), 1):
+            line = line.strip()
+            if not line:
+                continue
+            
+            try:
+                raw_data = json.loads(line)
+            except json.JSONDecodeError as e:
+                # Only warn for lines that look like they should be JSON
+                if line.startswith('{'):
+                    print(f"Warning: Skipping line {line_num} - JSON parse error: {e}")
+                continue
+            
+            # Apply utterance filter if specified
+            utterance = raw_data.get('Utterance', '')
+            if utterance_filter and utterance_filter.lower() not in utterance.lower():
+                continue
+            
+            extracted = extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data)
+            results.append(extracted)
+    
+    print(f"Processed {len(results)} records from {raw_file}")
+    
+    if output_file:
+        os.makedirs(os.path.dirname(output_file), exist_ok=True) if os.path.dirname(output_file) else None
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        print(f"Output written to: {output_file}")
+    else:
+        # Print summary to stdout
+        for r in results:
+            print(f"\n{'='*60}")
+            print(f"Utterance: {r['utterance'][:80]}...")
+            print(f"Conversation ID: {r['conversation_id']}")
+            print(f"Turns: {r['num_turns']}, Total Results: {r['total_results']}")
+            print(f"Has CiteDCG Scores: {r['has_cite_dcg_scores']}")
+            for s in r['searches'][:3]:  # Show first 3 searches
+                print(f"  - {s['plugin_name']}: {s['query_string'][:50] if s['query_string'] else '(no query)'}... ({s['result_count']} results)")
+    
+    return results
+
+
+def extract_unified_dcg_batch(
+    job_id: str,
+    experiment: str = "both",
+    output_dir: str = None,
+    num_threads: int = 8,
+    base_path: str = None
+) -> dict:
+    """
+    Batch extract unified conversation + DCG data from raw DCG files for a SEVAL job.
+    
+    Processes control and/or treatment raw DCG files with multi-threading support.
+    
+    Args:
+        job_id: SEVAL job ID (e.g., "133560")
+        experiment: Which experiment to process: "control", "treatment", or "both"
+        output_dir: Output directory path. If None, uses:
+            results/{job_id}_unified_hop_citedcg_scores/
+        num_threads: Number of parallel threads for processing (default: 1)
+        base_path: Base path for seval_data folder. If None, uses current directory.
+        
+    Returns:
+        dict: Summary of processing results
+        
+    Example:
+        python get_seval_metrics.py extract_unified_dcg_batch \\
+            --job_id=133560 \\
+            --experiment=both \\
+            --num_threads=4
+    """
+    import concurrent.futures
+    from pathlib import Path
+
+    # Setup paths
+    if base_path is None:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
+    seval_data_path = os.path.join(base_path, "seval_data", f"{job_id}_metrics")
+    
+    if output_dir is None:
+        output_dir = os.path.join(base_path, "results", f"{job_id}_unified_hop_citedcg_scores")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Define experiment folders
+    experiments_to_process = []
+    if experiment.lower() in ["control", "both"]:
+        control_folder = os.path.join(seval_data_path, "Consolidated NDCG and CiteDCG Labels Control")
+        if os.path.exists(control_folder):
+            experiments_to_process.append(("control", control_folder))
+        else:
+            print(f"Warning: Control folder not found: {control_folder}")
+    
+    if experiment.lower() in ["treatment", "both"]:
+        treatment_folder = os.path.join(seval_data_path, "Consolidated NDCG and CiteDCG Labels Treatment")
+        if os.path.exists(treatment_folder):
+            experiments_to_process.append(("treatment", treatment_folder))
+        else:
+            print(f"Warning: Treatment folder not found: {treatment_folder}")
+    
+    if not experiments_to_process:
+        print(f"Error: No valid experiment folders found for job {job_id}")
+        return {"error": "No experiment folders found"}
+    
+    summary = {
+        "job_id": job_id,
+        "experiments_processed": [],
+        "total_records": 0,
+        "output_files": []
+    }
+    
+    def process_single_file(args):
+        """Process a single raw DCG file."""
+        exp_name, raw_file = args
+        try:
+            results = extract_conv_details_and_dcg_from_raw(raw_file, output_file=None)
+            return exp_name, os.path.basename(raw_file), results
+        except Exception as e:
+            print(f"Error processing {raw_file}: {e}")
+            return exp_name, os.path.basename(raw_file), []
+    
+    for exp_name, folder_path in experiments_to_process:
+        print(f"\n{'='*60}")
+        print(f"Processing {exp_name.upper()} experiment from: {folder_path}")
+        print(f"{'='*60}")
+        
+        # Find all results.json files in the folder
+        raw_files = []
+        results_json = os.path.join(folder_path, "results.json")
+        if os.path.exists(results_json):
+            raw_files.append((exp_name, results_json))
+        else:
+            # Look for individual JSON files
+            for f in os.listdir(folder_path):
+                if f.endswith('.json'):
+                    raw_files.append((exp_name, os.path.join(folder_path, f)))
+        
+        if not raw_files:
+            print(f"No JSON files found in {folder_path}")
+            continue
+        
+        all_results = []
+        
+        if num_threads > 1 and len(raw_files) > 1:
+            # Multi-threaded processing
+            print(f"Processing {len(raw_files)} files with {num_threads} threads...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+                futures = {executor.submit(process_single_file, args): args for args in raw_files}
+                for future in concurrent.futures.as_completed(futures):
+                    exp, filename, results = future.result()
+                    all_results.extend(results)
+                    print(f"  Processed: {filename} ({len(results)} records)")
+        else:
+            # Single-threaded processing
+            for args in raw_files:
+                exp, filename, results = process_single_file(args)
+                all_results.extend(results)
+                print(f"  Processed: {filename} ({len(results)} records)")
+        
+        # Write output file for this experiment
+        output_file = os.path.join(output_dir, f"{job_id}_{exp_name}_unified_citedcg.json")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(all_results, f, indent=2, ensure_ascii=False)
+        
+        print(f"\nOutput written to: {output_file}")
+        print(f"Total records for {exp_name}: {len(all_results)}")
+        
+        summary["experiments_processed"].append(exp_name)
+        summary["total_records"] += len(all_results)
+        summary["output_files"].append(output_file)
+    
+    print(f"\n{'='*60}")
+    print("BATCH PROCESSING COMPLETE")
+    print(f"{'='*60}")
+    print(f"Job ID: {job_id}")
+    print(f"Experiments: {', '.join(summary['experiments_processed'])}")
+    print(f"Total records: {summary['total_records']}")
+    print(f"Output files: {len(summary['output_files'])}")
+    for f in summary['output_files']:
+        print(f"  - {f}")
+    
+    return summary
 
 
 class ReasoningClassExtractor:
@@ -2645,7 +3411,9 @@ if __name__ == "__main__":
             'get_metrics_summary': get_metrics_summary,
             'generate_citedcg_report': generate_citedcg_report,
             'read_metrics': read_metrics,
-            'extract_per_result_citedcg': extract_per_result_citedcg
+            'extract_per_result_citedcg': extract_per_result_citedcg,
+            'extract_conv_details_and_dcg_from_raw': extract_conv_details_and_dcg_from_raw,
+            'extract_unified_dcg_batch': extract_unified_dcg_batch
         })
     except FireExit as e:
         # Handle Fire's exit (including --help) gracefully in debug mode

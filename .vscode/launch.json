@@ -1814,6 +1814,77 @@
             }
         },
         {
+            "name": "🔬 SEVAL - Extract Unified Conv + DCG from Raw DCG Files",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "extract_conv_details_and_dcg_from_raw",
+                "--raw_file=../../temp/dcg_catering_raw.json",
+                "--output_file=results/unified_extraction_output.json"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL 133560 - Extract Unified DCG Batch (Both)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "extract_unified_dcg_batch",
+                "--job_id=133560",
+                "--experiment=both",
+                "--num_threads=4"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL 133560 - Extract Unified DCG Batch (Control Only)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "extract_unified_dcg_batch",
+                "--job_id=133560",
+                "--experiment=control",
+                "--num_threads=4"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL 133560 - Extract Unified DCG Batch (Treatment Only)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "extract_unified_dcg_batch",
+                "--job_id=133560",
+                "--experiment=treatment",
+                "--num_threads=4"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
             "name": "🔬 SEVAL - Merge Per-Result CiteDCG Scores and Calculate Stats",
             "type": "debugpy",
             "request": "launch",
@@ -1905,10 +1976,10 @@
             "justMyCode": true,
             "args": [
                 "process_seval_job_with_statistics_plots",
-                "--job_id=135056", //133560", // 132951", //130949", 
+                "--job_id=133560", //135056", //133560", // 132951", //130949", 
                 "--experiment=both", //control",
                 "--top_k_list=1,3,5",
-                //"--clean=True",
+                "--clean=True",
                 "--threads=16",
                 "--verbose=False" //False"
             ],

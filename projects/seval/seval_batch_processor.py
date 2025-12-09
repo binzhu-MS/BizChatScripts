@@ -41,12 +41,23 @@ Workflow:
     5. Generate comparison plots
 """
 
+import io
 import json
 import logging
+import os
 import shutil
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+# Configure UTF-8 encoding BEFORE importing any packages that may wrap stdout
+# This fixes encoding errors with Unicode characters on Windows console
+os.environ["PYTHONIOENCODING"] = "utf-8"
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import fire
 
@@ -60,13 +71,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import after logging configuration
-from merge_seval_results import (
+from .merge_seval_results import (
     generate_plot_statistics_from_utterance_details,
-    merge_citedcg_and_calculate_stats)
-from seval_analysis_toolkit import SEVALAnalysisToolkit
-from seval_plotting import (generate_comparison_plots,
-                            generate_paired_utterances_plot,
-                            generate_statistics_plots)
+    merge_citedcg_and_calculate_stats,
+)
+from .seval_analysis_toolkit import SEVALAnalysisToolkit
+from .seval_plotting import (
+    generate_comparison_plots,
+    generate_paired_utterances_plot,
+    generate_statistics_plots,
+)
 
 # ==========================================================================
 # Base Classes
@@ -1429,11 +1443,12 @@ def process_seval_job_multihop_citedcg(
         python seval_batch_processor.py process_seval_job_multihop_citedcg \\
             --job_id=130949 --experiment=both --threads=16
     """
-    from get_seval_metrics import extract_per_result_citedcg
+    from .get_seval_metrics import extract_per_result_citedcg
 
-    # Set default paths if not provided
+    # Set default paths if not provided (use module-relative paths)
+    module_dir = Path(__file__).parent
     if raw_data_dir is None:
-        raw_data_dir = f"seval_data/{job_id}_scraping_raw_data_output"
+        raw_data_dir = str(module_dir / "seval_data" / f"{job_id}_scraping_raw_data_output")
     if metrics_dir is None:
         metrics_dir = f"{job_id}_metrics"  # Just folder name, not full path
     
@@ -1597,7 +1612,7 @@ def process_seval_job_with_statistics_plots(
     """
     import sys
 
-    from get_seval_metrics import extract_per_result_citedcg
+    from .get_seval_metrics import extract_per_result_citedcg
 
     # Parse top-k list - handle both string and tuple/list from Fire
     try:
@@ -1622,9 +1637,10 @@ def process_seval_job_with_statistics_plots(
         print("Error: At least one top-k value is required")
         sys.exit(1)
     
-    # Set default paths if not provided
+    # Set default paths if not provided (use module-relative paths)
+    module_dir = Path(__file__).parent
     if raw_data_dir is None:
-        raw_data_dir = f"seval_data/{job_id}_scraping_raw_data_output"
+        raw_data_dir = str(module_dir / "seval_data" / f"{job_id}_scraping_raw_data_output")
     if metrics_dir is None:
         metrics_dir = f"{job_id}_metrics"
     
@@ -1964,7 +1980,7 @@ def process_seval_job_with_statistics_plots(
     print("STEP 4-1: BUILDING PER-UTTERANCE DETAILS")
     print("=" * 80)
     
-    from merge_seval_results import build_utterance_details_with_top_k
+    from .merge_seval_results import build_utterance_details_with_top_k
 
     # Create utterance details directory
     utterance_details_dir = Path(f"{output_base_dir}/{job_id}_utterance_hop_citedcg_scores")
@@ -2077,7 +2093,7 @@ def process_seval_job_with_statistics_plots(
         print("STEP 4-2: FINDING PAIRED UTTERANCES WITH SCORES")
         print("=" * 80)
         
-        from merge_seval_results import find_paired_utterances_with_scores
+        from .merge_seval_results import find_paired_utterances_with_scores
         
         control_file = utterance_details_files.get("control")
         treatment_file = utterance_details_files.get("treatment")
@@ -2181,8 +2197,9 @@ def process_seval_job_with_statistics_plots(
         vprint("")
         
         try:
-            from merge_seval_results import \
-                generate_plot_statistics_from_utterance_details
+            from .merge_seval_results import (
+                generate_plot_statistics_from_utterance_details,
+            )
 
             # Generate plot-specific statistics for each experiment and k-value
             stats_files_by_exp = {}  # {experiment: {k: filepath}}

@@ -37,14 +37,24 @@ Programmatic:
     )
 """
 
+import io
 import json
 import logging
+import os
 import sys
 from typing import Any, Dict, List, Optional
 
+# Configure UTF-8 encoding BEFORE importing any packages that may wrap stdout
+os.environ["PYTHONIOENCODING"] = "utf-8"
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 import fire
 from fire.core import FireExit
-from seval_plotting import generate_plot_statistics_from_utterance_details
+
+from .seval_plotting import generate_plot_statistics_from_utterance_details
 
 # Configure logging
 logging.basicConfig(
