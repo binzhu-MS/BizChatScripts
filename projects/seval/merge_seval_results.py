@@ -467,7 +467,10 @@ def _add_citedcg_scores_to_conversation(
                             # CiteDCG: plugin_name="search_enterprise_connectors_LearningAppConnectorV12", 
                             #          content_domain_name="Viva Learning" (extracted from ContentDomain.Name)
                             plugin_match = (norm_search['plugin_name'] == invocation_tool)
-                            domain_match = (norm_search.get('content_domain_name') == query_domain)
+                            # Domain match: both must be same (including None == None for missing domain)
+                            conv_domain = query_domain if query_domain else None
+                            dcg_domain = norm_search.get('content_domain_name')
+                            domain_match = (dcg_domain == conv_domain)
                         elif invocation_tool == "office365_search":
                             # Office365: Two possible formats in CiteDCG data:
                             # Format 1 (separate): plugin_name="office365_search", domain="files"
@@ -506,6 +509,46 @@ def _add_citedcg_scores_to_conversation(
                                 norm_search['query_lower'] == query_text_lower):
                             matched_search = norm_search
                             norm_search['used'] = True  # Mark as used
+                            break
+                    
+                    # FALLBACK: For Graph Connectors, if no exact match found (domain mismatch),
+                    # try matching by plugin_name + query + result_count only (ignoring domain)
+                    # This handles cases where ContentDomainName is missing in either source
+                    if not matched_search and ("search_enterprise_connectors" in invocation_tool or "search_enterprise" in invocation_tool):
+                        conv_result_count = len(query_results)
+                        for norm_search in normalized_searches:
+                            if norm_search['used']:
+                                continue
+                            # Check hop match
+                            if str(norm_search.get('hop', '')) != str(hop_number):
+                                continue
+                            # Check plugin_name match
+                            if norm_search['plugin_name'] != invocation_tool:
+                                continue
+                            # Check query match
+                            if norm_search['query_lower'] != query_text_lower:
+                                continue
+                            # Check result count match
+                            if len(norm_search['results']) != conv_result_count:
+                                continue
+                            
+                            # Found fallback match - log warning about domain mismatch
+                            conv_domain = query_domain if query_domain else None
+                            dcg_domain = norm_search.get('content_domain_name')
+                            logger.warning(
+                                f"Conversation ID: {conversation_id}\n"
+                                f"Graph Connector fallback match (domain mismatch):\n"
+                                f"  Utterance: '{user_input[:50]}'\n"
+                                f"  Turn: {turn_idx}, Hop: {hop_number}\n"
+                                f"  Tool: {invocation_tool}\n"
+                                f"  Query: '{query_text_lower[:60]}'\n"
+                                f"  Conv domain: {conv_domain}\n"
+                                f"  DCG domain: {dcg_domain}\n"
+                                f"  Result count: {conv_result_count}\n"
+                                f"  → Matched by plugin_name + query + result_count (domain ignored)"
+                            )
+                            matched_search = norm_search
+                            norm_search['used'] = True
                             break
                     
                     # Build display key for logging

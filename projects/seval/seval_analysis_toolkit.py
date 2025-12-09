@@ -4957,7 +4957,21 @@ class SEVALAnalysisToolkit:
                             # Only process if we have non-empty content after stripping
                             if result_str:
                                 result_str = result_str.strip()
-                                if result_str:
+                                # Check if this is a "no results" message (not JSON)
+                                # When web search returns no results, processedResult contains
+                                # a plain text message like "Web search returned no relevant result."
+                                if result_str.lower().startswith("web search returned no"):
+                                    # Record the query with 0 results
+                                    total_queries += 1
+                                    query_results = {
+                                        "query_number": len(invocation_results["queries"]) + 1,
+                                        "domain": "webpages",  # Default domain for web search
+                                        "query": query_text,
+                                        "result_count": 0,
+                                        "results": [],
+                                    }
+                                    invocation_results["queries"].append(query_results)
+                                elif result_str:
                                     try:
                                         # Parse result JSON
                                         result_data = json.loads(result_str)
@@ -5140,17 +5154,8 @@ class SEVALAnalysisToolkit:
                                                     except Exception:
                                                         pass
                                             
-                                            # If extraction failed, log error and skip this query
-                                            if not domain:
-                                                user_input = turn_results.get("user_input", "")
-                                                print(f"\n{'='*80}")
-                                                print("ERROR: Could not extract ContentDomainName from Graph Connector result")
-                                                print(f"  Conversation ID: {conversation_id}")
-                                                print(f"  Tool: {tool_name}")
-                                                print(f"  Utterance: {user_input[:100]}...")
-                                                print(f"  Turn: {turn_results.get('turn_number')}, Hop: {hop_results.get('hop_number')}")
-                                                print(f"{'='*80}\n")
-                                                continue
+                                            # If extraction failed, set domain to None (matches DCG extraction behavior)
+                                            # Some Graph Connector results may not have ContentDomainName in sourceJson
                                             
                                             # Create a query entry for this Graph Connector search
                                             query_results = {
