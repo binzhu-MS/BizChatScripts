@@ -47,7 +47,6 @@ Workflow:
     5. Generate comparison plots
 """
 
-import io
 import json
 import logging
 import os
@@ -56,14 +55,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-
-# Configure UTF-8 encoding BEFORE importing any packages that may wrap stdout
-# This fixes encoding errors with Unicode characters on Windows console
-os.environ["PYTHONIOENCODING"] = "utf-8"
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-if sys.stderr.encoding != 'utf-8':
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import fire
 
@@ -2442,7 +2433,7 @@ def extract_unified_dcg_batch(
     
     for exp_name, folder_path in experiments_to_process:
         print(f"\n{'='*60}")
-        print(f"Processing {exp_name.upper()} experiment from: {folder_path}")
+        print(f"Processing {exp_name.upper()} from: {folder_path}")
         print(f"{'='*60}")
         
         # Find all results.json files in the folder
@@ -2691,9 +2682,9 @@ def process_unified_dcg_with_statistics_plots(
     # STEP 1: Extract unified DCG batch (always regenerate)
     unified_files = {}
     
-    print("=" * 80)
-    print("STEP 1: EXTRACTING UNIFIED DCG DATA")
-    print("=" * 80)
+    vprint("=" * 80)
+    vprint("STEP 1: EXTRACTING UNIFIED DCG DATA")
+    vprint("=" * 80)
     
     summary = extract_unified_dcg_batch(
         job_id=job_id,

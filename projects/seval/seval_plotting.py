@@ -30,7 +30,6 @@ Usage:
         --experiment="control"
 """
 
-import io
 import json
 import logging
 import os
@@ -38,13 +37,6 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-
-# Configure UTF-8 encoding BEFORE importing any packages that may wrap stdout
-os.environ["PYTHONIOENCODING"] = "utf-8"
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-if sys.stderr.encoding != 'utf-8':
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt

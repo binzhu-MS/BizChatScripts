@@ -2120,7 +2120,8 @@ def extract_conv_details_and_dcg_from_raw(
             extracted = extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data)
             results.append(extracted)
     
-    print(f"Processed {len(results)} records from {raw_file}")
+    # Note: Removed print here - the caller (extract_unified_dcg_batch) handles progress output
+    # print(f"Processed {len(results)} records from {raw_file}")
     
     if output_file:
         # Always write to file, even if results is empty (will write empty array [])
