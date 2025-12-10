@@ -941,12 +941,14 @@ def generate_plot_statistics_from_utterance_details(
         "top_k": k_value,
         "total_utterances": len(utterances),
         "utterances_with_scores": 0,
+        "utterances_without_any_scores": 0,  # Utterances with NO scores anywhere
         "per_hop": defaultdict(lambda: {
             "all_scores": [],
             "top_k_scores": [],
             "total_utterances": 0,
             "utterances_with_scores": 0,
-            "utterances_without_scores": 0
+            "utterances_without_scores": 0,
+            "utterances_with_scores_elsewhere": 0  # Has scores at other hops but not this one
         }),
         "per_hop_sequence": defaultdict(lambda: {
             "all_scores": [],
@@ -970,14 +972,19 @@ def generate_plot_statistics_from_utterance_details(
         hops = utterance_data.get("hops", {})
         
         if not hops:
+            # Utterance has no hops data at all - count as no scores anywhere
+            stats["utterances_without_any_scores"] += 1
             continue
         
         utterance_has_scores = False
         non_empty_hops = []
+        hops_with_scores_set = set()  # Track which hop indices have scores for this utterance
+        all_hop_indices = []  # Track all hop indices for this utterance
         
         # Process each hop
         for hop_idx_str, hop_data in hops.items():
             hop_idx = int(hop_idx_str)
+            all_hop_indices.append(hop_idx)
             k_data = hop_data.get(k_str, {})
             
             if not k_data:
@@ -998,6 +1005,7 @@ def generate_plot_statistics_from_utterance_details(
             
             if not is_empty and avg_all is not None:
                 utterance_has_scores = True
+                hops_with_scores_set.add(hop_idx)
                 non_empty_hops.append((hop_seq, avg_all, avg_topk))
                 
                 stats["per_hop"][hop_idx]["all_scores"].append(avg_all)
@@ -1014,6 +1022,14 @@ def generate_plot_statistics_from_utterance_details(
         
         if utterance_has_scores:
             stats["utterances_with_scores"] += 1
+            # For hops where this utterance doesn't have scores but has scores elsewhere,
+            # increment the "utterances_with_scores_elsewhere" counter
+            for hop_idx in all_hop_indices:
+                if hop_idx not in hops_with_scores_set:
+                    stats["per_hop"][hop_idx]["utterances_with_scores_elsewhere"] += 1
+        else:
+            # Utterance has no scores at any hop
+            stats["utterances_without_any_scores"] += 1
         
         # Single-hop vs multi-hop
         if non_empty_hops:
@@ -1661,27 +1677,38 @@ def generate_comparison_plots(
         ax.legend(fontsize=10, loc='best')
         ax.grid(True, alpha=0.3)
         
-        # ===== ROW 3: Utterance Counts =====
+        # ===== ROW 3: Utterance Counts (3 curves) =====
+        # 🟢 With scores at this hop
+        # 🟡 Has scores elsewhere but not at this hop  
+        # 🔴 No scores anywhere (straight horizontal line)
+        
         # Row 3, Col 1: Control utterance counts
         ax = axes[2, 0]
         per_hop = stats_control[k_values[0]].get(hop_key, {})
+        total_with_any_scores = stats_control[k_values[0]].get("utterances_with_scores", 0)
+        no_scores_anywhere = stats_control[k_values[0]].get("utterances_without_any_scores", 0)
+        
         utterances_with_scores = [per_hop.get(str(i), {}).get("utterances_with_scores", 0)
                                   for i in hop_indices]
-        utterances_without_scores = [per_hop.get(str(i), {}).get("utterances_without_scores", 0)
-                                     for i in hop_indices]
+        # Calculate "scores elsewhere" as: total with any scores - with scores at this hop
+        utterances_with_scores_elsewhere = [total_with_any_scores - c for c in utterances_with_scores]
         
         # Filter out zero counts for plotting (don't show markers for 0)
         with_scores_filtered = [(h, c) for h, c in zip(hop_indices, utterances_with_scores) if c > 0]
-        without_scores_filtered = [(h, c) for h, c in zip(hop_indices, utterances_without_scores) if c > 0]
+        scores_elsewhere_filtered = [(h, c) for h, c in zip(hop_indices, utterances_with_scores_elsewhere) if c > 0]
         
         if with_scores_filtered:
             hops_with, counts_with = zip(*with_scores_filtered)
             ax.plot(hops_with, counts_with, marker='o', linewidth=3,
-                    color='green', label='With Scores', markersize=8)
-        if without_scores_filtered:
-            hops_without, counts_without = zip(*without_scores_filtered)
-            ax.plot(hops_without, counts_without, marker='s', linewidth=3,
-                    color='red', label='Without Scores', markersize=8, linestyle='--')
+                    color='green', label='With Scores at This Hop', markersize=8)
+        if scores_elsewhere_filtered:
+            hops_elsewhere, counts_elsewhere = zip(*scores_elsewhere_filtered)
+            ax.plot(hops_elsewhere, counts_elsewhere, marker='^', linewidth=3,
+                    color='orange', label='Scores Elsewhere (Not Here)', markersize=8, linestyle='--')
+        # No scores anywhere - constant horizontal line
+        if no_scores_anywhere > 0:
+            ax.axhline(y=no_scores_anywhere, color='red', linestyle=':', linewidth=3,
+                       label=f'No Scores Anywhere ({no_scores_anywhere})')
         
         ax.set_xlabel('Hop Index', fontsize=12)
         ax.set_ylabel('Number of Utterances', fontsize=12)
@@ -1693,23 +1720,30 @@ def generate_comparison_plots(
         # Row 3, Col 2: Treatment utterance counts
         ax = axes[2, 1]
         per_hop = stats_treatment[k_values[0]].get(hop_key, {})
+        total_with_any_scores = stats_treatment[k_values[0]].get("utterances_with_scores", 0)
+        no_scores_anywhere = stats_treatment[k_values[0]].get("utterances_without_any_scores", 0)
+        
         utterances_with_scores = [per_hop.get(str(i), {}).get("utterances_with_scores", 0)
                                   for i in hop_indices]
-        utterances_without_scores = [per_hop.get(str(i), {}).get("utterances_without_scores", 0)
-                                     for i in hop_indices]
+        # Calculate "scores elsewhere" as: total with any scores - with scores at this hop
+        utterances_with_scores_elsewhere = [total_with_any_scores - c for c in utterances_with_scores]
         
         # Filter out zero counts for plotting (don't show markers for 0)
         with_scores_filtered = [(h, c) for h, c in zip(hop_indices, utterances_with_scores) if c > 0]
-        without_scores_filtered = [(h, c) for h, c in zip(hop_indices, utterances_without_scores) if c > 0]
+        scores_elsewhere_filtered = [(h, c) for h, c in zip(hop_indices, utterances_with_scores_elsewhere) if c > 0]
         
         if with_scores_filtered:
             hops_with, counts_with = zip(*with_scores_filtered)
             ax.plot(hops_with, counts_with, marker='o', linewidth=3,
-                    color='green', label='With Scores', markersize=8)
-        if without_scores_filtered:
-            hops_without, counts_without = zip(*without_scores_filtered)
-            ax.plot(hops_without, counts_without, marker='s', linewidth=3,
-                    color='red', label='Without Scores', markersize=8, linestyle='--')
+                    color='green', label='With Scores at This Hop', markersize=8)
+        if scores_elsewhere_filtered:
+            hops_elsewhere, counts_elsewhere = zip(*scores_elsewhere_filtered)
+            ax.plot(hops_elsewhere, counts_elsewhere, marker='^', linewidth=3,
+                    color='orange', label='Scores Elsewhere (Not Here)', markersize=8, linestyle='--')
+        # No scores anywhere - constant horizontal line
+        if no_scores_anywhere > 0:
+            ax.axhline(y=no_scores_anywhere, color='red', linestyle=':', linewidth=3,
+                       label=f'No Scores Anywhere ({no_scores_anywhere})')
         
         ax.set_xlabel('Hop Index', fontsize=12)
         ax.set_ylabel('Number of Utterances', fontsize=12)

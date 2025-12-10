@@ -1,7 +1,9 @@
 # SEVAL Complete Data Structure and Processing Guide
 
-**Last Updated**: December 2, 2025  
-**Purpose**: Complete technical specification for SEVAL conversation data structures, CiteDCG data structures, and data matching implementation
+**Last Updated**: December 10, 2025  
+**Purpose**: Complete technical specification for SEVAL conversation data structures, CiteDCG data structures, and data matching principles
+
+> **Note**: For implementation details on extracting and merging CiteDCG scores, see [SEVAL_Implementation_Guide.md](SEVAL_Implementation_Guide.md).
 
 ---
 
@@ -929,72 +931,48 @@ Using either definition, the pattern is identical:
 
 ## Current Implementation Notes
 
-### Key Processing Modules
+> **See Also**: For detailed implementation code, extraction approaches, and workflow documentation, see [SEVAL_Implementation_Guide.md](SEVAL_Implementation_Guide.md).
 
-**1. CiteDCG Extraction (`get_seval_metrics.py`)**
-- Extracts search results and CiteDCG scores from raw DCG data files
-- Groups searches by hop number to identify unique hops
-- Counts "non-empty turns" as turns with scored search results
-- Output: Structured JSON with utterance-level and hop-level CiteDCG data
-- Location: `results/{job_id}_citedcg/`
+### Two Extraction Approaches
 
-**2. Conversation Details Extraction (`seval_batch_processor.py`)**  
-- Parses raw conversation JSON to extract evaluation data
-- Identifies orchestration iterations, tool invocations, and hop structures
-- Counts "non-empty turns" as turns with hop data structures (even empty)
-- Tracks multi-turn conversation patterns
-- Output: Individual conversation detail JSON files
-- Location: `results/{job_id}_conversation_details/`
+There are two approaches for extracting and processing SEVAL data:
 
-**3. Data Merging (`seval_merge_conversation_citedcg.py`)**
-- Combines conversation details with CiteDCG scores
-- Matches search results using reference IDs and query text
-- Applies type-aware matching logic (web vs. M365 search)
-- Validates data integrity and reports matching statistics
-- Output: Merged JSON with full conversation + CiteDCG data
-- Location: `results/{job_id}_conversation_w_citedcg_details/`
+#### Approach 1: Separate Extraction (Legacy)
+1. Extract conversation details from raw conversation files (`*_sydney_response_*.json`)
+2. Extract CiteDCG scores from raw DCG files (`results.json`)
+3. Merge the two data sources using reference ID matching
 
-### Important Implementation Details
+**Pros**: Works with any data source combination  
+**Cons**: Requires separate extraction steps and complex merging logic
 
-**Turn Counting**:
-- Turns are counted from the raw conversation data structure
-- Multi-turn conversations indicate automatic retries (for single-turn utterance jobs)
-- Only the last turn typically has new tool invocations and search results
-- Earlier turns reuse cached results (contentOrigin="past-enterprise-search-results-metadata")
+#### Approach 2: Unified Extraction (New)
+1. Extract both conversation details AND CiteDCG scores from raw DCG files
+2. DCG files contain `EvaluationData.turnData[]` with full conversation structure
+3. No merging required - data is already aligned
 
-**Hop Counting**:
-- CiteDCG extraction: Counts hops with actual search results
-- Conversation extraction: Counts hop data structures (may be empty placeholders)
-- These may differ in edge cases where hop structure exists but has no results
+**Pros**: Single source, no merging complexity, faster processing  
+**Cons**: Only works when DCG files are available with EvaluationData
 
-**Non-Empty Turn Semantics**:
-- Always verify context when interpreting "non-empty turn" statistics
-- CiteDCG context: "has search results/scores"
-- Conversation context: "has hop structures"
-- Both definitions yield the same pattern for multi-turn: last turn only
+### Data File Organization
 
-**Data File Organization**:
 ```
 results/
-  {job_id}_citedcg/                      # Raw CiteDCG extraction
-  {job_id}_conversation_details/          # Raw conversation extraction  
-  {job_id}_conversation_w_citedcg_details/ # Merged data
-  {job_id}_statistics/                    # Analysis reports
-  {job_id}_statistics_plots/              # Visualizations
-  {job_id}_utterance_hop_citedcg_scores/  # Aggregated scores
+  {job_id}_citedcg/                       # Raw CiteDCG extraction (legacy)
+  {job_id}_conversation_details/          # Raw conversation extraction (legacy)
+  {job_id}_conversation_w_citedcg_details/ # Merged data (legacy)
+  {job_id}_unified_hop_citedcg_scores/    # Unified extraction output (new)
+  {job_id}_unified_utterance_details/     # Utterance-level details (new)
+  {job_id}_unified_statistics_plots/      # Statistics and plots (new)
 ```
 
-**Matching Strategy**:
-- Primary: Match by reference IDs (citationReferenceIds, searchResultsReferenceId)
-- Fallback: Match by normalized query text
-- Type-aware: Different logic for web search vs. M365 content search
-- Validation: Report unmatched searches and matching confidence scores
+### Key Modules
 
-**Error Handling**:
-- Conversation extraction: Captures parsing errors, missing fields
-- CiteDCG extraction: Handles malformed score data, missing searches
-- Merging: Reports mismatches, validates data completeness
-- All errors logged with conversation IDs for debugging
+| Module                     | Purpose                                     |
+| -------------------------- | ------------------------------------------- |
+| `get_seval_metrics.py`     | Core extraction functions (both approaches) |
+| `seval_batch_processor.py` | Batch processing and workflow orchestration |
+| `merge_seval_results.py`   | Data merging (legacy approach)              |
+| `seval_plotting.py`        | Statistics calculation and visualization    |
 
 
 
@@ -1022,6 +1000,8 @@ The raw `results.json` files from the DCG API (before extraction) use a differen
 
 **File Format**: JSONL (newline-delimited JSON) - one conversation object per line  
 **File Location**: `seval_data/{job_id}_metrics/Consolidated NDCG and CiteDCG Labels {Experiment}/results.json`
+
+**Key Insight**: Raw DCG files contain **both** search results with scores AND the full `EvaluationData` structure. This means conversation details (turn data, user inputs, orchestration iterations) can be extracted directly from DCG files without needing separate conversation files.
 
 **Top-Level Structure**:
 ```json
@@ -1102,12 +1082,14 @@ The raw `results.json` files from the DCG API (before extraction) use a differen
 
 1. **Top-level fields**:
    - `ConversationId`: Conversation UUID
-   - `AllSearchResults`: Search results organized by hop and plugin
+   - `AllSearchResults`: Search results organized by hop and plugin (with CiteDCG scores)
    - `signals`: Metadata about search result types and user profile
-   - `EvaluationData`: Full evaluation data (same as conversation file)
+   - `EvaluationData`: **Full evaluation data including `turnData[]`** - same structure as in conversation files, enabling unified extraction
    - `Utterance`: User's query text
    - `SydneyReply`: Bot's response text
    - `SydneySuggestion`: Suggested follow-up queries
+
+> **Important**: The `EvaluationData` field in raw DCG files contains the complete `turnData[]` structure with `orchestrationIterations`, `userInput`, and all conversation details. This enables a **unified extraction approach** where both conversation details and CiteDCG scores can be extracted from a single source.
 
 2. **`AllSearchResults`**: Root object containing search results
    - Key: `hop_number` (e.g., `"1"`, `"2"`) - **numeric string**, not `"hop0"`

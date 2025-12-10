@@ -54,7 +54,11 @@ if sys.stderr.encoding != 'utf-8':
 import fire
 from fire.core import FireExit
 
-from .seval_plotting import generate_plot_statistics_from_utterance_details
+# Import with fallback for direct script execution vs package import
+try:
+    from .seval_plotting import generate_plot_statistics_from_utterance_details
+except ImportError:
+    from seval_plotting import generate_plot_statistics_from_utterance_details
 
 # Configure logging
 logging.basicConfig(

@@ -2123,165 +2123,18 @@ def extract_conv_details_and_dcg_from_raw(
     print(f"Processed {len(results)} records from {raw_file}")
     
     if output_file:
+        # Always write to file, even if results is empty (will write empty array [])
         os.makedirs(os.path.dirname(output_file), exist_ok=True) if os.path.dirname(output_file) else None
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
-        print(f"Output written to: {output_file}")
-    else:
-        # Print summary to stdout
-        for r in results:
-            print(f"\n{'='*60}")
-            print(f"Utterance: {r['utterance'][:80]}...")
-            print(f"Conversation ID: {r['conversation_id']}")
-            print(f"Turns: {r['num_turns']}, Total Results: {r['total_results']}")
-            print(f"Has CiteDCG Scores: {r['has_cite_dcg_scores']}")
-            for s in r['searches'][:3]:  # Show first 3 searches
-                print(f"  - {s['plugin_name']}: {s['query_string'][:50] if s['query_string'] else '(no query)'}... ({s['result_count']} results)")
+        print(f"Output written to: {output_file} ({len(results)} records)")
     
+    # Always return results (can be empty list)
     return results
 
 
-def extract_unified_dcg_batch(
-    job_id: str,
-    experiment: str = "both",
-    output_dir: str = None,
-    num_threads: int = 8,
-    base_path: str = None
-) -> dict:
-    """
-    Batch extract unified conversation + DCG data from raw DCG files for a SEVAL job.
-    
-    Processes control and/or treatment raw DCG files with multi-threading support.
-    
-    Args:
-        job_id: SEVAL job ID (e.g., "133560")
-        experiment: Which experiment to process: "control", "treatment", or "both"
-        output_dir: Output directory path. If None, uses:
-            results/{job_id}_unified_hop_citedcg_scores/
-        num_threads: Number of parallel threads for processing (default: 1)
-        base_path: Base path for seval_data folder. If None, uses current directory.
-        
-    Returns:
-        dict: Summary of processing results
-        
-    Example:
-        python get_seval_metrics.py extract_unified_dcg_batch \\
-            --job_id=133560 \\
-            --experiment=both \\
-            --num_threads=4
-    """
-    import concurrent.futures
-    from pathlib import Path
-
-    # Setup paths
-    if base_path is None:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    
-    seval_data_path = os.path.join(base_path, "seval_data", f"{job_id}_metrics")
-    
-    if output_dir is None:
-        output_dir = os.path.join(base_path, "results", f"{job_id}_unified_hop_citedcg_scores")
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Define experiment folders
-    experiments_to_process = []
-    if experiment.lower() in ["control", "both"]:
-        control_folder = os.path.join(seval_data_path, "Consolidated NDCG and CiteDCG Labels Control")
-        if os.path.exists(control_folder):
-            experiments_to_process.append(("control", control_folder))
-        else:
-            print(f"Warning: Control folder not found: {control_folder}")
-    
-    if experiment.lower() in ["treatment", "both"]:
-        treatment_folder = os.path.join(seval_data_path, "Consolidated NDCG and CiteDCG Labels Treatment")
-        if os.path.exists(treatment_folder):
-            experiments_to_process.append(("treatment", treatment_folder))
-        else:
-            print(f"Warning: Treatment folder not found: {treatment_folder}")
-    
-    if not experiments_to_process:
-        print(f"Error: No valid experiment folders found for job {job_id}")
-        return {"error": "No experiment folders found"}
-    
-    summary = {
-        "job_id": job_id,
-        "experiments_processed": [],
-        "total_records": 0,
-        "output_files": []
-    }
-    
-    def process_single_file(args):
-        """Process a single raw DCG file."""
-        exp_name, raw_file = args
-        try:
-            results = extract_conv_details_and_dcg_from_raw(raw_file, output_file=None)
-            return exp_name, os.path.basename(raw_file), results
-        except Exception as e:
-            print(f"Error processing {raw_file}: {e}")
-            return exp_name, os.path.basename(raw_file), []
-    
-    for exp_name, folder_path in experiments_to_process:
-        print(f"\n{'='*60}")
-        print(f"Processing {exp_name.upper()} experiment from: {folder_path}")
-        print(f"{'='*60}")
-        
-        # Find all results.json files in the folder
-        raw_files = []
-        results_json = os.path.join(folder_path, "results.json")
-        if os.path.exists(results_json):
-            raw_files.append((exp_name, results_json))
-        else:
-            # Look for individual JSON files
-            for f in os.listdir(folder_path):
-                if f.endswith('.json'):
-                    raw_files.append((exp_name, os.path.join(folder_path, f)))
-        
-        if not raw_files:
-            print(f"No JSON files found in {folder_path}")
-            continue
-        
-        all_results = []
-        
-        if num_threads > 1 and len(raw_files) > 1:
-            # Multi-threaded processing
-            print(f"Processing {len(raw_files)} files with {num_threads} threads...")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-                futures = {executor.submit(process_single_file, args): args for args in raw_files}
-                for future in concurrent.futures.as_completed(futures):
-                    exp, filename, results = future.result()
-                    all_results.extend(results)
-                    print(f"  Processed: {filename} ({len(results)} records)")
-        else:
-            # Single-threaded processing
-            for args in raw_files:
-                exp, filename, results = process_single_file(args)
-                all_results.extend(results)
-                print(f"  Processed: {filename} ({len(results)} records)")
-        
-        # Write output file for this experiment
-        output_file = os.path.join(output_dir, f"{job_id}_{exp_name}_unified_citedcg.json")
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(all_results, f, indent=2, ensure_ascii=False)
-        
-        print(f"\nOutput written to: {output_file}")
-        print(f"Total records for {exp_name}: {len(all_results)}")
-        
-        summary["experiments_processed"].append(exp_name)
-        summary["total_records"] += len(all_results)
-        summary["output_files"].append(output_file)
-    
-    print(f"\n{'='*60}")
-    print("BATCH PROCESSING COMPLETE")
-    print(f"{'='*60}")
-    print(f"Job ID: {job_id}")
-    print(f"Experiments: {', '.join(summary['experiments_processed'])}")
-    print(f"Total records: {summary['total_records']}")
-    print(f"Output files: {len(summary['output_files'])}")
-    for f in summary['output_files']:
-        print(f"  - {f}")
-    
-    return summary
+# Note: extract_unified_dcg_batch has been moved to seval_batch_processor.py
+# for better modularity (batch processing functions belong there)
 
 
 class ReasoningClassExtractor:
@@ -3682,6 +3535,7 @@ def extract_per_result_citedcg(
 if __name__ == "__main__":
     # Use fire for command line arguments
     # Exposes all modular functions as commands
+    # Note: extract_unified_dcg_batch has been moved to seval_batch_processor.py
     try:
         fire.Fire({
             'list_csv_files': list_csv_files,
@@ -3690,7 +3544,6 @@ if __name__ == "__main__":
             'read_metrics': read_metrics,
             'extract_per_result_citedcg': extract_per_result_citedcg,
             'extract_conv_details_and_dcg_from_raw': extract_conv_details_and_dcg_from_raw,
-            'extract_unified_dcg_batch': extract_unified_dcg_batch
         })
     except FireExit as e:
         # Handle Fire's exit (including --help) gracefully in debug mode

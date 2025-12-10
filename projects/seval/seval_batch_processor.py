@@ -11,8 +11,14 @@ Available Commands:
     process_seval_job_multihop_citedcg - End-to-end CiteDCG processing
     process_seval_job_with_statistics_plots - Calculate statistics for
                                              multiple top-k and generate plots
+    extract_unified_dcg_batch       - Batch extract unified conversation + DCG data
+                                      from raw DCG files with summary statistics
 
 Usage Examples:
+    # Extract unified DCG batch with summary report
+    python seval_batch_processor.py extract_unified_dcg_batch \\
+        --job_id=133560 --experiment=both --num_threads=4
+    
     # Process with multiple top-k values, calculate statistics, and plot
     python seval_batch_processor.py process_seval_job_with_statistics_plots \\
         --job_id=130949 --top_k_list=1,3,5
@@ -70,17 +76,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import after logging configuration
-from .merge_seval_results import (
-    generate_plot_statistics_from_utterance_details,
-    merge_citedcg_and_calculate_stats,
-)
-from .seval_analysis_toolkit import SEVALAnalysisToolkit
-from .seval_plotting import (
-    generate_comparison_plots,
-    generate_paired_utterances_plot,
-    generate_statistics_plots,
-)
+# Import with fallback for direct script execution vs package import
+try:
+    from .get_seval_metrics import extract_conv_details_and_dcg_from_raw
+    from .merge_seval_results import (
+        generate_plot_statistics_from_utterance_details,
+        merge_citedcg_and_calculate_stats,
+    )
+    from .seval_analysis_toolkit import SEVALAnalysisToolkit
+    from .seval_plotting import (
+        generate_comparison_plots,
+        generate_paired_utterances_plot,
+        generate_statistics_plots,
+    )
+except ImportError:
+    # Fallback for direct script execution
+    from get_seval_metrics import extract_conv_details_and_dcg_from_raw
+    from merge_seval_results import (
+        generate_plot_statistics_from_utterance_details,
+        merge_citedcg_and_calculate_stats,
+    )
+    from seval_analysis_toolkit import SEVALAnalysisToolkit
+    from seval_plotting import (
+        generate_comparison_plots,
+        generate_paired_utterances_plot,
+        generate_statistics_plots,
+    )
 
 # ==========================================================================
 # Base Classes
@@ -1443,7 +1464,10 @@ def process_seval_job_multihop_citedcg(
         python seval_batch_processor.py process_seval_job_multihop_citedcg \\
             --job_id=130949 --experiment=both --threads=16
     """
-    from .get_seval_metrics import extract_per_result_citedcg
+    try:
+        from .get_seval_metrics import extract_per_result_citedcg
+    except ImportError:
+        from get_seval_metrics import extract_per_result_citedcg
 
     # Set default paths if not provided (use module-relative paths)
     module_dir = Path(__file__).parent
@@ -1612,7 +1636,10 @@ def process_seval_job_with_statistics_plots(
     """
     import sys
 
-    from .get_seval_metrics import extract_per_result_citedcg
+    try:
+        from .get_seval_metrics import extract_per_result_citedcg
+    except ImportError:
+        from get_seval_metrics import extract_per_result_citedcg
 
     # Parse top-k list - handle both string and tuple/list from Fire
     try:
@@ -1980,7 +2007,10 @@ def process_seval_job_with_statistics_plots(
     print("STEP 4-1: BUILDING PER-UTTERANCE DETAILS")
     print("=" * 80)
     
-    from .merge_seval_results import build_utterance_details_with_top_k
+    try:
+        from .merge_seval_results import build_utterance_details_with_top_k
+    except ImportError:
+        from merge_seval_results import build_utterance_details_with_top_k
 
     # Create utterance details directory
     utterance_details_dir = Path(f"{output_base_dir}/{job_id}_utterance_hop_citedcg_scores")
@@ -2093,7 +2123,10 @@ def process_seval_job_with_statistics_plots(
         print("STEP 4-2: FINDING PAIRED UTTERANCES WITH SCORES")
         print("=" * 80)
         
-        from .merge_seval_results import find_paired_utterances_with_scores
+        try:
+            from .merge_seval_results import find_paired_utterances_with_scores
+        except ImportError:
+            from merge_seval_results import find_paired_utterances_with_scores
         
         control_file = utterance_details_files.get("control")
         treatment_file = utterance_details_files.get("treatment")
@@ -2200,7 +2233,12 @@ def process_seval_job_with_statistics_plots(
             from .merge_seval_results import (
                 generate_plot_statistics_from_utterance_details,
             )
+        except ImportError:
+            from merge_seval_results import (
+                generate_plot_statistics_from_utterance_details,
+            )
 
+        try:
             # Generate plot-specific statistics for each experiment and k-value
             stats_files_by_exp = {}  # {experiment: {k: filepath}}
             
@@ -2317,6 +2355,690 @@ def process_seval_job_with_statistics_plots(
 
 
 # ==========================================================================
+# Unified DCG Batch Extraction
+# ==========================================================================
+
+def extract_unified_dcg_batch(
+    job_id: str,
+    experiment: str = "both",
+    output_dir: str = None,
+    num_threads: int = 8,
+    base_path: str = None
+) -> dict:
+    """
+    Batch extract unified conversation + DCG data from raw DCG files for a SEVAL job.
+    
+    Processes control and/or treatment raw DCG files with multi-threading support.
+    Prints a comprehensive summary report at the end.
+    
+    Args:
+        job_id: SEVAL job ID (e.g., "133560")
+        experiment: Which experiment to process: "control", "treatment", or "both"
+        output_dir: Output directory path. If None, uses:
+            results/{job_id}_unified_hop_citedcg_scores/
+        num_threads: Number of parallel threads for processing (default: 8)
+        base_path: Base path for seval_data folder. If None, uses current directory.
+        
+    Returns:
+        dict: Summary of processing results including statistics
+        
+    Example:
+        python seval_batch_processor.py extract_unified_dcg_batch \\
+            --job_id=133560 \\
+            --experiment=both \\
+            --num_threads=4
+    """
+    import concurrent.futures
+    from pathlib import Path
+
+    # Setup paths
+    if base_path is None:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
+    seval_data_path = os.path.join(base_path, "seval_data", f"{job_id}_metrics")
+    
+    if output_dir is None:
+        output_dir = os.path.join(base_path, "results", f"{job_id}_unified_hop_citedcg_scores")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Define experiment folders
+    experiments_to_process = []
+    if experiment.lower() in ["control", "both"]:
+        control_folder = os.path.join(seval_data_path, "Consolidated NDCG and CiteDCG Labels Control")
+        if os.path.exists(control_folder):
+            experiments_to_process.append(("control", control_folder))
+        else:
+            print(f"Warning: Control folder not found: {control_folder}")
+    
+    if experiment.lower() in ["treatment", "both"]:
+        treatment_folder = os.path.join(seval_data_path, "Consolidated NDCG and CiteDCG Labels Treatment")
+        if os.path.exists(treatment_folder):
+            experiments_to_process.append(("treatment", treatment_folder))
+        else:
+            print(f"Warning: Treatment folder not found: {treatment_folder}")
+    
+    if not experiments_to_process:
+        print(f"Error: No valid experiment folders found for job {job_id}")
+        return {"error": "No experiment folders found"}
+    
+    summary = {
+        "job_id": job_id,
+        "experiments_processed": [],
+        "total_records": 0,
+        "output_files": [],
+        "experiment_stats": {}  # Per-experiment statistics
+    }
+    
+    def process_single_file(args):
+        """Process a single raw DCG file."""
+        exp_name, raw_file = args
+        try:
+            results = extract_conv_details_and_dcg_from_raw(raw_file, output_file=None)
+            return exp_name, os.path.basename(raw_file), results
+        except Exception as e:
+            print(f"Error processing {raw_file}: {e}")
+            return exp_name, os.path.basename(raw_file), []
+    
+    for exp_name, folder_path in experiments_to_process:
+        print(f"\n{'='*60}")
+        print(f"Processing {exp_name.upper()} experiment from: {folder_path}")
+        print(f"{'='*60}")
+        
+        # Find all results.json files in the folder
+        raw_files = []
+        results_json = os.path.join(folder_path, "results.json")
+        if os.path.exists(results_json):
+            raw_files.append((exp_name, results_json))
+        else:
+            # Look for individual JSON files
+            for f in os.listdir(folder_path):
+                if f.endswith('.json'):
+                    raw_files.append((exp_name, os.path.join(folder_path, f)))
+        
+        if not raw_files:
+            print(f"No JSON files found in {folder_path}")
+            continue
+        
+        all_results = []
+        
+        if num_threads > 1 and len(raw_files) > 1:
+            # Multi-threaded processing
+            print(f"Processing {len(raw_files)} files with {num_threads} threads...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+                futures = {executor.submit(process_single_file, args): args for args in raw_files}
+                for future in concurrent.futures.as_completed(futures):
+                    exp, filename, results = future.result()
+                    all_results.extend(results)
+                    print(f"  Processed: {filename} ({len(results)} records)")
+        else:
+            # Single-threaded processing
+            for args in raw_files:
+                exp, filename, results = process_single_file(args)
+                all_results.extend(results)
+                print(f"  Processed: {filename} ({len(results)} records)")
+        
+        # Calculate statistics for this experiment
+        exp_stats = _calculate_experiment_statistics(all_results)
+        summary["experiment_stats"][exp_name] = exp_stats
+        
+        # Write output file for this experiment
+        output_file = os.path.join(output_dir, f"{job_id}_{exp_name}_unified_citedcg.json")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(all_results, f, indent=2, ensure_ascii=False)
+        
+        print(f"\nOutput written to: {output_file}")
+        print(f"Total records for {exp_name}: {len(all_results)}")
+        
+        summary["experiments_processed"].append(exp_name)
+        summary["total_records"] += len(all_results)
+        summary["output_files"].append(output_file)
+    
+    # Print comprehensive summary report
+    _print_experiment_summary_report(summary)
+    
+    # Return None for CLI (Fire prints return values), but summary is printed above
+    # For programmatic use, call the function and check printed output or modify to return summary
+    return None
+
+
+def _calculate_experiment_statistics(results: list) -> dict:
+    """
+    Calculate detailed statistics for an experiment's results.
+    
+    Args:
+        results: List of extracted conversation records
+        
+    Returns:
+        dict: Statistics including counts, with/without scores, matching issues
+    """
+    stats = {
+        "total_conversations": len(results),
+        "with_citedcg_scores": 0,
+        "without_scores": 0,
+        "matching_issues": {
+            "utterance_not_in_dcg": {"utterances": 0},
+            "no_matching_citedcg_entry": {"utterances": 0, "queries": 0},
+            "result_count_mismatch": {"utterances": 0, "queries": 0}
+        }
+    }
+    
+    utterances_with_mismatch = set()
+    queries_with_mismatch = 0
+    
+    for record in results:
+        if record.get("has_cite_dcg_scores", False):
+            stats["with_citedcg_scores"] += 1
+        else:
+            stats["without_scores"] += 1
+        
+        # Check for result count mismatches (results with None CiteDCGLLMLabel)
+        utterance = record.get("utterance", "")
+        has_mismatch_for_utterance = False
+        
+        for search in record.get("searches", []):
+            search_results = search.get("results", [])
+            # Count results with missing CiteDCG scores
+            results_with_score = sum(1 for r in search_results if r.get("CiteDCGLLMLabel") is not None)
+            results_without_score = len(search_results) - results_with_score
+            
+            # If some results have scores but others don't, it might be a mismatch
+            if results_with_score > 0 and results_without_score > 0:
+                queries_with_mismatch += 1
+                has_mismatch_for_utterance = True
+        
+        if has_mismatch_for_utterance:
+            utterances_with_mismatch.add(utterance)
+    
+    stats["matching_issues"]["result_count_mismatch"]["utterances"] = len(utterances_with_mismatch)
+    stats["matching_issues"]["result_count_mismatch"]["queries"] = queries_with_mismatch
+    
+    return stats
+
+
+def _print_experiment_summary_report(summary: dict):
+    """
+    Print a formatted summary report for all processed experiments.
+    
+    Args:
+        summary: Summary dictionary containing experiment statistics
+    """
+    print("\n")
+    print("=" * 80)
+    print("BATCH PROCESSING COMPLETE - SUMMARY REPORT")
+    print("=" * 80)
+    print(f"Job ID: {summary['job_id']}")
+    print(f"Experiments processed: {', '.join(summary['experiments_processed'])}")
+    print(f"Total records: {summary['total_records']}")
+    print("")
+    
+    for exp_name, stats in summary.get("experiment_stats", {}).items():
+        print(f"{exp_name.upper()} Experiment Summary:")
+        print("-" * 80)
+        print(f"{'Total conversations:':<45}{stats['total_conversations']:>10}")
+        print(f"{'  With CiteDCG scores:':<45}{stats['with_citedcg_scores']:>10}")
+        print(f"{'  Without scores:':<45}{stats['without_scores']:>10}")
+        print("")
+        
+        matching = stats.get("matching_issues", {})
+        print("Matching Issues:")
+        
+        utt_not_in_dcg = matching.get("utterance_not_in_dcg", {})
+        print(f"{'  Utterance not in DCG:':<45}{utt_not_in_dcg.get('utterances', 0):>10} utterances")
+        
+        no_match = matching.get("no_matching_citedcg_entry", {})
+        print(f"{'  No matching CiteDCG entry:':<45}{no_match.get('utterances', 0):>10} utterances ({no_match.get('queries', 0)} queries)")
+        
+        mismatch = matching.get("result_count_mismatch", {})
+        print(f"{'  Result count mismatch (workaround applied):':<45}{mismatch.get('utterances', 0):>10} utterances ({mismatch.get('queries', 0)} queries)")
+        
+        print("")
+    
+    print("Output files:")
+    for f in summary.get("output_files", []):
+        print(f"  - {f}")
+    print("=" * 80)
+
+
+# ==========================================================================
+# Process Unified DCG for Statistics and Plots
+# ==========================================================================
+
+def process_unified_dcg_with_statistics_plots(
+    job_id: str,
+    experiment: str = "both",
+    top_k_list: str = "1,3,5",
+    num_threads: int = 8,
+    output_base_dir: str = "results",
+    verbose: bool = False
+):
+    """
+    Process unified DCG data to calculate statistics and generate plots.
+    
+    This is a streamlined alternative to process_seval_job_with_statistics_plots
+    that uses the unified DCG batch extraction output directly.
+    
+    Workflow:
+    1. Extract unified DCG batch (if not already done or if clean=True)
+    2. Build utterance details with top-k scores from unified data
+    3. Find paired utterances (if both experiments)
+    4. Generate statistics and plots
+    
+    Args:
+        job_id: SEVAL job ID (e.g., "133560")
+        experiment: Which experiment to process ("control", "treatment", or "both")
+        top_k_list: Comma-separated list of top-k values (e.g., "1,3,5")
+        num_threads: Number of parallel threads for processing (default: 8)
+        output_base_dir: Base directory for outputs (default: "results")
+        verbose: Enable verbose output (default: False)
+    
+    Example:
+        python seval_batch_processor.py process_unified_dcg_with_statistics_plots \\
+            --job_id=133560 \\
+            --experiment=both \\
+            --top_k_list=1,3,5
+    """
+    import sys
+    from pathlib import Path
+
+    # Parse top-k list
+    try:
+        if isinstance(top_k_list, (list, tuple)):
+            k_values = [int(k) for k in top_k_list]
+        elif isinstance(top_k_list, str):
+            k_values = [int(k.strip()) for k in top_k_list.split(",")]
+        else:
+            k_values = [int(top_k_list)]
+        k_values = sorted(set(k_values))
+    except (ValueError, AttributeError) as e:
+        print(f"Error: Invalid top_k_list format: {top_k_list}")
+        sys.exit(1)
+    
+    if len(k_values) < 1:
+        print("Error: At least one top-k value is required")
+        sys.exit(1)
+    
+    # Helper for verbose printing
+    def vprint(*args, **kwargs):
+        if verbose:
+            print(*args, **kwargs)
+    
+    # Determine experiments to process
+    experiments = []
+    if experiment.lower() in ["control", "both"]:
+        experiments.append("control")
+    if experiment.lower() in ["treatment", "both"]:
+        experiments.append("treatment")
+    
+    if not experiments:
+        print(f"Error: Invalid experiment value: '{experiment}'")
+        sys.exit(1)
+    
+    # Setup paths
+    module_dir = Path(__file__).parent
+    unified_dcg_dir = Path(output_base_dir) / f"{job_id}_unified_hop_citedcg_scores"
+    utterance_details_dir = Path(output_base_dir) / f"{job_id}_unified_utterance_details"
+    plots_dir = Path(output_base_dir) / f"{job_id}_unified_statistics_plots"
+    
+    print("=" * 80)
+    print(f"PROCESSING UNIFIED DCG DATA: Job {job_id}")
+    print("=" * 80)
+    vprint(f"Experiment:   {experiment}")
+    vprint(f"Top-k values: {k_values}")
+    vprint(f"Threads:      {num_threads}")
+    print("")
+    
+    # STEP 1: Extract unified DCG batch (always regenerate)
+    unified_files = {}
+    
+    print("=" * 80)
+    print("STEP 1: EXTRACTING UNIFIED DCG DATA")
+    print("=" * 80)
+    
+    summary = extract_unified_dcg_batch(
+        job_id=job_id,
+        experiment=experiment,
+        output_dir=str(unified_dcg_dir),
+        num_threads=num_threads
+    )
+    
+    # Get the output files from summary
+    for exp in experiments:
+        unified_file = unified_dcg_dir / f"{job_id}_{exp}_unified_citedcg.json"
+        if unified_file.exists():
+            unified_files[exp] = str(unified_file)
+    print("")
+    
+    # Validate unified files
+    if len(unified_files) < len(experiments):
+        print("Error: Missing unified DCG files")
+        sys.exit(1)
+    
+    # STEP 2: Build utterance details with top-k scores
+    print("=" * 80)
+    print("STEP 2: BUILDING UTTERANCE DETAILS (Per-hop averages for top-k)")
+    print("=" * 80)
+    
+    utterance_details_dir.mkdir(parents=True, exist_ok=True)
+    utterance_details_files = {}
+    
+    for exp in experiments:
+        unified_file = unified_files[exp]
+        details_file = utterance_details_dir / f"{job_id}_{exp}_utterance_details.json"
+        
+        vprint(f"  Processing {exp.upper()}...")
+        
+        # Load unified data
+        with open(unified_file, 'r', encoding='utf-8') as f:
+            unified_data = json.load(f)
+        
+        # Build utterance details from unified data
+        utterance_details = _build_utterance_details_from_unified(
+            unified_data=unified_data,
+            k_values=k_values,
+            experiment=exp
+        )
+        
+        # Save utterance details
+        with open(details_file, 'w', encoding='utf-8') as f:
+            json.dump(utterance_details, f, indent=2, ensure_ascii=False)
+        
+        utterance_details_files[exp] = str(details_file)
+        
+        # Print summary
+        metadata = utterance_details.get("metadata", {})
+        total = metadata.get("total_utterances", 0)
+        with_scores = metadata.get("utterances_with_scores", 0)
+        print(f"    ✓ {exp}: {total} utterances ({with_scores} with scores)")
+        print(f"      Output: {details_file}")
+    
+    print("")
+    
+    # STEP 3: Find paired utterances (if both experiments)
+    paired_utterances_file = None
+    if len(experiments) == 2 and len(utterance_details_files) == 2:
+        print("=" * 80)
+        print("STEP 3: FINDING PAIRED UTTERANCES")
+        print("=" * 80)
+        
+        try:
+            from .merge_seval_results import find_paired_utterances_with_scores
+        except ImportError:
+            from merge_seval_results import find_paired_utterances_with_scores
+        
+        control_file = utterance_details_files.get("control")
+        treatment_file = utterance_details_files.get("treatment")
+        
+        if control_file and treatment_file:
+            paired_file = utterance_details_dir / f"{job_id}_paired_utterances.json"
+            
+            try:
+                paired_data = find_paired_utterances_with_scores(
+                    control_details_file=control_file,
+                    treatment_details_file=treatment_file,
+                    output_file=str(paired_file)
+                )
+                paired_utterances_file = str(paired_file)
+                
+                # Print summary
+                metadata = paired_data.get("metadata", {})
+                total = metadata.get("total_utterances", 0)
+                paired = metadata.get("paired_with_scores", 0)
+                print(f"    ✓ Total: {total}, Paired with scores: {paired}")
+                print(f"      Output: {paired_file}")
+            except Exception as e:
+                logger.error(f"Failed to find paired utterances: {e}")
+                print(f"    ✗ Error: {e}")
+        print("")
+    
+    # STEP 4: Generate statistics and plots
+    if len(k_values) >= 2:
+        print("=" * 80)
+        print("STEP 4: GENERATING STATISTICS AND PLOTS")
+        print("=" * 80)
+        
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Clean existing plots
+        processor = BaseProcessor()
+        processor._clean_directory(plots_dir, "plots", silent=True)
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            from .merge_seval_results import (
+                generate_plot_statistics_from_utterance_details,
+            )
+        except ImportError:
+            from merge_seval_results import (
+                generate_plot_statistics_from_utterance_details,
+            )
+        
+        # Generate plot statistics for each experiment and k-value
+        stats_files_by_exp = {}
+        
+        for exp in experiments:
+            if exp not in utterance_details_files:
+                continue
+            
+            vprint(f"  Generating plot statistics for {exp.upper()}...")
+            stats_files_by_exp[exp] = {}
+            
+            for k in k_values:
+                stats_file = plots_dir / f"{job_id}_{exp}_plot_stats_k{k}.json"
+                
+                try:
+                    stats = generate_plot_statistics_from_utterance_details(
+                        utterance_details_file=utterance_details_files[exp],
+                        k_value=k,
+                        output_json=str(stats_file)
+                    )
+                    stats_files_by_exp[exp][k] = str(stats_file)
+                    vprint(f"    ✓ k={k}: {stats_file.name}")
+                except Exception as e:
+                    logger.error(f"Failed to generate plot stats for {exp} k={k}: {e}")
+                    vprint(f"    ✗ k={k}: Error: {e}")
+        
+        # Generate comparison plots
+        if len(experiments) == 1:
+            generate_statistics_plots(
+                stats_files=stats_files_by_exp[experiments[0]],
+                output_dir=plots_dir,
+                job_id=job_id,
+                experiment=experiments[0]
+            )
+        else:
+            generate_comparison_plots(
+                stats_files_control=stats_files_by_exp.get("control", {}),
+                stats_files_treatment=stats_files_by_exp.get("treatment", {}),
+                output_dir=plots_dir,
+                job_id=job_id
+            )
+            
+            # Generate paired utterances plot
+            if paired_utterances_file:
+                try:
+                    generate_paired_utterances_plot(
+                        paired_utterances_file=paired_utterances_file,
+                        output_dir=plots_dir,
+                        job_id=job_id,
+                        k_values=k_values
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to generate paired utterances plot: {e}")
+        
+        print(f"    ✓ Plots generated in: {plots_dir}")
+        print("")
+    else:
+        print("")
+        print("⚠ Note: Plotting requires at least 2 different top-k values")
+        print(f"  You provided: {k_values}")
+        print("")
+    
+    # Final summary
+    print("")
+    print("=" * 80)
+    print("✓ COMPLETE: UNIFIED DCG PROCESSING WITH STATISTICS")
+    print("=" * 80)
+    print(f"Job ID: {job_id}")
+    print(f"Experiment: {experiment}")
+    print(f"Top-k values: {k_values}")
+    print("")
+    print("Output directories:")
+    print(f"  - Unified DCG: {unified_dcg_dir}")
+    print(f"  - Utterance details: {utterance_details_dir}")
+    if len(k_values) >= 2:
+        print(f"  - Plots: {plots_dir}")
+    print("=" * 80)
+
+
+def _build_utterance_details_from_unified(
+    unified_data: list,
+    k_values: list,
+    experiment: str
+) -> dict:
+    """
+    Build utterance details structure from unified DCG data.
+    
+    This produces the same format as build_utterance_details_with_top_k() 
+    from merge_seval_results.py, so it's compatible with the plotting and
+    paired utterance functions.
+    
+    Args:
+        unified_data: List of records from unified DCG extraction
+        k_values: List of top-k values to calculate
+        experiment: Experiment name ("control" or "treatment")
+    
+    Returns:
+        dict: Utterance details with structure:
+            {
+                "metadata": {...},
+                "utterances": {
+                    "<utterance_text>": {
+                        "utterance_id": str,
+                        "file": str,
+                        "query_text": str,
+                        "hops": {
+                            "<hop_number>": {
+                                "<k_value>": {
+                                    "avg_all_scores": float,
+                                    "avg_topk_scores": float,
+                                    "result_count": int,
+                                    "is_empty": bool,
+                                    "hop_sequence": int or None,
+                                    "hop_number": int
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+    """
+    utterances = {}
+    total_with_scores = 0
+    
+    for record in unified_data:
+        utterance_text = record.get("utterance", "")
+        conv_id = record.get("conversation_id", "")
+        has_scores = record.get("has_cite_dcg_scores", False)
+        
+        if has_scores:
+            total_with_scores += 1
+        
+        # Use conversation_id as utterance_id (or create from utterance text)
+        utterance_id = conv_id if conv_id else utterance_text[:50].replace(" ", "_")
+        
+        # Track all hops seen in searches AND collect scores per hop
+        all_hops_seen = set()  # Track all hops from searches
+        hop_scores_raw = {}  # {hop_number: [scores]} - only hops with scores
+        
+        for search in record.get("searches", []):
+            hop_str = search.get("hop", "1")
+            hop_number = int(hop_str) if hop_str.isdigit() else 1
+            all_hops_seen.add(hop_number)
+            
+            # Collect all DCG scores for this hop
+            for result in search.get("results", []):
+                dcg_label = result.get("CiteDCGLLMLabel")
+                if dcg_label is not None:
+                    if hop_number not in hop_scores_raw:
+                        hop_scores_raw[hop_number] = []
+                    hop_scores_raw[hop_number].append(dcg_label)
+        
+        # Build hop details with k-value averages
+        hops = {}
+        hop_sequence = 0  # Counter for non-empty hops
+        
+        # If no hops were seen at all, use hop 1 as placeholder
+        if not all_hops_seen:
+            all_hops_seen = {1}
+        
+        # Process ALL hops seen (not just those with scores)
+        # This ensures proper counting of "utterances_without_scores" per hop
+        for hop_number in sorted(all_hops_seen):
+            scores = hop_scores_raw.get(hop_number, [])  # Empty list if no scores for this hop
+            hop_key = str(hop_number)
+            hops[hop_key] = {}
+            
+            # Check if this hop has scores
+            has_hop_scores = len(scores) > 0
+            if has_hop_scores:
+                hop_sequence += 1
+            
+            # Calculate for each k-value
+            for k in k_values:
+                k_str = str(k)
+                
+                if has_hop_scores:
+                    # Calculate averages
+                    avg_all = sum(scores) / len(scores)
+                    
+                    # Top-k average (take top k scores)
+                    sorted_scores = sorted(scores, reverse=True)
+                    top_k_scores = sorted_scores[:k]
+                    avg_topk = sum(top_k_scores) / len(top_k_scores)
+                    
+                    hops[hop_key][k_str] = {
+                        "avg_all_scores": avg_all,
+                        "avg_topk_scores": avg_topk,
+                        "result_count": len(scores),
+                        "is_empty": False,
+                        "hop_sequence": hop_sequence,
+                        "hop_number": hop_number
+                    }
+                else:
+                    # Empty hop
+                    hops[hop_key][k_str] = {
+                        "avg_all_scores": None,
+                        "avg_topk_scores": None,
+                        "result_count": 0,
+                        "is_empty": True,
+                        "hop_sequence": None,
+                        "hop_number": hop_number
+                    }
+        
+        # Store utterance data - use utterance_text as key (for pairing by query)
+        utterances[utterance_id] = {
+            "utterance_id": utterance_id,
+            "file": f"{conv_id}.json",
+            "query_text": utterance_text,  # This is used for pairing
+            "conversation_id": conv_id,
+            "hops": hops
+        }
+    
+    return {
+        "metadata": {
+            "experiment": experiment,
+            "k_values_calculated": k_values,
+            "total_utterances": len(utterances),
+            "utterances_with_scores": total_with_scores,
+            "source": "unified_dcg_extraction",
+            "description": "Per-utterance hop-level CiteDCG score averages for multiple k-values"
+        },
+        "utterances": utterances
+    }
+
+
+# ==========================================================================
 # CLI Entry Point
 # ==========================================================================
 
@@ -2328,4 +3050,6 @@ if __name__ == "__main__":
         'merge_citescg_scores': merge_citescg_scores,
         'process_seval_job_multihop_citedcg': process_seval_job_multihop_citedcg,
         'process_seval_job_with_statistics_plots': process_seval_job_with_statistics_plots,
+        'extract_unified_dcg_batch': extract_unified_dcg_batch,
+        'process_unified_dcg_with_statistics_plots': process_unified_dcg_with_statistics_plots,
     })

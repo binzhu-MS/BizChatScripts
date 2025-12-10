@@ -1834,7 +1834,7 @@
             "name": "🔬 SEVAL 133560 - Extract Unified DCG Batch (Both)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
@@ -1842,7 +1842,7 @@
                 "extract_unified_dcg_batch",
                 "--job_id=133560",
                 "--experiment=both",
-                "--num_threads=4"
+                "--num_threads=8"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
@@ -1852,7 +1852,7 @@
             "name": "🔬 SEVAL 133560 - Extract Unified DCG Batch (Control Only)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
@@ -1870,7 +1870,7 @@
             "name": "🔬 SEVAL 133560 - Extract Unified DCG Batch (Treatment Only)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
@@ -1979,9 +1979,29 @@
                 "--job_id=133560", //135056", //133560", // 132951", //130949", 
                 "--experiment=both", //control",
                 "--top_k_list=1,3,5",
-                "--clean=True",
+                //"--clean=True",
                 "--threads=16",
                 "--verbose=False" //False"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - (Batch) Process Unified DCG with Statistics & Plots",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "process_unified_dcg_with_statistics_plots",
+                "--job_id=133560",
+                "--experiment=both",
+                "--top_k_list=1,3,5",
+                "--num_threads=8",
+                "--verbose=False"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
