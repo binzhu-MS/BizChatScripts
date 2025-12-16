@@ -1814,7 +1814,7 @@
             }
         },
         {
-            "name": "🔬 SEVAL - Extract Unified Conv + DCG from Raw DCG Files",
+            "name": "🔬 SEVAL - Extract Unified Conv + CiteDCG from Raw CiteDCG Files",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
@@ -1822,16 +1822,33 @@
             "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
             "args": [
-                "extract_conv_details_and_dcg_from_raw",
-                "--raw_file=../../temp/dcg_catering_raw.json",
-                "--output_file=results/unified_extraction_output.json"
+                "extract_conv_details_and_citedcg_from_raw",
+                "--raw_file=seval_data/135056_metrics/Consolidated NDCG and CiteDCG Labels Control/results.json",
+                "--output_file=results/135056_unified_citedcg_control.json"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }
         },
         {
-            "name": "🔬 SEVAL 133560 - Extract Unified DCG Batch (Both)",
+            "name": "🔬 SEVAL - Extract Unified Conv + NDCG (Search Quality) from Raw Files",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/get_seval_metrics.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "extract_conv_details_and_ndcg_from_raw",
+                "--raw_file=seval_data/135056_metrics/Consolidated NDCG and CiteDCG Labels Control/results.json",
+                "--output_file=results/135056_unified_ndcg_control.json"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL 133560 - Extract Unified CiteDCG Batch (Both)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
@@ -1839,7 +1856,7 @@
             "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
             "args": [
-                "extract_unified_dcg_batch",
+                "extract_unified_citedcg_batch",
                 "--job_id=133560",
                 "--experiment=both",
                 "--num_threads=8"
@@ -1849,7 +1866,7 @@
             }
         },
         {
-            "name": "🔬 SEVAL 133560 - Extract Unified DCG Batch (Control Only)",
+            "name": "🔬 SEVAL 133560 - Extract Unified CiteDCG Batch (Control Only)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
@@ -1857,7 +1874,7 @@
             "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
             "args": [
-                "extract_unified_dcg_batch",
+                "extract_unified_citedcg_batch",
                 "--job_id=133560",
                 "--experiment=control",
                 "--num_threads=4"
@@ -1867,7 +1884,7 @@
             }
         },
         {
-            "name": "🔬 SEVAL 133560 - Extract Unified DCG Batch (Treatment Only)",
+            "name": "🔬 SEVAL 133560 - Extract Unified CiteDCG Batch (Treatment Only)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
@@ -1875,7 +1892,7 @@
             "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
             "args": [
-                "extract_unified_dcg_batch",
+                "extract_unified_citedcg_batch",
                 "--job_id=133560",
                 "--experiment=treatment",
                 "--num_threads=4"
@@ -1988,7 +2005,7 @@
             }
         },
         {
-            "name": "🔬 SEVAL - (Batch) Process Unified DCG with Statistics & Plots",
+            "name": "🔬 SEVAL - (Batch) Process Unified CiteDCG with Statistics & Plots",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
@@ -1996,7 +2013,27 @@
             "cwd": "${workspaceFolder}/projects/seval",
             "justMyCode": true,
             "args": [
-                "process_unified_dcg_with_statistics_plots",
+                "process_unified_citedcg_with_statistics_plots",
+                "--job_id=133560",
+                "--experiment=both",
+                "--top_k_list=1,3,5",
+                "--num_threads=8",
+                "--verbose=False"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🔬 SEVAL - (Batch) Process Unified NDCG with Statistics & Plots",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_batch_processor.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "process_unified_ndcg_with_statistics_plots",
                 "--job_id=133560",
                 "--experiment=both",
                 "--top_k_list=1,3,5",

@@ -1668,11 +1668,11 @@ class PerResultCiteDCGExtractor:
                 f.write(json.dumps(item, ensure_ascii=False) + '\n')
 
 
-def extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data: dict) -> dict:
+def extract_conv_details_and_citedcg_from_raw_files(raw_data: dict) -> dict:
     """
     Extract unified conversation details and CiteDCG scores from raw results.json.
     
-    Extracts BOTH conversation metadata and per-result DCG scores from a single
+    Extracts BOTH conversation metadata and per-result CiteDCG scores from a single
     raw data record, enabling unified analysis without cross-referencing multiple
     data sources. Uses reference_id mapping to resolve queries for plugins with
     empty PluginInvocation (e.g., search_web({})).
@@ -1720,7 +1720,7 @@ def extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data: dict) -> dict:
         >>> with open('results.json') as f:
         ...     for line in f:
         ...         record = json.loads(line)
-        ...         extracted = extract_conv_details_and_dcg_from_raw_dcgfiles(record)
+        ...         extracted = extract_conv_details_and_citedcg_from_raw_files(record)
         ...         print(f"Utterance: {extracted['utterance'][:50]}...")
         ...         print(f"Total results: {extracted['total_results']}")
     """
@@ -2043,19 +2043,19 @@ def _extract_query_from_invocation_unified(invocation_str: str, plugin_name: str
     return ""
 
 
-def extract_conv_details_and_dcg_from_raw(
+def extract_conv_details_and_citedcg_from_raw(
     raw_file: str,
     output_file: str = None,
     utterance_filter: str = None
 ) -> list:
     """
-    CLI wrapper to extract unified conversation + DCG data from raw results.json.
+    CLI wrapper to extract unified conversation + CiteDCG data from raw results.json.
     
     Processes a raw SEVAL results file (JSONL format) and extracts both
     conversation details and CiteDCG scores in a unified structure.
     
     Args:
-        raw_file: Path to raw file. Supports both:
+        raw_file: Path to raw CiteDCG file. Supports both:
             - JSONL format (one JSON record per line, like results.json)
             - Single JSON file (one complete JSON object)
         output_file: Optional path for JSON output. If None, prints to stdout.
@@ -2065,8 +2065,8 @@ def extract_conv_details_and_dcg_from_raw(
         list: List of extracted records
         
     Example:
-        python get_seval_metrics.py extract_conv_details_and_dcg_from_raw \\
-            --raw_file=../../temp/dcg_catering_raw.json \\
+        python get_seval_metrics.py extract_conv_details_and_citedcg_from_raw \\
+            --raw_file=../../temp/citedcg_catering_raw.json \\
             --output_file=results/unified_output.json
     """
     if not os.path.exists(raw_file):
@@ -2086,7 +2086,7 @@ def extract_conv_details_and_dcg_from_raw(
         if isinstance(raw_data, dict) and ('Utterance' in raw_data or 'AllSearchResults' in raw_data):
             utterance = raw_data.get('Utterance', '')
             if not utterance_filter or utterance_filter.lower() in utterance.lower():
-                extracted = extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data)
+                extracted = extract_conv_details_and_citedcg_from_raw_files(raw_data)
                 results.append(extracted)
         # If it's a list, treat each item as a record
         elif isinstance(raw_data, list):
@@ -2095,7 +2095,7 @@ def extract_conv_details_and_dcg_from_raw(
                     utterance = item.get('Utterance', '')
                     if utterance_filter and utterance_filter.lower() not in utterance.lower():
                         continue
-                    extracted = extract_conv_details_and_dcg_from_raw_dcgfiles(item)
+                    extracted = extract_conv_details_and_citedcg_from_raw_files(item)
                     results.append(extracted)
     except json.JSONDecodeError:
         # Fall back to JSONL format (one JSON object per line)
@@ -2117,10 +2117,10 @@ def extract_conv_details_and_dcg_from_raw(
             if utterance_filter and utterance_filter.lower() not in utterance.lower():
                 continue
             
-            extracted = extract_conv_details_and_dcg_from_raw_dcgfiles(raw_data)
+            extracted = extract_conv_details_and_citedcg_from_raw_files(raw_data)
             results.append(extracted)
     
-    # Note: Removed print here - the caller (extract_unified_dcg_batch) handles progress output
+    # Note: Removed print here - the caller (extract_unified_citedcg_batch) handles progress output
     # print(f"Processed {len(results)} records from {raw_file}")
     
     if output_file:
@@ -2134,7 +2134,245 @@ def extract_conv_details_and_dcg_from_raw(
     return results
 
 
-# Note: extract_unified_dcg_batch has been moved to seval_batch_processor.py
+# ==========================================================================
+# NDCG (Search Quality) Extraction Functions
+# ==========================================================================
+# NDCG measures how relevant search results are to the DECOMPOSED SEARCH QUERY
+# (the query Copilot generates to search for information, not the user's utterance)
+# This is stored in the 'LLMLabel' field in raw files.
+# ==========================================================================
+
+def extract_conv_details_and_ndcg_from_raw_files(raw_data: dict) -> dict:
+    """
+    Extract unified conversation details and NDCG scores from raw results.json.
+    
+    Extracts BOTH conversation metadata and per-result NDCG (search quality) scores
+    from a single raw data record. NDCG scores measure how relevant each search result
+    is to the decomposed search query (not the user's original utterance).
+    
+    Query Resolution Strategy:
+        1. Primary: Extract from PluginInvocation (office365_search, bing_search, etc.)
+        2. Fallback: Map reference_id -> query via batchedQueries.processedResult.WebPages
+    
+    Args:
+        raw_data: A single parsed JSON record from results.json containing:
+            - Utterance, ConversationId: Conversation metadata
+            - EvaluationData.turnData: Turn and query information
+            - AllSearchResults: Search results with NDCG scores
+        
+    Returns:
+        dict: Unified extraction result with structure:
+            {
+                'utterance': str,           # Original user query
+                'conversation_id': str,     # Unique conversation identifier
+                'num_turns': int,           # Number of conversation turns
+                'has_ndcg_scores': bool,    # Whether any results have NDCG labels
+                'total_results': int,       # Total search results count
+                'searches': [               # List of search operations
+                    {
+                        'hop': str,             # Search hop/turn index
+                        'plugin_name': str,     # Plugin used (search_web, etc.)
+                        'query_string': str,    # Resolved search query
+                        'plugin_invocation': str,# Raw plugin invocation
+                        'result_count': int,    # Results in this search
+                        'results': [            # Individual search results
+                            {
+                                'reference_id': str,        # Result reference ID
+                                'LLMLabel': float|None,     # NDCG score (0-4)
+                                'query_string': str,        # Query for this result
+                                'ResultType': str,          # Result type category
+                                'Type': str,                # Content type
+                                'Title': str,               # Result title
+                            }
+                        ]
+                    }
+                ]
+            }
+    
+    Example:
+        >>> with open('results.json') as f:
+        ...     for line in f:
+        ...         record = json.loads(line)
+        ...         extracted = extract_conv_details_and_ndcg_from_raw_files(record)
+        ...         print(f"Utterance: {extracted['utterance'][:50]}...")
+        ...         print(f"Total results: {extracted['total_results']}")
+    """
+    result = {
+        'utterance': raw_data.get('Utterance', ''),
+        'conversation_id': raw_data.get('ConversationId', ''),
+        'num_turns': 0,
+        'has_ndcg_scores': False,
+        'total_results': 0,
+        'searches': []
+    }
+    
+    eval_data = raw_data.get('EvaluationData', {})
+    turn_data = eval_data.get('turnData', [])
+    all_search = raw_data.get('AllSearchResults', {})
+    
+    result['num_turns'] = len(turn_data)
+    
+    # Build query mapping helpers (reuse from CiteDCG extraction)
+    block_to_query = _build_block_to_query_map(turn_data)
+    first_ref_to_query = _build_first_ref_to_query_map_unified(turn_data)
+    
+    # Process AllSearchResults to get NDCG scores
+    block_indices = {}
+    
+    for turn_key, search_data in sorted(all_search.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
+        for domain, items in search_data.items():
+            if not isinstance(items, list):
+                continue
+            
+            for item_idx, item in enumerate(items):
+                plugin_name = item.get('PluginName', '')
+                plugin_invocation = item.get('PluginInvocation', '')
+                results_list = item.get('Results', [])
+                
+                if not results_list:
+                    continue
+                
+                # Track block index for this (turn_key, plugin_name)
+                block_key = (turn_key, plugin_name)
+                if block_key not in block_indices:
+                    block_indices[block_key] = 0
+                current_block_idx = block_indices[block_key]
+                block_indices[block_key] += 1
+                
+                # Try to extract query from PluginInvocation first
+                query_from_invocation = _extract_query_from_invocation_unified(
+                    plugin_invocation, plugin_name
+                )
+                
+                # Fallback 1: Use block-index alignment with batchedQueries
+                block_query = block_to_query.get((turn_key, plugin_name, current_block_idx), '')
+                
+                # Fallback 2: Use first reference_id mapping
+                first_ref = results_list[0].get('ReferenceId', '') if results_list else ''
+                first_ref_query = first_ref_to_query.get(first_ref, '')
+                
+                # Choose best query: invocation > block_alignment > first_ref
+                block_level_query = query_from_invocation or block_query or first_ref_query
+                
+                # Group results with NDCG scores
+                search_entry = {
+                    'hop': turn_key,
+                    'plugin_name': plugin_name,
+                    'query_string': block_level_query,
+                    'plugin_invocation': plugin_invocation,
+                    'result_count': len(results_list),
+                    'results': []
+                }
+                
+                for r in results_list:
+                    ref_id = r.get('ReferenceId', '')
+                    ndcg_label = r.get('LLMLabel')  # NDCG score
+                    
+                    result_entry = {
+                        'reference_id': ref_id,
+                        'LLMLabel': ndcg_label,
+                        'query_string': block_level_query,
+                        'ResultType': r.get('ResultType', ''),
+                        'Type': r.get('Type', ''),
+                        'Title': r.get('Title', ''),
+                    }
+                    
+                    if ndcg_label is not None:
+                        result['has_ndcg_scores'] = True
+                    
+                    search_entry['results'].append(result_entry)
+                    result['total_results'] += 1
+                
+                result['searches'].append(search_entry)
+    
+    return result
+
+
+def extract_conv_details_and_ndcg_from_raw(
+    raw_file: str,
+    output_file: str = None,
+    utterance_filter: str = None
+) -> list:
+    """
+    CLI wrapper to extract unified conversation + NDCG data from raw results.json.
+    
+    Processes a raw SEVAL results file (JSONL format) and extracts both
+    conversation details and NDCG (search quality) scores in a unified structure.
+    
+    Args:
+        raw_file: Path to raw CiteDCG/NDCG file. Supports both:
+            - JSONL format (one JSON record per line, like results.json)
+            - Single JSON file (one complete JSON object)
+        output_file: Optional path for JSON output. If None, prints to stdout.
+        utterance_filter: Optional substring to filter by utterance text
+        
+    Returns:
+        list: List of extracted records
+        
+    Example:
+        python get_seval_metrics.py extract_conv_details_and_ndcg_from_raw \\
+            --raw_file=../../temp/ndcg_raw.json \\
+            --output_file=results/unified_ndcg_output.json
+    """
+    if not os.path.exists(raw_file):
+        print(f"Error: File not found: {raw_file}")
+        return []
+    
+    results = []
+    
+    # Try to detect file format: JSONL vs single JSON
+    with open(raw_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Try parsing as single JSON object first
+    try:
+        raw_data = json.loads(content)
+        # If it's a dict with expected keys, treat as single record
+        if isinstance(raw_data, dict) and ('Utterance' in raw_data or 'AllSearchResults' in raw_data):
+            utterance = raw_data.get('Utterance', '')
+            if not utterance_filter or utterance_filter.lower() in utterance.lower():
+                extracted = extract_conv_details_and_ndcg_from_raw_files(raw_data)
+                results.append(extracted)
+        # If it's a list, treat each item as a record
+        elif isinstance(raw_data, list):
+            for item in raw_data:
+                if isinstance(item, dict):
+                    utterance = item.get('Utterance', '')
+                    if utterance_filter and utterance_filter.lower() not in utterance.lower():
+                        continue
+                    extracted = extract_conv_details_and_ndcg_from_raw_files(item)
+                    results.append(extracted)
+    except json.JSONDecodeError:
+        # Fall back to JSONL format (one JSON object per line)
+        for line_num, line in enumerate(content.split('\n'), 1):
+            line = line.strip()
+            if not line:
+                continue
+            
+            try:
+                raw_data = json.loads(line)
+            except json.JSONDecodeError as e:
+                if line.startswith('{'):
+                    print(f"Warning: Skipping line {line_num} - JSON parse error: {e}")
+                continue
+            
+            utterance = raw_data.get('Utterance', '')
+            if utterance_filter and utterance_filter.lower() not in utterance.lower():
+                continue
+            
+            extracted = extract_conv_details_and_ndcg_from_raw_files(raw_data)
+            results.append(extracted)
+    
+    if output_file:
+        os.makedirs(os.path.dirname(output_file), exist_ok=True) if os.path.dirname(output_file) else None
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        print(f"Output written to: {output_file} ({len(results)} records)")
+    
+    return results
+
+
+# Note: extract_unified_citedcg_batch has been moved to seval_batch_processor.py
 # for better modularity (batch processing functions belong there)
 
 
@@ -3536,7 +3774,11 @@ def extract_per_result_citedcg(
 if __name__ == "__main__":
     # Use fire for command line arguments
     # Exposes all modular functions as commands
-    # Note: extract_unified_dcg_batch has been moved to seval_batch_processor.py
+    # Note: extract_unified_citedcg_batch has been moved to seval_batch_processor.py
+    # 
+    # Naming Convention:
+    # - "citedcg" = Citation quality scores (relevance to user's original utterance)
+    # - "ndcg" = Search quality scores (relevance to decomposed search queries)
     try:
         fire.Fire({
             'list_csv_files': list_csv_files,
@@ -3544,7 +3786,8 @@ if __name__ == "__main__":
             'generate_citedcg_report': generate_citedcg_report,
             'read_metrics': read_metrics,
             'extract_per_result_citedcg': extract_per_result_citedcg,
-            'extract_conv_details_and_dcg_from_raw': extract_conv_details_and_dcg_from_raw,
+            'extract_conv_details_and_citedcg_from_raw': extract_conv_details_and_citedcg_from_raw,
+            'extract_conv_details_and_ndcg_from_raw': extract_conv_details_and_ndcg_from_raw,
         })
     except FireExit as e:
         # Handle Fire's exit (including --help) gracefully in debug mode

@@ -1,9 +1,15 @@
 # SEVAL Complete Data Structure and Processing Guide
 
-**Last Updated**: December 10, 2025  
+**Last Updated**: December 16, 2025  
 **Purpose**: Complete technical specification for SEVAL conversation data structures, CiteDCG data structures, and data matching principles
 
 > **Note**: For implementation details on extracting and merging CiteDCG scores, see [SEVAL_Implementation_Guide.md](SEVAL_Implementation_Guide.md).
+
+> **Terminology Clarification**: This document uses **CiteDCG** (Citation DCG) and **NDCG** (Normalized DCG) which measure different aspects of search quality:
+> - **CiteDCG**: Citation quality score - measures if a result should be **cited in the response** to answer the user's original utterance
+> - **NDCG/DCG (Search)**: Search result quality score - measures if a result is **relevant to a specific search query** (which may be a decomposed sub-task)
+> 
+> See [Two Scoring Systems](#two-scoring-systems) for detailed explanation.
 
 ---
 
@@ -1001,7 +1007,9 @@ The raw `results.json` files from the DCG API (before extraction) use a differen
 **File Format**: JSONL (newline-delimited JSON) - one conversation object per line  
 **File Location**: `seval_data/{job_id}_metrics/Consolidated NDCG and CiteDCG Labels {Experiment}/results.json`
 
-**Key Insight**: Raw DCG files contain **both** search results with scores AND the full `EvaluationData` structure. This means conversation details (turn data, user inputs, orchestration iterations) can be extracted directly from DCG files without needing separate conversation files.
+**Key Insight**: Raw CiteDCG files (named `results.json`) contain **both** search results with scores AND the full `EvaluationData` structure. This means conversation details (turn data, user inputs, orchestration iterations) can be extracted directly from these files without needing separate conversation files.
+
+**Note**: The folder name includes "NDCG and CiteDCG" because the files contain both scoring systems. When we refer to "raw DCG files" in this document, we mean these `results.json` files that contain CiteDCG scores.
 
 **Top-Level Structure**:
 ```json
@@ -1268,36 +1276,73 @@ After extraction by `extract_per_result_citedcg()`, the data is reorganized into
 
 ### Two Scoring Systems
 
-The raw DCG data contains **two different quality scores** for each search result:
+The raw CiteDCG files contain **two different quality scores** for each search result. Understanding the distinction is critical for proper analysis:
+
+#### Architectural Context: Utterance vs Search Query
+
+```
+User Utterance: "Summarize SAW login issues from ServiceNow"
+                              ↓
+              ┌─────────────────────────────────────┐
+              │        ORCHESTRATOR LAYER           │
+              │  (decomposes into sub-tasks)        │
+              └─────────────────────────────────────┘
+                              ↓
+        ┌─────────────────────┴─────────────────────┐
+        ↓                                           ↓
+   Search Task 1                              Search Task 2
+   Query: "SAW smartcard                     Query: "SAW VPN 
+   certificate login"                        connectivity issues"
+        ↓                                           ↓
+   Results → LLMLabel                         Results → LLMLabel
+   (NDCG for THIS query)                     (NDCG for THIS query)
+        └─────────────────────┬─────────────────────┘
+                              ↓
+              ┌─────────────────────────────────────┐
+              │         FINAL RESPONSE              │
+              │    (with citations [1], [2]...)     │
+              └─────────────────────────────────────┘
+                              ↓
+                    CiteDCGLLMLabel
+              (relevance to ORIGINAL UTTERANCE)
+```
+
+**Key Insight**: 
+- **LLMLabel (Search NDCG)** evaluates quality relative to the **decomposed search query** (internal)
+- **CiteDCGLLMLabel** evaluates citation quality relative to the **original user utterance**
 
 #### 1. CiteDCG Score (`CiteDCGLLMLabel`)
 - **Purpose**: Citation quality score
-- **Question**: "Should this result be **cited** in the response?"
-- **Scale**: 0-3 (can be decimal like 2.4)
-- **Context**: Evaluates relevance for being cited in the bot's answer
-- **Prompt type**: "You are a **citation quality rater**"
+- **Question**: "Should this result be **cited** in the response to answer the **user's original utterance**?"
+- **Scale**: 0-4 (typically 0-3, can be decimal like 2.4)
+- **Context**: Evaluates relevance for being cited in the bot's answer **to the user's information need**
+- **Prompt type**: "You are a **citation quality rater** evaluating the relevance of a citation with respect to **user's information need**"
 - **Fields**: `CiteDCGLLMLabel`, `CiteDCGLLMPrompt`, `CiteDCGLLMResponse`, `CiteDCGLLMCached`
-- **Use case**: Measuring citation quality in responses
+- **Use case**: Measuring citation quality in responses, CiteDCG metric calculation
 
-#### 2. Search Result Score (`LLMLabel`)
-- **Purpose**: Search result quality score  
-- **Question**: "Is this a good **search result** for the query?"
+#### 2. Search Result Score (`LLMLabel`) - Used for NDCG
+- **Purpose**: Search result quality score (for NDCG calculation)
+- **Question**: "Is this a good **search result** for the **specific search query**?"
 - **Scale**: 0-4 (can be decimal like 2.2)
-- **Context**: Evaluates relevance to the search query
+- **Context**: Evaluates relevance to the **decomposed search query** (which may differ from user utterance)
 - **Prompt type**: "You are an **enterprise search engine quality rater**"
 - **Fields**: `LLMLabel`, `LLMPrompt`, `LLMResponse`, `LLMCached`
-- **Use case**: Measuring search engine quality
+- **Use case**: Measuring search engine quality, NDCG metric calculation
 
 #### Why Two Scores?
 
 A result can be:
-- **Good search result but not cited** (relevant but not used in final answer)
-- **Cited with high quality** (relevant and actually used effectively)
-- **Good search result with poor citation** (found correctly but cited poorly)
+- **High LLMLabel, Low CiteDCG**: Good search result for the query, but not useful for the user's actual need
+- **Low LLMLabel, High CiteDCG**: Surprisingly useful citation even though search ranking was low
+- **Both High**: Ideal - both search and citation quality are good
+- **Both Low**: Result is neither relevant to query nor useful for citation
 
-The scores may differ because:
-- Citation quality considers if the model **actually used** the information effectively
-- Search quality evaluates if the result **matches the query** semantically
+**Example Scenario**:
+- User utterance: "What are SAW login issues?"
+- Decomposed search query: "smartcard driver installation"
+- A result about "SmartCard drivers" would have:
+  - **High LLMLabel** (excellent match for "smartcard driver" query)
+  - **Medium CiteDCG** (only partially answers the broader "SAW login issues" question)
 
 ### Score Scale
 

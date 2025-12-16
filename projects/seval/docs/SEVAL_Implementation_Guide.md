@@ -1,9 +1,15 @@
 # SEVAL Implementation Guide: Extraction and Processing Methods
 
-**Last Updated**: December 10, 2025  
+**Last Updated**: December 16, 2025  
 **Purpose**: Technical implementation details for extracting CiteDCG scores and conversation details from SEVAL data
 
 > **Note**: For data structure specifications and matching principles, see [SEVAL_Complete_Guide.md](SEVAL_Complete_Guide.md).
+
+> **Terminology**:
+> - **CiteDCG** (`CiteDCGLLMLabel`): Citation quality scores - measures if results should be cited in the response (relevance to user's original utterance)
+> - **NDCG** (`LLMLabel`): Search quality scores - measures search relevance to the decomposed search queries
+> - **Raw files**: The `results.json` files in `Consolidated NDCG and CiteDCG Labels {Control|Treatment}/` containing both scoring systems
+> - **Unified extraction**: Extracting conversation details + scores from raw files (supports both CiteDCG and NDCG)
 
 ---
 
@@ -11,12 +17,13 @@
 
 1. [Overview](#overview)
 2. [Approach 1: Legacy Separate Extraction](#approach-1-legacy-separate-extraction)
-3. [Approach 2: Unified DCG Extraction (Recommended)](#approach-2-unified-dcg-extraction-recommended)
-4. [Key Modules and Functions](#key-modules-and-functions)
-5. [CLI Commands](#cli-commands)
-6. [Data Flow Diagrams](#data-flow-diagrams)
-7. [Implementation Details](#implementation-details)
-8. [Statistics and Plotting](#statistics-and-plotting)
+3. [Approach 2: Unified CiteDCG Extraction (Recommended)](#approach-2-unified-citedcg-extraction-recommended)
+4. [Approach 3: Unified NDCG Extraction (Search Quality)](#approach-3-unified-ndcg-extraction-search-quality)
+5. [Key Modules and Functions](#key-modules-and-functions)
+6. [CLI Commands](#cli-commands)
+7. [Data Flow Diagrams](#data-flow-diagrams)
+8. [Implementation Details](#implementation-details)
+9. [Statistics and Plotting](#statistics-and-plotting)
 
 ---
 
@@ -24,17 +31,17 @@
 
 ### Two Extraction Approaches
 
-| Aspect           | Legacy (Separate)              | Unified (Recommended)              |
-| ---------------- | ------------------------------ | ---------------------------------- |
-| **Data Sources** | Conversation files + DCG files | DCG files only                     |
-| **Steps**        | Extract → Extract → Merge      | Extract only                       |
-| **Complexity**   | High (matching logic)          | Low                                |
-| **Speed**        | Slower                         | Faster                             |
-| **Key Insight**  | N/A                            | DCG files contain `EvaluationData` |
+| Aspect           | Legacy (Separate)                      | Unified (Recommended)                  |
+| ---------------- | -------------------------------------- | -------------------------------------- |
+| **Data Sources** | Conversation files + raw CiteDCG files | Raw CiteDCG files only                 |
+| **Steps**        | Extract → Extract → Merge              | Extract only                           |
+| **Complexity**   | High (matching logic)                  | Low                                    |
+| **Speed**        | Slower                                 | Faster                                 |
+| **Key Insight**  | N/A                                    | CiteDCG files contain `EvaluationData` |
 
 ### Key Discovery
 
-Raw DCG files (`results.json`) contain the **full `EvaluationData` structure** including:
+Raw CiteDCG files (`results.json`) contain the **full `EvaluationData` structure** including:
 - `turnData[]` with all conversation turns
 - `orchestrationIterations` with search details
 - `userInput` for each turn
@@ -150,7 +157,7 @@ build_utterance_details_with_top_k(
 
 **Pros:**
 - Works with any data source combination
-- Can use conversation files without DCG data
+- Can use conversation files without CiteDCG data
 - Provides detailed conversation structure
 
 **Cons:**
@@ -161,25 +168,25 @@ build_utterance_details_with_top_k(
 
 ---
 
-## Approach 2: Unified DCG Extraction (Recommended)
+## Approach 2: Unified CiteDCG Extraction (Recommended)
 
 ### Overview
 
-The unified approach extracts everything from raw DCG files, leveraging the embedded `EvaluationData`.
+The unified approach extracts everything from raw CiteDCG files, leveraging the embedded `EvaluationData`.
 
 ### Workflow
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Raw DCG Files (results.json)                           │
+│  Raw CiteDCG Files (results.json)                       │
 │  Contains: AllSearchResults + EvaluationData + Utterance │
 └───────────────────────────┬─────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│  Step 1: Unified Extraction                             │
+│  Step 1: Unified CiteDCG Extraction                     │
 │  get_seval_metrics.py                                   │
-│  extract_conv_details_and_dcg_from_raw_dcgfiles()       │
+│  extract_conv_details_and_citedcg_from_raw()            │
 │                                                         │
 │  Extracts from single source:                           │
 │  - Conversation details from EvaluationData.turnData    │
@@ -226,7 +233,7 @@ The unified approach extracts everything from raw DCG files, leveraging the embe
 
 ```python
 # seval_batch_processor.py
-process_unified_dcg_with_statistics_plots(
+process_unified_citedcg_with_statistics_plots(
     job_id="133560",
     experiment="both",      # "control", "treatment", or "both"
     top_k_list="1,3,5",     # Comma-separated k values
@@ -236,7 +243,7 @@ process_unified_dcg_with_statistics_plots(
 )
 ```
 
-### What the Unified Extraction Outputs
+### What the Unified CiteDCG Extraction Outputs
 
 **Per-record structure in unified output:**
 ```json
@@ -274,8 +281,71 @@ process_unified_dcg_with_statistics_plots(
 - Simpler code path
 
 **Cons:**
-- Requires DCG files with EvaluationData
+- Requires raw CiteDCG files with EvaluationData
 - Won't work with conversation-only scenarios
+
+---
+
+## Approach 3: Unified NDCG Extraction (Search Quality)
+
+### Overview
+
+NDCG extraction works identically to CiteDCG extraction but extracts **`LLMLabel`** (search quality) instead of **`CiteDCGLLMLabel`** (citation quality).
+
+| Metric      | Field in Raw Data | Measures                                   |
+| ----------- | ----------------- | ------------------------------------------ |
+| **CiteDCG** | `CiteDCGLLMLabel` | Relevance to user's **original utterance** |
+| **NDCG**    | `LLMLabel`        | Relevance to **decomposed search query**   |
+
+### Key Function
+
+```python
+# seval_batch_processor.py
+process_unified_ndcg_with_statistics_plots(
+    job_id="133560",
+    experiment="both",      # "control", "treatment", or "both"
+    top_k_list="1,3,5",     # Comma-separated k values
+    num_threads=8,
+    output_base_dir="results",
+    verbose=False
+)
+```
+
+### What the Unified NDCG Extraction Outputs
+
+**Per-record structure in unified output:**
+```json
+{
+  "conversation_id": "uuid-string",
+  "utterance": "user query text",
+  "has_ndcg_scores": true,
+  "num_turns": 1,
+  "searches": [
+    {
+      "hop": "1",
+      "plugin_name": "office365_search_files",
+      "query_string": "search query",
+      "result_count": 10,
+      "results": [
+        {
+          "reference_id": "Turn1Search1",
+          "LLMLabel": 2.6,
+          "ResultType": "File",
+          "Title": "Document Title"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Output Directories
+
+| Type               | CiteDCG Output                         | NDCG Output                                |
+| ------------------ | -------------------------------------- | ------------------------------------------ |
+| Unified scores     | `{job_id}_unified_hop_citedcg_scores/` | `{job_id}_unified_hop_ndcg_scores/`        |
+| Utterance details  | `{job_id}_unified_utterance_details/`  | `{job_id}_unified_ndcg_utterance_details/` |
+| Statistics & plots | `{job_id}_unified_statistics_plots/`   | `{job_id}_unified_ndcg_statistics_plots/`  |
 
 ---
 
@@ -283,21 +353,26 @@ process_unified_dcg_with_statistics_plots(
 
 ### get_seval_metrics.py
 
-| Function                                           | Purpose                                                                                           |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `extract_conv_details_and_dcg_from_raw_dcgfiles()` | **Unified extraction** - extracts both conversation details and CiteDCG scores from raw DCG files |
-| `extract_per_result_citedcg()`                     | Legacy CiteDCG extraction                                                                         |
-| `extract_conv_details_and_dcg_from_raw()`          | Batch wrapper for unified extraction                                                              |
+| Function                                            | Purpose                                                                                        |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `extract_conv_details_and_citedcg_from_raw_files()` | **Unified CiteDCG extraction** - extracts conversation details + CiteDCG scores from raw files |
+| `extract_conv_details_and_citedcg_from_raw()`       | CLI wrapper for unified CiteDCG extraction                                                     |
+| `extract_conv_details_and_ndcg_from_raw_files()`    | **Unified NDCG extraction** - extracts conversation details + NDCG scores from raw files       |
+| `extract_conv_details_and_ndcg_from_raw()`          | CLI wrapper for unified NDCG extraction                                                        |
+| `extract_per_result_citedcg()`                      | Legacy CiteDCG extraction                                                                      |
 
 ### seval_batch_processor.py
 
-| Function                                      | Purpose                                                      |
-| --------------------------------------------- | ------------------------------------------------------------ |
-| `process_unified_dcg_with_statistics_plots()` | **Main workflow** - end-to-end unified processing with plots |
-| `extract_unified_dcg_batch()`                 | Batch extraction using unified approach                      |
-| `process_seval_job_with_statistics_plots()`   | Legacy workflow using separate extraction                    |
-| `extract_conversations()`                     | Legacy conversation extraction                               |
-| `_build_utterance_details_from_unified()`     | Convert unified output to utterance details format           |
+| Function                                          | Purpose                                                           |
+| ------------------------------------------------- | ----------------------------------------------------------------- |
+| `process_unified_citedcg_with_statistics_plots()` | **Main CiteDCG workflow** - end-to-end unified CiteDCG processing |
+| `extract_unified_citedcg_batch()`                 | Batch CiteDCG extraction using unified approach                   |
+| `process_unified_ndcg_with_statistics_plots()`    | **Main NDCG workflow** - end-to-end unified NDCG processing       |
+| `extract_unified_ndcg_batch()`                    | Batch NDCG extraction using unified approach                      |
+| `process_seval_job_with_statistics_plots()`       | Legacy workflow using separate extraction                         |
+| `extract_conversations()`                         | Legacy conversation extraction                                    |
+| `_build_utterance_details_from_unified()`         | Convert unified CiteDCG output to utterance details format        |
+| `_build_utterance_details_from_unified_ndcg()`    | Convert unified NDCG output to utterance details format           |
 
 ### merge_seval_results.py
 
@@ -318,21 +393,43 @@ process_unified_dcg_with_statistics_plots(
 
 ## CLI Commands
 
-### Unified Approach (Recommended)
+### Unified CiteDCG Approach (Recommended for Citation Quality)
 
 ```bash
-# End-to-end processing with statistics and plots
-python seval_batch_processor.py process_unified_dcg_with_statistics_plots \
+# End-to-end CiteDCG processing with statistics and plots
+python seval_batch_processor.py process_unified_citedcg_with_statistics_plots \
     --job_id=133560 \
     --experiment=both \
     --top_k_list=1,3,5 \
     --num_threads=8
 
-# Just extract unified DCG data
-python seval_batch_processor.py extract_unified_dcg_batch \
+# Just extract unified CiteDCG data
+python seval_batch_processor.py extract_unified_citedcg_batch \
     --job_id=133560 \
     --experiment=both \
     --output_dir=results/133560_unified_hop_citedcg_scores
+```
+
+### Unified NDCG Approach (For Search Quality)
+
+```bash
+# End-to-end NDCG processing with statistics and plots
+python seval_batch_processor.py process_unified_ndcg_with_statistics_plots \
+    --job_id=133560 \
+    --experiment=both \
+    --top_k_list=1,3,5 \
+    --num_threads=8
+
+# Just extract unified NDCG data
+python seval_batch_processor.py extract_unified_ndcg_batch \
+    --job_id=133560 \
+    --experiment=both \
+    --output_dir=results/133560_unified_hop_ndcg_scores
+
+# Single file NDCG extraction
+python get_seval_metrics.py extract_conv_details_and_ndcg_from_raw \
+    --raw_file="seval_data/133560_metrics/Consolidated NDCG and CiteDCG Labels Control/results.json" \
+    --output_file=results/133560_unified_ndcg_control.json
 ```
 
 ### Legacy Approach
@@ -350,10 +447,10 @@ python seval_batch_processor.py process_seval_job_with_statistics_plots \
 
 ## Data Flow Diagrams
 
-### Unified Extraction Data Flow
+### Unified CiteDCG Extraction Data Flow
 
 ```
-Raw DCG File (results.json)
+Raw CiteDCG File (results.json)
     │
     ├── ConversationId ──────────────────────► conversation_id
     ├── Utterance ───────────────────────────► utterance
@@ -372,12 +469,13 @@ Raw DCG File (results.json)
         └── turnData[]
             ├── userInput ───────────────────► (validation)
             └── orchestrationIterations[] ───► hop structure
+
 ```
 
 ### Score Aggregation Flow
 
 ```
-Per-result scores                    Per-hop averages              Per-utterance
+Per-result CiteDCG scores            Per-hop averages              Per-utterance
 ┌──────────────┐                    ┌─────────────┐               ┌─────────────┐
 │ result 1: 2.4│                    │ hop 1:      │               │             │
 │ result 2: 1.8│ ─► avg_all ──────► │  avg_all    │               │ utterance   │
@@ -390,11 +488,11 @@ Per-result scores                    Per-hop averages              Per-utterance
 
 ## Implementation Details
 
-### How Unified Extraction Works
+### How Unified CiteDCG Extraction Works
 
-The `extract_conv_details_and_dcg_from_raw_dcgfiles()` function:
+The `extract_conv_details_and_citedcg_from_raw_dcgfiles()` function:
 
-1. **Reads raw DCG file** (JSONL format, one conversation per line)
+1. **Reads raw CiteDCG file** (JSONL format, one conversation per line)
 
 2. **For each conversation**, extracts:
    - `conversation_id` from `ConversationId`

@@ -11,12 +11,12 @@ Available Commands:
     process_seval_job_multihop_citedcg - End-to-end CiteDCG processing
     process_seval_job_with_statistics_plots - Calculate statistics for
                                              multiple top-k and generate plots
-    extract_unified_dcg_batch       - Batch extract unified conversation + DCG data
-                                      from raw DCG files with summary statistics
+    extract_unified_citedcg_batch   - Batch extract unified conversation + CiteDCG data
+                                      from raw CiteDCG files with summary statistics
 
 Usage Examples:
-    # Extract unified DCG batch with summary report
-    python seval_batch_processor.py extract_unified_dcg_batch \\
+    # Extract unified CiteDCG batch with summary report
+    python seval_batch_processor.py extract_unified_citedcg_batch \\
         --job_id=133560 --experiment=both --num_threads=4
     
     # Process with multiple top-k values, calculate statistics, and plot
@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 
 # Import with fallback for direct script execution vs package import
 try:
-    from .get_seval_metrics import extract_conv_details_and_dcg_from_raw
+    from .get_seval_metrics import extract_conv_details_and_citedcg_from_raw
     from .merge_seval_results import (
         generate_plot_statistics_from_utterance_details,
         merge_citedcg_and_calculate_stats,
@@ -82,7 +82,7 @@ try:
     )
 except ImportError:
     # Fallback for direct script execution
-    from get_seval_metrics import extract_conv_details_and_dcg_from_raw
+    from get_seval_metrics import extract_conv_details_and_citedcg_from_raw
     from merge_seval_results import (
         generate_plot_statistics_from_utterance_details,
         merge_citedcg_and_calculate_stats,
@@ -2346,10 +2346,10 @@ def process_seval_job_with_statistics_plots(
 
 
 # ==========================================================================
-# Unified DCG Batch Extraction
+# Unified CiteDCG Batch Extraction
 # ==========================================================================
 
-def extract_unified_dcg_batch(
+def extract_unified_citedcg_batch(
     job_id: str,
     experiment: str = "both",
     output_dir: str = None,
@@ -2357,9 +2357,9 @@ def extract_unified_dcg_batch(
     base_path: str = None
 ) -> dict:
     """
-    Batch extract unified conversation + DCG data from raw DCG files for a SEVAL job.
+    Batch extract unified conversation + CiteDCG data from raw CiteDCG files for a SEVAL job.
     
-    Processes control and/or treatment raw DCG files with multi-threading support.
+    Processes control and/or treatment raw CiteDCG files with multi-threading support.
     Prints a comprehensive summary report at the end.
     
     Args:
@@ -2374,7 +2374,7 @@ def extract_unified_dcg_batch(
         dict: Summary of processing results including statistics
         
     Example:
-        python seval_batch_processor.py extract_unified_dcg_batch \\
+        python seval_batch_processor.py extract_unified_citedcg_batch \\
             --job_id=133560 \\
             --experiment=both \\
             --num_threads=4
@@ -2422,10 +2422,10 @@ def extract_unified_dcg_batch(
     }
     
     def process_single_file(args):
-        """Process a single raw DCG file."""
+        """Process a single raw CiteDCG file."""
         exp_name, raw_file = args
         try:
-            results = extract_conv_details_and_dcg_from_raw(raw_file, output_file=None)
+            results = extract_conv_details_and_citedcg_from_raw(raw_file, output_file=None)
             return exp_name, os.path.basename(raw_file), results
         except Exception as e:
             print(f"Error processing {raw_file}: {e}")
@@ -2592,10 +2592,10 @@ def _print_experiment_summary_report(summary: dict):
 
 
 # ==========================================================================
-# Process Unified DCG for Statistics and Plots
+# Process Unified CiteDCG for Statistics and Plots
 # ==========================================================================
 
-def process_unified_dcg_with_statistics_plots(
+def process_unified_citedcg_with_statistics_plots(
     job_id: str,
     experiment: str = "both",
     top_k_list: str = "1,3,5",
@@ -2604,13 +2604,13 @@ def process_unified_dcg_with_statistics_plots(
     verbose: bool = False
 ):
     """
-    Process unified DCG data to calculate statistics and generate plots.
+    Process unified CiteDCG data to calculate statistics and generate plots.
     
     This is a streamlined alternative to process_seval_job_with_statistics_plots
-    that uses the unified DCG batch extraction output directly.
+    that uses the unified CiteDCG batch extraction output directly.
     
     Workflow:
-    1. Extract unified DCG batch (if not already done or if clean=True)
+    1. Extract unified CiteDCG batch (if not already done or if clean=True)
     2. Build utterance details with top-k scores from unified data
     3. Find paired utterances (if both experiments)
     4. Generate statistics and plots
@@ -2624,7 +2624,7 @@ def process_unified_dcg_with_statistics_plots(
         verbose: Enable verbose output (default: False)
     
     Example:
-        python seval_batch_processor.py process_unified_dcg_with_statistics_plots \\
+        python seval_batch_processor.py process_unified_citedcg_with_statistics_plots \\
             --job_id=133560 \\
             --experiment=both \\
             --top_k_list=1,3,5
@@ -2667,42 +2667,42 @@ def process_unified_dcg_with_statistics_plots(
     
     # Setup paths
     module_dir = Path(__file__).parent
-    unified_dcg_dir = Path(output_base_dir) / f"{job_id}_unified_hop_citedcg_scores"
+    unified_citedcg_dir = Path(output_base_dir) / f"{job_id}_unified_hop_citedcg_scores"
     utterance_details_dir = Path(output_base_dir) / f"{job_id}_unified_utterance_details"
     plots_dir = Path(output_base_dir) / f"{job_id}_unified_statistics_plots"
     
     print("=" * 80)
-    print(f"PROCESSING UNIFIED DCG DATA: Job {job_id}")
+    print(f"PROCESSING UNIFIED CITEDCG DATA: Job {job_id}")
     print("=" * 80)
     vprint(f"Experiment:   {experiment}")
     vprint(f"Top-k values: {k_values}")
     vprint(f"Threads:      {num_threads}")
     print("")
     
-    # STEP 1: Extract unified DCG batch (always regenerate)
+    # STEP 1: Extract unified CiteDCG batch (always regenerate)
     unified_files = {}
     
     vprint("=" * 80)
-    vprint("STEP 1: EXTRACTING UNIFIED DCG DATA")
+    vprint("STEP 1: EXTRACTING UNIFIED CITEDCG DATA")
     vprint("=" * 80)
     
-    summary = extract_unified_dcg_batch(
+    summary = extract_unified_citedcg_batch(
         job_id=job_id,
         experiment=experiment,
-        output_dir=str(unified_dcg_dir),
+        output_dir=str(unified_citedcg_dir),
         num_threads=num_threads
     )
     
     # Get the output files from summary
     for exp in experiments:
-        unified_file = unified_dcg_dir / f"{job_id}_{exp}_unified_citedcg.json"
+        unified_file = unified_citedcg_dir / f"{job_id}_{exp}_unified_citedcg.json"
         if unified_file.exists():
             unified_files[exp] = str(unified_file)
     print("")
     
     # Validate unified files
     if len(unified_files) < len(experiments):
-        print("Error: Missing unified DCG files")
+        print("Error: Missing unified CiteDCG files")
         sys.exit(1)
     
     # STEP 2: Build utterance details with top-k scores
@@ -2868,14 +2868,14 @@ def process_unified_dcg_with_statistics_plots(
     # Final summary
     print("")
     print("=" * 80)
-    print("✓ COMPLETE: UNIFIED DCG PROCESSING WITH STATISTICS")
+    print("✓ COMPLETE: UNIFIED CITEDCG PROCESSING WITH STATISTICS")
     print("=" * 80)
     print(f"Job ID: {job_id}")
     print(f"Experiment: {experiment}")
     print(f"Top-k values: {k_values}")
     print("")
     print("Output directories:")
-    print(f"  - Unified DCG: {unified_dcg_dir}")
+    print(f"  - Unified CiteDCG: {unified_citedcg_dir}")
     print(f"  - Utterance details: {utterance_details_dir}")
     if len(k_values) >= 2:
         print(f"  - Plots: {plots_dir}")
@@ -3030,17 +3030,676 @@ def _build_utterance_details_from_unified(
 
 
 # ==========================================================================
+# NDCG (Search Quality) Batch Processing Functions
+# ==========================================================================
+# These functions mirror the CiteDCG functions but extract LLMLabel (NDCG)
+# instead of CiteDCGLLMLabel (citation quality).
+# NDCG measures relevance to the decomposed search query.
+# ==========================================================================
+
+def extract_unified_ndcg_batch(
+    job_id: str,
+    experiment: str = "both",
+    output_dir: str = None,
+    num_threads: int = 8,
+    base_path: str = None
+) -> dict:
+    """
+    Batch extract unified conversation + NDCG data from raw files for a SEVAL job.
+    
+    Processes control and/or treatment raw files with multi-threading support.
+    Extracts LLMLabel (NDCG/search quality) scores instead of CiteDCGLLMLabel.
+    
+    Args:
+        job_id: SEVAL job ID (e.g., "133560")
+        experiment: Which experiment to process: "control", "treatment", or "both"
+        output_dir: Output directory path. If None, uses:
+            results/{job_id}_unified_hop_ndcg_scores/
+        num_threads: Number of parallel threads for processing (default: 8)
+        base_path: Base path for seval_data folder. If None, uses current directory.
+        
+    Returns:
+        dict: Summary of processing results including statistics
+        
+    Example:
+        python seval_batch_processor.py extract_unified_ndcg_batch \\
+            --job_id=133560 \\
+            --experiment=both \\
+            --num_threads=4
+    """
+    import concurrent.futures
+    from pathlib import Path
+
+    # Import NDCG extraction function
+    try:
+        from .get_seval_metrics import extract_conv_details_and_ndcg_from_raw
+    except ImportError:
+        from get_seval_metrics import extract_conv_details_and_ndcg_from_raw
+
+    # Setup paths
+    if base_path is None:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
+    seval_data_path = os.path.join(base_path, "seval_data", f"{job_id}_metrics")
+    
+    if output_dir is None:
+        output_dir = os.path.join(base_path, "results", f"{job_id}_unified_hop_ndcg_scores")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Define experiment folders
+    experiments_to_process = []
+    if experiment.lower() in ["control", "both"]:
+        control_folder = os.path.join(seval_data_path, "Consolidated NDCG and CiteDCG Labels Control")
+        if os.path.exists(control_folder):
+            experiments_to_process.append(("control", control_folder))
+        else:
+            print(f"Warning: Control folder not found: {control_folder}")
+    
+    if experiment.lower() in ["treatment", "both"]:
+        treatment_folder = os.path.join(seval_data_path, "Consolidated NDCG and CiteDCG Labels Treatment")
+        if os.path.exists(treatment_folder):
+            experiments_to_process.append(("treatment", treatment_folder))
+        else:
+            print(f"Warning: Treatment folder not found: {treatment_folder}")
+    
+    if not experiments_to_process:
+        print(f"Error: No valid experiment folders found for job {job_id}")
+        return {"error": "No experiment folders found"}
+    
+    summary = {
+        "job_id": job_id,
+        "experiments_processed": [],
+        "total_records": 0,
+        "output_files": [],
+        "experiment_stats": {}
+    }
+    
+    def process_single_file(args):
+        """Process a single raw file for NDCG extraction."""
+        exp_name, raw_file = args
+        try:
+            results = extract_conv_details_and_ndcg_from_raw(raw_file, output_file=None)
+            return exp_name, os.path.basename(raw_file), results
+        except Exception as e:
+            print(f"Error processing {raw_file}: {e}")
+            return exp_name, os.path.basename(raw_file), []
+    
+    for exp_name, folder_path in experiments_to_process:
+        print(f"\n{'='*60}")
+        print(f"Processing NDCG for {exp_name.upper()} from: {folder_path}")
+        print(f"{'='*60}")
+        
+        # Find all results.json files in the folder
+        raw_files = []
+        results_json = os.path.join(folder_path, "results.json")
+        if os.path.exists(results_json):
+            raw_files.append((exp_name, results_json))
+        else:
+            # Look for individual JSON files
+            for f in os.listdir(folder_path):
+                if f.endswith('.json'):
+                    raw_files.append((exp_name, os.path.join(folder_path, f)))
+        
+        if not raw_files:
+            print(f"No JSON files found in {folder_path}")
+            continue
+        
+        all_results = []
+        
+        if num_threads > 1 and len(raw_files) > 1:
+            # Multi-threaded processing
+            print(f"Processing {len(raw_files)} files with {num_threads} threads...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+                futures = {executor.submit(process_single_file, args): args for args in raw_files}
+                for future in concurrent.futures.as_completed(futures):
+                    exp, filename, results = future.result()
+                    all_results.extend(results)
+                    print(f"  Processed: {filename} ({len(results)} records)")
+        else:
+            # Single-threaded processing
+            for args in raw_files:
+                exp, filename, results = process_single_file(args)
+                all_results.extend(results)
+                print(f"  Processed: {filename} ({len(results)} records)")
+        
+        # Calculate statistics for this experiment (using NDCG scores)
+        exp_stats = _calculate_experiment_statistics_ndcg(all_results)
+        summary["experiment_stats"][exp_name] = exp_stats
+        
+        # Write output file for this experiment
+        output_file = os.path.join(output_dir, f"{job_id}_{exp_name}_unified_ndcg.json")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(all_results, f, indent=2, ensure_ascii=False)
+        
+        print(f"\nOutput written to: {output_file}")
+        print(f"Total records for {exp_name}: {len(all_results)}")
+        
+        summary["experiments_processed"].append(exp_name)
+        summary["total_records"] += len(all_results)
+        summary["output_files"].append(output_file)
+    
+    # Print summary report
+    _print_experiment_summary_report_ndcg(summary)
+    
+    return None
+
+
+def _calculate_experiment_statistics_ndcg(results: list) -> dict:
+    """
+    Calculate detailed statistics for an experiment's NDCG results.
+    
+    Args:
+        results: List of unified NDCG extraction records
+        
+    Returns:
+        dict: Statistics including score distributions, hop counts, etc.
+    """
+    stats = {
+        "total_records": len(results),
+        "records_with_scores": 0,
+        "records_without_scores": 0,
+        "total_searches": 0,
+        "total_results_with_ndcg": 0,
+        "ndcg_scores": [],  # All NDCG scores for distribution analysis
+        "hop_counts": {},   # Count of records by number of hops
+    }
+    
+    for record in results:
+        has_scores = record.get("has_ndcg_scores", False)
+        if has_scores:
+            stats["records_with_scores"] += 1
+        else:
+            stats["records_without_scores"] += 1
+        
+        searches = record.get("searches", [])
+        stats["total_searches"] += len(searches)
+        
+        # Count hops
+        num_hops = len(searches)
+        hop_key = str(num_hops)
+        stats["hop_counts"][hop_key] = stats["hop_counts"].get(hop_key, 0) + 1
+        
+        # Collect all NDCG scores
+        for search in searches:
+            for result in search.get("results", []):
+                ndcg_label = result.get("LLMLabel")
+                if ndcg_label is not None:
+                    stats["total_results_with_ndcg"] += 1
+                    stats["ndcg_scores"].append(ndcg_label)
+    
+    # Calculate score statistics
+    if stats["ndcg_scores"]:
+        scores = stats["ndcg_scores"]
+        stats["ndcg_score_stats"] = {
+            "min": min(scores),
+            "max": max(scores),
+            "mean": sum(scores) / len(scores),
+            "count": len(scores)
+        }
+    else:
+        stats["ndcg_score_stats"] = None
+    
+    # Remove raw scores list (too large for summary)
+    del stats["ndcg_scores"]
+    
+    return stats
+
+
+def _print_experiment_summary_report_ndcg(summary: dict):
+    """Print a comprehensive summary report for NDCG batch extraction."""
+    print("\n")
+    print("=" * 80)
+    print("UNIFIED NDCG EXTRACTION SUMMARY REPORT")
+    print("=" * 80)
+    print(f"Job ID: {summary['job_id']}")
+    print(f"Experiments processed: {', '.join(summary['experiments_processed'])}")
+    print(f"Total records: {summary['total_records']}")
+    print("")
+    
+    for exp_name, stats in summary.get("experiment_stats", {}).items():
+        print(f"--- {exp_name.upper()} ---")
+        print(f"  Records with NDCG scores: {stats.get('records_with_scores', 0)}")
+        print(f"  Records without scores: {stats.get('records_without_scores', 0)}")
+        print(f"  Total searches: {stats.get('total_searches', 0)}")
+        print(f"  Total results with NDCG: {stats.get('total_results_with_ndcg', 0)}")
+        
+        score_stats = stats.get("ndcg_score_stats")
+        if score_stats:
+            print(f"  NDCG Score Range: {score_stats['min']:.2f} - {score_stats['max']:.2f}")
+            print(f"  NDCG Score Mean: {score_stats['mean']:.2f}")
+        
+        hop_counts = stats.get("hop_counts", {})
+        if hop_counts:
+            print(f"  Hop distribution: {hop_counts}")
+        print("")
+    
+    print("Output files:")
+    for f in summary.get("output_files", []):
+        print(f"  - {f}")
+    print("=" * 80)
+
+
+def process_unified_ndcg_with_statistics_plots(
+    job_id: str,
+    experiment: str = "both",
+    top_k_list: str = "1,3,5",
+    num_threads: int = 8,
+    output_base_dir: str = "results",
+    verbose: bool = False
+):
+    """
+    Process unified NDCG data to calculate statistics and generate plots.
+    
+    This is the NDCG equivalent of process_unified_citedcg_with_statistics_plots.
+    NDCG measures search quality (relevance to decomposed search queries).
+    
+    Workflow:
+    1. Extract unified NDCG batch (if not already done)
+    2. Build utterance details with top-k scores from unified data
+    3. Find paired utterances (if both experiments)
+    4. Generate statistics and plots
+    
+    Args:
+        job_id: SEVAL job ID (e.g., "133560")
+        experiment: Which experiment to process ("control", "treatment", or "both")
+        top_k_list: Comma-separated list of top-k values (e.g., "1,3,5")
+        num_threads: Number of parallel threads for processing (default: 8)
+        output_base_dir: Base directory for outputs (default: "results")
+        verbose: Enable verbose output (default: False)
+    
+    Example:
+        python seval_batch_processor.py process_unified_ndcg_with_statistics_plots \\
+            --job_id=133560 \\
+            --experiment=both \\
+            --top_k_list=1,3,5
+    """
+    import sys
+    from pathlib import Path
+
+    # Parse top-k list
+    try:
+        if isinstance(top_k_list, (list, tuple)):
+            k_values = [int(k) for k in top_k_list]
+        elif isinstance(top_k_list, str):
+            k_values = [int(k.strip()) for k in top_k_list.split(",")]
+        else:
+            k_values = [int(top_k_list)]
+        k_values = sorted(set(k_values))
+    except (ValueError, AttributeError) as e:
+        print(f"Error: Invalid top_k_list format: {top_k_list}")
+        sys.exit(1)
+    
+    if len(k_values) < 1:
+        print("Error: At least one top-k value is required")
+        sys.exit(1)
+    
+    # Helper for verbose printing
+    def vprint(*args, **kwargs):
+        if verbose:
+            print(*args, **kwargs)
+    
+    # Determine experiments to process
+    experiments = []
+    if experiment.lower() in ["control", "both"]:
+        experiments.append("control")
+    if experiment.lower() in ["treatment", "both"]:
+        experiments.append("treatment")
+    
+    if not experiments:
+        print(f"Error: Invalid experiment value: '{experiment}'")
+        sys.exit(1)
+    
+    # Setup paths
+    module_dir = Path(__file__).parent
+    unified_ndcg_dir = Path(output_base_dir) / f"{job_id}_unified_hop_ndcg_scores"
+    utterance_details_dir = Path(output_base_dir) / f"{job_id}_unified_ndcg_utterance_details"
+    plots_dir = Path(output_base_dir) / f"{job_id}_unified_ndcg_statistics_plots"
+    
+    print("=" * 80)
+    print(f"PROCESSING UNIFIED NDCG DATA: Job {job_id}")
+    print("=" * 80)
+    vprint(f"Experiment:   {experiment}")
+    vprint(f"Top-k values: {k_values}")
+    vprint(f"Threads:      {num_threads}")
+    print("")
+    
+    # STEP 1: Extract unified NDCG batch
+    unified_files = {}
+    
+    vprint("=" * 80)
+    vprint("STEP 1: EXTRACTING UNIFIED NDCG DATA")
+    vprint("=" * 80)
+    
+    summary = extract_unified_ndcg_batch(
+        job_id=job_id,
+        experiment=experiment,
+        output_dir=str(unified_ndcg_dir),
+        num_threads=num_threads
+    )
+    
+    # Get the output files from summary
+    for exp in experiments:
+        unified_file = unified_ndcg_dir / f"{job_id}_{exp}_unified_ndcg.json"
+        if unified_file.exists():
+            unified_files[exp] = str(unified_file)
+    print("")
+    
+    # Validate unified files
+    if len(unified_files) < len(experiments):
+        print("Error: Missing unified NDCG files")
+        sys.exit(1)
+    
+    # STEP 2: Build utterance details with top-k scores
+    print("=" * 80)
+    print("STEP 2: BUILDING UTTERANCE DETAILS (Per-hop NDCG averages for top-k)")
+    print("=" * 80)
+    
+    utterance_details_dir.mkdir(parents=True, exist_ok=True)
+    utterance_details_files = {}
+    
+    for exp in experiments:
+        unified_file = unified_files[exp]
+        details_file = utterance_details_dir / f"{job_id}_{exp}_ndcg_utterance_details.json"
+        
+        vprint(f"  Processing {exp.upper()}...")
+        
+        # Load unified data
+        with open(unified_file, 'r', encoding='utf-8') as f:
+            unified_data = json.load(f)
+        
+        # Build utterance details from unified data (using NDCG scores)
+        utterance_details = _build_utterance_details_from_unified_ndcg(
+            unified_data=unified_data,
+            k_values=k_values,
+            experiment=exp
+        )
+        
+        # Save utterance details
+        with open(details_file, 'w', encoding='utf-8') as f:
+            json.dump(utterance_details, f, indent=2, ensure_ascii=False)
+        
+        utterance_details_files[exp] = str(details_file)
+        
+        # Print summary
+        metadata = utterance_details.get("metadata", {})
+        total = metadata.get("total_utterances", 0)
+        with_scores = metadata.get("utterances_with_scores", 0)
+        print(f"    ✓ {exp}: {total} utterances ({with_scores} with scores)")
+        print(f"      Output: {details_file}")
+    
+    print("")
+    
+    # STEP 3: Find paired utterances (if both experiments)
+    paired_utterances_file = None
+    if len(experiments) == 2 and len(utterance_details_files) == 2:
+        print("=" * 80)
+        print("STEP 3: FINDING PAIRED UTTERANCES")
+        print("=" * 80)
+        
+        try:
+            from .merge_seval_results import find_paired_utterances_with_scores
+        except ImportError:
+            from merge_seval_results import find_paired_utterances_with_scores
+        
+        control_file = utterance_details_files.get("control")
+        treatment_file = utterance_details_files.get("treatment")
+        
+        if control_file and treatment_file:
+            paired_file = utterance_details_dir / f"{job_id}_paired_ndcg_utterances.json"
+            
+            try:
+                paired_data = find_paired_utterances_with_scores(
+                    control_details_file=control_file,
+                    treatment_details_file=treatment_file,
+                    output_file=str(paired_file)
+                )
+                paired_utterances_file = str(paired_file)
+                
+                # Print summary
+                metadata = paired_data.get("metadata", {})
+                total = metadata.get("total_utterances", 0)
+                paired = metadata.get("paired_with_scores", 0)
+                print(f"    ✓ Total: {total}, Paired with scores: {paired}")
+                print(f"      Output: {paired_file}")
+            except Exception as e:
+                logger.error(f"Failed to find paired utterances: {e}")
+                print(f"    ✗ Error: {e}")
+        print("")
+    
+    # STEP 4: Generate statistics and plots
+    if len(k_values) >= 2:
+        print("=" * 80)
+        print("STEP 4: GENERATING STATISTICS AND PLOTS")
+        print("=" * 80)
+        
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Clean existing plots
+        processor = BaseProcessor()
+        processor._clean_directory(plots_dir, "plots", silent=True)
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            from .merge_seval_results import (
+                generate_plot_statistics_from_utterance_details,
+            )
+        except ImportError:
+            from merge_seval_results import (
+                generate_plot_statistics_from_utterance_details,
+            )
+        
+        # Generate plot statistics for each experiment and k-value
+        stats_files_by_exp = {}
+        
+        for exp in experiments:
+            if exp not in utterance_details_files:
+                continue
+            
+            vprint(f"  Generating plot statistics for {exp.upper()}...")
+            stats_files_by_exp[exp] = {}
+            
+            for k in k_values:
+                stats_file = plots_dir / f"{job_id}_{exp}_ndcg_plot_stats_k{k}.json"
+                
+                try:
+                    stats = generate_plot_statistics_from_utterance_details(
+                        utterance_details_file=utterance_details_files[exp],
+                        k_value=k,
+                        output_json=str(stats_file)
+                    )
+                    stats_files_by_exp[exp][k] = str(stats_file)
+                    vprint(f"    ✓ k={k}: {stats_file.name}")
+                except Exception as e:
+                    logger.error(f"Failed to generate plot stats for {exp} k={k}: {e}")
+                    vprint(f"    ✗ k={k}: Error: {e}")
+        
+        # Generate comparison plots
+        if len(experiments) == 1:
+            generate_statistics_plots(
+                stats_files=stats_files_by_exp[experiments[0]],
+                output_dir=plots_dir,
+                job_id=job_id,
+                experiment=experiments[0]
+            )
+        else:
+            generate_comparison_plots(
+                stats_files_control=stats_files_by_exp.get("control", {}),
+                stats_files_treatment=stats_files_by_exp.get("treatment", {}),
+                output_dir=plots_dir,
+                job_id=job_id
+            )
+            
+            # Generate paired utterances plot
+            if paired_utterances_file:
+                try:
+                    generate_paired_utterances_plot(
+                        paired_utterances_file=paired_utterances_file,
+                        output_dir=plots_dir,
+                        job_id=job_id,
+                        k_values=k_values
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to generate paired utterances plot: {e}")
+        
+        print(f"    ✓ Plots generated in: {plots_dir}")
+        print("")
+    else:
+        print("")
+        print("⚠ Note: Plotting requires at least 2 different top-k values")
+        print(f"  You provided: {k_values}")
+        print("")
+    
+    # Final summary
+    print("")
+    print("=" * 80)
+    print("✓ COMPLETE: UNIFIED NDCG PROCESSING WITH STATISTICS")
+    print("=" * 80)
+    print(f"Job ID: {job_id}")
+    print(f"Experiment: {experiment}")
+    print(f"Top-k values: {k_values}")
+    print("")
+    print("Output directories:")
+    print(f"  - Unified NDCG: {unified_ndcg_dir}")
+    print(f"  - Utterance details: {utterance_details_dir}")
+    if len(k_values) >= 2:
+        print(f"  - Plots: {plots_dir}")
+    print("=" * 80)
+
+
+def _build_utterance_details_from_unified_ndcg(
+    unified_data: list,
+    k_values: list,
+    experiment: str
+) -> dict:
+    """
+    Build utterance details structure from unified NDCG data.
+    
+    This is the NDCG equivalent of _build_utterance_details_from_unified.
+    Uses LLMLabel (NDCG/search quality) instead of CiteDCGLLMLabel.
+    
+    Args:
+        unified_data: List of records from unified NDCG extraction
+        k_values: List of top-k values to calculate
+        experiment: Experiment name ("control" or "treatment")
+    
+    Returns:
+        dict: Utterance details with structure compatible with plotting functions
+    """
+    utterances = {}
+    total_with_scores = 0
+    
+    for record in unified_data:
+        utterance_text = record.get("utterance", "")
+        conv_id = record.get("conversation_id", "")
+        has_scores = record.get("has_ndcg_scores", False)
+        
+        if has_scores:
+            total_with_scores += 1
+        
+        # Use conversation_id as utterance_id
+        utterance_id = conv_id if conv_id else utterance_text[:50].replace(" ", "_")
+        
+        # Track all hops and collect NDCG scores per hop
+        all_hops_seen = set()
+        hop_scores_raw = {}
+        
+        for search in record.get("searches", []):
+            hop_str = search.get("hop", "1")
+            hop_number = int(hop_str) if hop_str.isdigit() else 1
+            all_hops_seen.add(hop_number)
+            
+            # Collect all NDCG scores for this hop (using LLMLabel)
+            for result in search.get("results", []):
+                ndcg_label = result.get("LLMLabel")
+                if ndcg_label is not None:
+                    if hop_number not in hop_scores_raw:
+                        hop_scores_raw[hop_number] = []
+                    hop_scores_raw[hop_number].append(ndcg_label)
+        
+        # Build hop details with k-value averages
+        hops = {}
+        hop_sequence = 0
+        
+        if not all_hops_seen:
+            all_hops_seen = {1}
+        
+        for hop_number in sorted(all_hops_seen):
+            scores = hop_scores_raw.get(hop_number, [])
+            hop_key = str(hop_number)
+            hops[hop_key] = {}
+            
+            has_hop_scores = len(scores) > 0
+            if has_hop_scores:
+                hop_sequence += 1
+            
+            for k in k_values:
+                k_str = str(k)
+                
+                if has_hop_scores:
+                    avg_all = sum(scores) / len(scores)
+                    sorted_scores = sorted(scores, reverse=True)
+                    top_k_scores = sorted_scores[:k]
+                    avg_topk = sum(top_k_scores) / len(top_k_scores)
+                    
+                    hops[hop_key][k_str] = {
+                        "avg_all_scores": avg_all,
+                        "avg_topk_scores": avg_topk,
+                        "result_count": len(scores),
+                        "is_empty": False,
+                        "hop_sequence": hop_sequence,
+                        "hop_number": hop_number
+                    }
+                else:
+                    hops[hop_key][k_str] = {
+                        "avg_all_scores": None,
+                        "avg_topk_scores": None,
+                        "result_count": 0,
+                        "is_empty": True,
+                        "hop_sequence": None,
+                        "hop_number": hop_number
+                    }
+        
+        utterances[utterance_id] = {
+            "utterance_id": utterance_id,
+            "file": f"{conv_id}.json",
+            "query_text": utterance_text,
+            "conversation_id": conv_id,
+            "hops": hops
+        }
+    
+    return {
+        "metadata": {
+            "experiment": experiment,
+            "k_values_calculated": k_values,
+            "total_utterances": len(utterances),
+            "utterances_with_scores": total_with_scores,
+            "source": "unified_ndcg_extraction",
+            "description": "Per-utterance hop-level NDCG (search quality) score averages for multiple k-values"
+        },
+        "utterances": utterances
+    }
+
+
+# ==========================================================================
 # CLI Entry Point
 # ==========================================================================
 
 if __name__ == "__main__":
     # Fire automatically exposes all module-level functions as CLI commands
     # To add new commands, simply define new functions above
+    #
+    # Naming Convention:
+    # - "citedcg" = Citation quality scores (relevance to user's original utterance)
+    # - "ndcg" = Search quality scores (relevance to decomposed search queries)
     fire.Fire({
         'extract_conversations': extract_conversations,
         'merge_citescg_scores': merge_citescg_scores,
         'process_seval_job_multihop_citedcg': process_seval_job_multihop_citedcg,
         'process_seval_job_with_statistics_plots': process_seval_job_with_statistics_plots,
-        'extract_unified_dcg_batch': extract_unified_dcg_batch,
-        'process_unified_dcg_with_statistics_plots': process_unified_dcg_with_statistics_plots,
+        'extract_unified_citedcg_batch': extract_unified_citedcg_batch,
+        'process_unified_citedcg_with_statistics_plots': process_unified_citedcg_with_statistics_plots,
+        # NDCG (Search Quality) functions
+        'extract_unified_ndcg_batch': extract_unified_ndcg_batch,
+        'process_unified_ndcg_with_statistics_plots': process_unified_ndcg_with_statistics_plots,
     })
