@@ -496,102 +496,6 @@ class SEVALToLLMNDCGTransformer:
 
         return utterance, user_profile
 
-    def _extract_search_results_last_turn(
-        self,
-        data: Dict[str, Any]
-    ) -> Dict[str, Dict[str, List[Dict]]]:
-        """
-        Extract search results from the last turn's orchestration iterations.
-
-        This uses the last turn because in multi-turn conversations,
-        only the last turn typically has successful search results.
-
-        Args:
-            data: Parsed SEVAL JSON data.
-
-        Returns:
-            Dict in llm_ndcg format:
-            {
-                "1": {"plugin_name": [{"Results": [...]}]},
-                "2": {"plugin_name": [{"Results": [...]}]}
-            }
-        """
-        all_search_results: Dict[str, Dict[str, List[Dict]]] = {}
-
-        try:
-            messages = data.get("requests", [{}])[0].get("response_body", {}).get("messages", [])
-
-            # Find EvaluationData message
-            eval_data = None
-            for msg in messages:
-                if msg.get("messageType") == "EvaluationData":
-                    eval_data = msg.get("evaluationData", {})
-                    break
-
-            if not eval_data:
-                return all_search_results
-
-            turn_data = eval_data.get("turnData", [])
-            if not turn_data:
-                return all_search_results
-
-            # Use the LAST turn (most likely to have successful search results)
-            last_turn = turn_data[-1]
-            orchestration_iterations = last_turn.get("orchestrationIterations", [])
-
-            # Track iteration index (1-based for llm_ndcg format)
-            for iter_idx, iteration in enumerate(orchestration_iterations, start=1):
-                iter_key = str(iter_idx)
-                iter_results: Dict[str, List[Dict]] = {}
-
-                model_actions = iteration.get("modelActions", [])
-                for action in model_actions:
-                    tool_invocations = action.get("toolInvocations", [])
-
-                    for invocation in tool_invocations:
-                        # Get the function/plugin name
-                        function_name = invocation.get("function", "unknown_plugin")
-
-                        # Build PluginInvocation string from function name and arguments
-                        plugin_invocation = self._build_plugin_invocation(invocation)
-
-                        # Try two formats:
-                        # Format 1: processedResult directly on invocation
-                        # Format 2: processedResult inside batchedQueries
-                        
-                        # Format 1: Direct processedResult on invocation
-                        direct_processed_result = invocation.get("processedResult", "")
-                        if direct_processed_result:
-                            results = self._parse_processed_result({"processedResult": direct_processed_result})
-                            if results:
-                                if function_name not in iter_results:
-                                    iter_results[function_name] = []
-                                iter_results[function_name].append({
-                                    "Results": results,
-                                    "PluginInvocation": plugin_invocation,
-                                })
-                        
-                        # Format 2: batchedQueries with processedResult
-                        batched_queries = invocation.get("batchedQueries", [])
-                        for batch_query in batched_queries:
-                            results = self._parse_processed_result(batch_query)
-                            if results:
-                                if function_name not in iter_results:
-                                    iter_results[function_name] = []
-                                # Include PluginInvocation in the result dict
-                                iter_results[function_name].append({
-                                    "Results": results,
-                                    "PluginInvocation": plugin_invocation,
-                                })
-
-                if iter_results:
-                    all_search_results[iter_key] = iter_results
-
-        except Exception as e:
-            logger.debug(f"Error extracting search results: {e}")
-
-        return all_search_results
-
     def _extract_search_results_last_turn_with_info(
         self,
         data: Dict[str, Any]
@@ -679,7 +583,16 @@ class SEVALToLLMNDCGTransformer:
                         function_name = invocation.get("function", "unknown_plugin")
                         diagnostic_info["tool_functions_found"].append(function_name)
 
-                        plugin_invocation = self._build_plugin_invocation(invocation)
+                        # Parse arguments to get queries with domain info
+                        arguments = invocation.get("arguments", {})
+                        if isinstance(arguments, str):
+                            try:
+                                arguments = json.loads(arguments)
+                            except json.JSONDecodeError:
+                                arguments = {}
+                        
+                        # Get list of queries from arguments (for domain info)
+                        arg_queries = arguments.get("queries", [])
 
                         # Try two formats:
                         # Format 1: processedResult directly on invocation
@@ -700,13 +613,36 @@ class SEVALToLLMNDCGTransformer:
                             except:
                                 diagnostic_info["processed_result_types"].append("parse_error")
 
-                            results = self._parse_processed_result({"processedResult": direct_processed_result})
+                            results, result_type = self._parse_processed_result({"processedResult": direct_processed_result})
                             if results:
+                                # Extract domain and query from REQUEST arguments
+                                # Different tools have different argument structures:
+                                #   - office365_search: args.queries[].domain, args.queries[].query
+                                #   - search_web: args.query (no domain)
+                                #   - fetch_file: no domain, no query
+                                #   - search_enterprise_connectors: args.query (no domain in request)
+                                domain = ""
+                                query = ""
+                                
+                                # Method 1: Check args.queries[] (office365_search style)
+                                if arg_queries and isinstance(arg_queries[0], dict):
+                                    domain = arg_queries[0].get("domain", "")
+                                    query = arg_queries[0].get("query", "")
+                                
+                                # Method 2: Check args.query (search_web, search_enterprise_connectors style)
+                                if not query:
+                                    query = arguments.get("query", "")
+                                
+                                plugin_invocation = self._build_plugin_invocation(
+                                    invocation, domain=domain, query=query
+                                )
+                                
                                 if function_name not in iter_results:
                                     iter_results[function_name] = []
                                 iter_results[function_name].append({
                                     "Results": results,
                                     "PluginInvocation": plugin_invocation,
+                                    "ResultType": result_type,
                                 })
 
                         # Format 2: batchedQueries with processedResult
@@ -715,7 +651,7 @@ class SEVALToLLMNDCGTransformer:
                             diagnostic_info["has_batched_queries"] = True
                             diagnostic_info["num_batched_queries"] += len(batched_queries)
 
-                        for batch_query in batched_queries:
+                        for idx, batch_query in enumerate(batched_queries):
                             processed_result = batch_query.get("processedResult", "")
                             if processed_result:
                                 diagnostic_info["has_processed_results"] = True
@@ -730,13 +666,33 @@ class SEVALToLLMNDCGTransformer:
                                 except:
                                     diagnostic_info["processed_result_types"].append("parse_error")
 
-                            results = self._parse_processed_result(batch_query)
+                            results, result_type = self._parse_processed_result(batch_query)
                             if results:
+                                # Extract domain and query from REQUEST arguments
+                                # Priority: batch_query fields > arg_queries[idx] > args.query
+                                domain = batch_query.get("domain", "")
+                                query = batch_query.get("query", "")
+                                
+                                # If not in batch_query, try to get from corresponding arg_query
+                                if not domain and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
+                                    domain = arg_queries[idx].get("domain", "")
+                                if not query and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
+                                    query = arg_queries[idx].get("query", "")
+                                
+                                # Fallback: try args.query (search_web, search_enterprise_connectors style)
+                                if not query:
+                                    query = arguments.get("query", "")
+                                
+                                plugin_invocation = self._build_plugin_invocation(
+                                    invocation, domain=domain, query=query
+                                )
+                                
                                 if function_name not in iter_results:
                                     iter_results[function_name] = []
                                 iter_results[function_name].append({
                                     "Results": results,
                                     "PluginInvocation": plugin_invocation,
+                                    "ResultType": result_type,
                                 })
 
                 if iter_results:
@@ -764,65 +720,83 @@ class SEVALToLLMNDCGTransformer:
 
     def _build_plugin_invocation(
         self,
-        invocation: Dict[str, Any]
+        invocation: Dict[str, Any],
+        domain: Optional[str] = None,
+        query: Optional[str] = None
     ) -> str:
         """
         Build a PluginInvocation string from the tool invocation data.
 
-        The format should match what llm_ndcg expects:
-            'function_name(query="search query text")'
+        This method is generic and supports any tool type. The format preserves
+        domain and query information from the REQUEST where available:
+
+        Supported tool types:
+            - office365_search: 'office365_search(domain="meetings", query="...")'
+              Domain from request args.queries[].domain
+            - search_web: 'search_web(query="...")'
+              No domain in request, query from args.query
+            - fetch_file: 'fetch_file()'
+              No domain or query in request
+            - search_enterprise_connectors_*: 'search_enterprise_connectors_abc(query="...")'
+              No domain in request, query from args.query
+            - Any other tool: 'tool_name(...)' with whatever params are provided
+
+        Note: result_type is NOT included here because it's derived from the RESPONSE,
+        which may differ between control and experiment. result_type is stored
+        separately in the ResultType field for informational purposes.
 
         Args:
             invocation: The toolInvocation dict from SEVAL data.
+            domain: Optional domain (for office365_search: emails, files, etc.).
+            query: Optional query text.
 
         Returns:
             PluginInvocation string.
         """
         function_name = invocation.get("function", "unknown_plugin")
-        arguments = invocation.get("arguments", {})
-
-        # arguments can be a string (JSON) or dict
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except json.JSONDecodeError:
-                arguments = {}
-
-        # Extract query from arguments
-        query = ""
-        if "queries" in arguments and arguments["queries"]:
-            first_query = arguments["queries"][0]
-            if isinstance(first_query, dict):
-                query = first_query.get("query", "")
-            elif isinstance(first_query, str):
-                query = first_query
-        elif "query" in arguments:
-            query = arguments.get("query", "")
-
-        # Build the invocation string
+        
+        # Build parts list based on what's available from the REQUEST
+        parts = []
+        
+        # Use domain for office365_search (from request arguments)
+        if domain:
+            parts.append(f'domain="{domain}"')
+        
         if query:
-            return f'{function_name}(query="{query}")'
+            parts.append(f'query="{query}"')
+        
+        if parts:
+            return f'{function_name}({", ".join(parts)})'
         else:
             return f"{function_name}()"
 
     def _parse_processed_result(
         self,
         batch_query: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], str]:
         """
         Parse processedResult from a batchedQuery into llm_ndcg result format.
+
+        This method handles multiple result formats from different tool types:
+            - office365_search: "results" array
+            - search_web: "WebPages", "News", "Sports", "QuestionsAndAnswers" arrays
+            - fetch_file: "results" array
+            - search_enterprise_connectors_*: "results" array
+            - Any new format: Falls back to finding first list-valued key
 
         Args:
             batch_query: A batchedQuery dict containing processedResult.
 
         Returns:
-            List of results in llm_ndcg format.
+            Tuple of (results list in llm_ndcg format, result_type string).
+            result_type indicates the source key name (e.g., "results", "WebPages", etc.)
         """
         results = []
+        result_type = ""
 
         processed_result = batch_query.get("processedResult", "")
         if not processed_result:
-            return results
+            return results, result_type
 
         try:
             # processedResult is often a JSON string
@@ -834,15 +808,37 @@ class SEVALToLLMNDCGTransformer:
             # Extract results from various possible locations
             raw_results = []
 
-            # Check direct "results" key
-            if "results" in processed_data:
-                raw_results = processed_data["results"]
-            # Check WebPages (Bing search format)
-            elif "WebPages" in processed_data:
-                raw_results = processed_data["WebPages"]
-            # Check News
-            elif "News" in processed_data:
-                raw_results = processed_data["News"]
+            # Known result keys in priority order
+            # "results" is most common (office365_search, fetch_file, search_enterprise_connectors)
+            # Web search types follow
+            known_result_keys = [
+                "results",           # office365_search, fetch_file, search_enterprise_connectors
+                "WebPages",          # search_web
+                "News",              # search_web
+                "Sports",            # search_web
+                "QuestionsAndAnswers",  # search_web
+                "Images",            # search_web (potential)
+                "Videos",            # search_web (potential)
+                "RelatedSearches",   # search_web (potential)
+            ]
+
+            # Try known keys first
+            for key in known_result_keys:
+                if key in processed_data and isinstance(processed_data[key], list):
+                    raw_results = processed_data[key]
+                    result_type = key
+                    break
+
+            # Fallback: find any list-valued key for unknown/new result formats
+            if not raw_results and isinstance(processed_data, dict):
+                for key, value in processed_data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        # Check if it looks like search results (list of dicts)
+                        if isinstance(value[0], dict):
+                            raw_results = value
+                            result_type = key
+                            logger.debug(f"Using fallback result key: {key}")
+                            break
 
             # Transform each result to llm_ndcg format
             for raw_result in raw_results:
@@ -855,7 +851,7 @@ class SEVALToLLMNDCGTransformer:
         except Exception as e:
             logger.debug(f"Error parsing processedResult: {e}")
 
-        return results
+        return results, result_type
 
     def _transform_single_result(
         self,
@@ -874,7 +870,6 @@ class SEVALToLLMNDCGTransformer:
 
         llm_ndcg format fields:
             - Id: Unique ID
-            - result_id: Same as Id
             - ContentBody: Content/snippet
             - Title: Title
             - DocType: Document type
@@ -904,7 +899,6 @@ class SEVALToLLMNDCGTransformer:
             # Build llm_ndcg format result
             transformed = {
                 "Id": ref_id,
-                "result_id": ref_id,
                 "ContentBody": snippet,
                 "Title": title,
                 "DocType": doc_type,
