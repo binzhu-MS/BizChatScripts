@@ -2209,6 +2209,51 @@
             }
         },
         // ============================================
+        // SEVAL INPUT TOOLS - Data Analysis Utilities
+        // ============================================
+        // Utility functions for analyzing SEVAL input data files:
+        // 1. list_distinct_values - List unique values for any column
+        // 2. list_columns - Display all columns in the dataset
+        // 3. column_statistics - Get statistics for a column
+        // 4. data_summary - Get a summary of the entire file
+        // ============================================
+        {
+            "name": "🧹 SEVAL Input - List Distinct User IDs",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_input_tools.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "list_distinct_values",
+                "seval_data/personalized-1k_golden_query-set-20250729163610_userid_cleared.tsv", //personalized-1k_golden_query-set-20250729163610.tsv",
+                "--column=user_id",
+                "--show_counts=True"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "🧹 SEVAL Input - Clear Column Values (user_id)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/projects/seval/seval_input_tools.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/projects/seval",
+            "justMyCode": true,
+            "args": [
+                "clear_column_values",
+                "seval_data/personalized-1k_golden_query-set-20250729163610.tsv",
+                "--column=user_id",
+                "--output_file=seval_data/personalized-1k_golden_query-set-20250729163610_userid_cleared.tsv"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        // ============================================
         // FILTER TREATMENT WINNERS FROM SEVAL RESULTS
         // ============================================
         // Filter test data based on SEVAL job comparison results
@@ -2251,8 +2296,8 @@
             "justMyCode": true,
             "args": [
                 "transform",
-                "--input_dir=seval_data/135056_scraping_raw_data_output",
-                "--output_file=results/135056_llm_ndcg_input.jsonl",
+                "--input_dir=seval_data/144683_scraping_raw_data_output",
+                "--output_file=results/144683_llm_ndcg_input.jsonl",
                 "--threads=16"
             ],
             "env": {

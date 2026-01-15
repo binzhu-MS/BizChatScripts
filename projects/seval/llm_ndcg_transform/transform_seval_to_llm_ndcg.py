@@ -133,30 +133,37 @@ class SEVALToLLMNDCGTransformer:
 
         transformed_records = []
         errors = []
+        # Track failure reasons for analysis - now stores (query_hash, control_uuid, experiment_uuid)
+        failure_reasons: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
 
         with ThreadPoolExecutor(max_workers=threads) as executor:
-            future_to_pair = {
-                executor.submit(
-                    self._transform_pair,
+            # Create mapping with file UUIDs for better tracking
+            future_to_info = {}
+            for query_hash, info in complete_pairs:
+                control_uuid = self._extract_uuid_from_filepath(info["control"])
+                experiment_uuid = self._extract_uuid_from_filepath(info["experiment"])
+                future = executor.submit(
+                    self._transform_pair_with_reason,
                     query_hash,
                     info["control"],
                     info["experiment"],
                     info.get("query_text", "")
-                ): query_hash
-                for query_hash, info in complete_pairs
-            }
+                )
+                future_to_info[future] = (query_hash, control_uuid, experiment_uuid)
 
-            for i, future in enumerate(as_completed(future_to_pair)):
-                query_hash = future_to_pair[future]
+            for i, future in enumerate(as_completed(future_to_info)):
+                query_hash, control_uuid, experiment_uuid = future_to_info[future]
                 try:
-                    result = future.result()
+                    result, reason = future.result()
                     if result:
                         transformed_records.append(result)
                     else:
                         errors.append(query_hash)
+                        failure_reasons[reason].append((query_hash, control_uuid, experiment_uuid))
                 except Exception as e:
                     logger.warning(f"Error transforming {query_hash}: {e}")
                     errors.append(query_hash)
+                    failure_reasons[f"exception: {type(e).__name__}"].append((query_hash, control_uuid, experiment_uuid))
 
                 if self.verbose and (i + 1) % 100 == 0:
                     print(f"  Processed {i + 1}/{len(complete_pairs)} pairs...")
@@ -178,11 +185,37 @@ class SEVALToLLMNDCGTransformer:
         print(f"  Errors/skipped: {len(errors)}")
         print(f"  Output file: {output_path.absolute()}")
 
+        # Show failure analysis
+        if failure_reasons:
+            self._show_failure_analysis(failure_reasons)
+
         # Show sample statistics
         if transformed_records:
             self._show_sample_statistics(transformed_records)
 
         return len(transformed_records)
+
+    def _extract_uuid_from_filepath(self, filepath: str) -> str:
+        """
+        Extract UUID from a SEVAL file path.
+
+        File names are like: control_sydney_response_<UUID>.json
+                         or: experiment_sydney_response_<UUID>.json
+
+        Args:
+            filepath: Full path to the SEVAL JSON file.
+
+        Returns:
+            The UUID string, or the filename if UUID cannot be extracted.
+        """
+        import re
+        filename = Path(filepath).stem  # Get filename without extension
+        # Pattern: control_sydney_response_<UUID> or experiment_sydney_response_<UUID>
+        match = re.search(r'(?:control|experiment)_sydney_response_([a-f0-9-]+)', filename, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        # Fallback: return the whole filename
+        return filename
 
     def _pair_files_by_query_hash(
         self,
@@ -288,15 +321,15 @@ class SEVALToLLMNDCGTransformer:
             logger.debug(f"Error reading {json_file.name}: {e}")
             return None
 
-    def _transform_pair(
+    def _transform_pair_with_reason(
         self,
         query_hash: str,
         control_file: str,
         experiment_file: str,
         query_text: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
         """
-        Transform a single control/experiment pair to llm_ndcg format.
+        Transform a single control/experiment pair to llm_ndcg format with failure reason.
 
         Args:
             query_hash: The query hash for this pair.
@@ -305,19 +338,20 @@ class SEVALToLLMNDCGTransformer:
             query_text: The query text.
 
         Returns:
-            Transformed record in llm_ndcg format, or None if transformation fails.
+            Tuple of (transformed record, failure_reason). If successful, failure_reason is empty.
         """
         try:
             control_data = self._read_json_file_safely(control_file)
             experiment_data = self._read_json_file_safely(experiment_file)
 
-            # Extract search results from last turn
-            control_results = self._extract_search_results_last_turn(control_data)
-            experiment_results = self._extract_search_results_last_turn(experiment_data)
+            # Extract search results from last turn with detailed info
+            control_results, control_info = self._extract_search_results_last_turn_with_info(control_data)
+            experiment_results, experiment_info = self._extract_search_results_last_turn_with_info(experiment_data)
 
-            # Skip if both are empty
+            # Skip if both are empty - analyze why
             if not control_results and not experiment_results:
-                return None
+                reason = self._analyze_empty_results_reason(control_info, experiment_info)
+                return None, reason
 
             # Get utterance and user profile
             utterance, user_profile = self._extract_utterance_and_profile(control_data)
@@ -336,11 +370,89 @@ class SEVALToLLMNDCGTransformer:
                 "all_search_results_treatment": experiment_results,
             }
 
-            return record
+            return record, ""
 
         except Exception as e:
             logger.debug(f"Error transforming pair {query_hash}: {e}")
-            return None
+            return None, f"exception: {type(e).__name__}: {str(e)[:50]}"
+
+    def _transform_pair(
+        self,
+        query_hash: str,
+        control_file: str,
+        experiment_file: str,
+        query_text: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Transform a single control/experiment pair to llm_ndcg format.
+        (Legacy method - kept for backward compatibility)
+        """
+        result, _ = self._transform_pair_with_reason(query_hash, control_file, experiment_file, query_text)
+        return result
+
+    def _analyze_empty_results_reason(
+        self,
+        control_info: Dict[str, Any],
+        experiment_info: Dict[str, Any]
+    ) -> str:
+        """
+        Analyze why both control and experiment have empty results.
+
+        Args:
+            control_info: Diagnostic info from control extraction.
+            experiment_info: Diagnostic info from experiment extraction.
+
+        Returns:
+            Reason string describing why results are empty.
+        """
+        control_reason = control_info.get("reason", "unknown")
+        experiment_reason = experiment_info.get("reason", "unknown")
+
+        # Combine reasons if different
+        if control_reason == experiment_reason:
+            return control_reason
+        else:
+            return f"ctrl:{control_reason}|exp:{experiment_reason}"
+
+    def _show_failure_analysis(self, failure_reasons: Dict[str, List[Tuple[str, str, str]]]) -> None:
+        """
+        Display analysis of failure reasons.
+
+        Args:
+            failure_reasons: Dict mapping reason to list of (query_hash, control_uuid, experiment_uuid) tuples.
+        """
+        print("\n" + "=" * 60)
+        print("FAILURE/SKIP ANALYSIS")
+        print("=" * 60)
+
+        total_failures = sum(len(items) for items in failure_reasons.values())
+        print(f"\nTotal failed/skipped: {total_failures}")
+        print(f"Number of distinct failure reasons: {len(failure_reasons)}")
+
+        print("\nFailure Reasons Breakdown:")
+        print("-" * 50)
+
+        # Sort by count (most common first)
+        sorted_reasons = sorted(
+            failure_reasons.items(),
+            key=lambda x: len(x[1]),
+            reverse=True
+        )
+
+        for reason, failure_items in sorted_reasons:
+            count = len(failure_items)
+            percentage = (count / total_failures) * 100 if total_failures > 0 else 0
+            print(f"  {reason}:")
+            print(f"    Count: {count} ({percentage:.1f}%)")
+            # Show sample file UUIDs for each reason (first 3)
+            if failure_items:
+                print(f"    Sample files (control_uuid / experiment_uuid):")
+                for query_hash, ctrl_uuid, exp_uuid in failure_items[:3]:
+                    print(f"      - ctrl: {ctrl_uuid}")
+                    print(f"        exp:  {exp_uuid}")
+                if len(failure_items) > 3:
+                    print(f"      ... and {len(failure_items) - 3} more")
+            print()
 
     def _extract_utterance_and_profile(
         self,
@@ -443,7 +555,23 @@ class SEVALToLLMNDCGTransformer:
                         # Build PluginInvocation string from function name and arguments
                         plugin_invocation = self._build_plugin_invocation(invocation)
 
-                        # Process batchedQueries
+                        # Try two formats:
+                        # Format 1: processedResult directly on invocation
+                        # Format 2: processedResult inside batchedQueries
+                        
+                        # Format 1: Direct processedResult on invocation
+                        direct_processed_result = invocation.get("processedResult", "")
+                        if direct_processed_result:
+                            results = self._parse_processed_result({"processedResult": direct_processed_result})
+                            if results:
+                                if function_name not in iter_results:
+                                    iter_results[function_name] = []
+                                iter_results[function_name].append({
+                                    "Results": results,
+                                    "PluginInvocation": plugin_invocation,
+                                })
+                        
+                        # Format 2: batchedQueries with processedResult
                         batched_queries = invocation.get("batchedQueries", [])
                         for batch_query in batched_queries:
                             results = self._parse_processed_result(batch_query)
@@ -463,6 +591,176 @@ class SEVALToLLMNDCGTransformer:
             logger.debug(f"Error extracting search results: {e}")
 
         return all_search_results
+
+    def _extract_search_results_last_turn_with_info(
+        self,
+        data: Dict[str, Any]
+    ) -> Tuple[Dict[str, Dict[str, List[Dict]]], Dict[str, Any]]:
+        """
+        Extract search results from the last turn with diagnostic information.
+
+        This method returns both the search results and diagnostic info
+        about why results might be empty.
+
+        Args:
+            data: Parsed SEVAL JSON data.
+
+        Returns:
+            Tuple of (search_results dict, diagnostic_info dict).
+            diagnostic_info contains 'reason' key explaining empty results.
+        """
+        all_search_results: Dict[str, Dict[str, List[Dict]]] = {}
+        diagnostic_info: Dict[str, Any] = {
+            "reason": "",
+            "has_messages": False,
+            "has_eval_data": False,
+            "has_turn_data": False,
+            "num_turns": 0,
+            "has_orchestration": False,
+            "num_iterations": 0,
+            "has_tool_invocations": False,
+            "tool_functions_found": [],
+            "has_batched_queries": False,
+            "num_batched_queries": 0,
+            "has_processed_results": False,
+            "processed_result_types": [],
+        }
+
+        try:
+            messages = data.get("requests", [{}])[0].get("response_body", {}).get("messages", [])
+            diagnostic_info["has_messages"] = bool(messages)
+
+            if not messages:
+                diagnostic_info["reason"] = "no_messages"
+                return all_search_results, diagnostic_info
+
+            # Find EvaluationData message
+            eval_data = None
+            for msg in messages:
+                if msg.get("messageType") == "EvaluationData":
+                    eval_data = msg.get("evaluationData", {})
+                    break
+
+            diagnostic_info["has_eval_data"] = bool(eval_data)
+            if not eval_data:
+                diagnostic_info["reason"] = "no_evaluation_data"
+                return all_search_results, diagnostic_info
+
+            turn_data = eval_data.get("turnData", [])
+            diagnostic_info["has_turn_data"] = bool(turn_data)
+            diagnostic_info["num_turns"] = len(turn_data)
+
+            if not turn_data:
+                diagnostic_info["reason"] = "no_turn_data"
+                return all_search_results, diagnostic_info
+
+            # Use the LAST turn
+            last_turn = turn_data[-1]
+            orchestration_iterations = last_turn.get("orchestrationIterations", [])
+            diagnostic_info["has_orchestration"] = bool(orchestration_iterations)
+            diagnostic_info["num_iterations"] = len(orchestration_iterations)
+
+            if not orchestration_iterations:
+                diagnostic_info["reason"] = "no_orchestration_iterations"
+                return all_search_results, diagnostic_info
+
+            # Track iteration index (1-based for llm_ndcg format)
+            for iter_idx, iteration in enumerate(orchestration_iterations, start=1):
+                iter_key = str(iter_idx)
+                iter_results: Dict[str, List[Dict]] = {}
+
+                model_actions = iteration.get("modelActions", [])
+                for action in model_actions:
+                    tool_invocations = action.get("toolInvocations", [])
+                    if tool_invocations:
+                        diagnostic_info["has_tool_invocations"] = True
+
+                    for invocation in tool_invocations:
+                        function_name = invocation.get("function", "unknown_plugin")
+                        diagnostic_info["tool_functions_found"].append(function_name)
+
+                        plugin_invocation = self._build_plugin_invocation(invocation)
+
+                        # Try two formats:
+                        # Format 1: processedResult directly on invocation
+                        # Format 2: processedResult inside batchedQueries
+                        
+                        # Format 1: Direct processedResult on invocation
+                        direct_processed_result = invocation.get("processedResult", "")
+                        if direct_processed_result:
+                            diagnostic_info["has_processed_results"] = True
+                            # Track the type/structure of processed results
+                            try:
+                                if isinstance(direct_processed_result, str):
+                                    pr_data = json.loads(direct_processed_result)
+                                else:
+                                    pr_data = direct_processed_result
+                                pr_keys = list(pr_data.keys()) if isinstance(pr_data, dict) else ["non_dict"]
+                                diagnostic_info["processed_result_types"].extend(pr_keys[:5])
+                            except:
+                                diagnostic_info["processed_result_types"].append("parse_error")
+
+                            results = self._parse_processed_result({"processedResult": direct_processed_result})
+                            if results:
+                                if function_name not in iter_results:
+                                    iter_results[function_name] = []
+                                iter_results[function_name].append({
+                                    "Results": results,
+                                    "PluginInvocation": plugin_invocation,
+                                })
+
+                        # Format 2: batchedQueries with processedResult
+                        batched_queries = invocation.get("batchedQueries", [])
+                        if batched_queries:
+                            diagnostic_info["has_batched_queries"] = True
+                            diagnostic_info["num_batched_queries"] += len(batched_queries)
+
+                        for batch_query in batched_queries:
+                            processed_result = batch_query.get("processedResult", "")
+                            if processed_result:
+                                diagnostic_info["has_processed_results"] = True
+                                # Track the type/structure of processed results
+                                try:
+                                    if isinstance(processed_result, str):
+                                        pr_data = json.loads(processed_result)
+                                    else:
+                                        pr_data = processed_result
+                                    pr_keys = list(pr_data.keys()) if isinstance(pr_data, dict) else ["non_dict"]
+                                    diagnostic_info["processed_result_types"].extend(pr_keys[:5])
+                                except:
+                                    diagnostic_info["processed_result_types"].append("parse_error")
+
+                            results = self._parse_processed_result(batch_query)
+                            if results:
+                                if function_name not in iter_results:
+                                    iter_results[function_name] = []
+                                iter_results[function_name].append({
+                                    "Results": results,
+                                    "PluginInvocation": plugin_invocation,
+                                })
+
+                if iter_results:
+                    all_search_results[iter_key] = iter_results
+
+            # Determine reason if still empty
+            if not all_search_results:
+                if not diagnostic_info["has_tool_invocations"]:
+                    diagnostic_info["reason"] = "no_tool_invocations"
+                elif not diagnostic_info["has_processed_results"]:
+                    # No processedResult found in either format (direct or batchedQueries)
+                    diagnostic_info["reason"] = "no_processed_results"
+                else:
+                    # Has processed results but none parsed successfully
+                    unique_types = list(set(diagnostic_info["processed_result_types"]))[:5]
+                    diagnostic_info["reason"] = f"unparseable_results:{','.join(unique_types)}"
+            else:
+                diagnostic_info["reason"] = ""
+
+        except Exception as e:
+            logger.debug(f"Error extracting search results: {e}")
+            diagnostic_info["reason"] = f"exception:{type(e).__name__}"
+
+        return all_search_results, diagnostic_info
 
     def _build_plugin_invocation(
         self,
