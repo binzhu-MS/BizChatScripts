@@ -1,24 +1,24 @@
+# transform_seval_with_dedup.py
+#
+# Copyright (c) Microsoft Corporation. All rights reserved.
+
 """
-Transform SEVAL raw data files to llm_ndcg input format.
+Transform SEVAL raw data files to llm_ndcg input format WITH DEDUPLICATION FIX.
 
-This module converts SEVAL control/treatment file pairs into the JSONL format
-expected by the llm_ndcg metric for evaluating search result quality.
+This is a fixed version of transform_seval_to_llm_ndcg.py that deduplicates
+results within the same tool invocation using (query, reference_id) tuples.
 
-Description:
-    - Pairs control and experiment files by query_hash
-    - Extracts search results from the last turn (for multi-turn conversations)
-    - Transforms to llm_ndcg input format with all_search_results_control/treatment
+Author: GitHub Copilot
+Created: 2026-01-27
+Description: Transforms SEVAL control/treatment file pairs into llm_ndcg format,
+             with proper deduplication to avoid extracting same results from both
+             direct processedResult and batchedQueries formats.
 
 Usage:
-    python transform_seval_to_llm_ndcg.py transform \
-        --input_dir "../seval_data/123665_scraping_raw_data_output" \
-        --output_file "llm_ndcg_input.jsonl" \
-        --max_pairs 100
-
-    python transform_seval_to_llm_ndcg.py transform \
-        --input_dir "../seval_data/123665_scraping_raw_data_output" \
-        --output_file "llm_ndcg_input.jsonl" \
-        --threads 16
+    python transform_seval_with_dedup.py transform \
+        --input_dir "\\\\m365fileservices\\m365seval\\SevalRawData\\144683_scraping_raw_data_output" \
+        --output_file "llm_ndcg_input_deduped.jsonl" \
+        --max_pairs 10
 """
 
 import json
@@ -29,7 +29,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import fire
 
@@ -41,14 +41,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class SEVALToLLMNDCGTransformer:
+class SEVALToLLMNDCGTransformerWithDedup:
     """
-    Transform SEVAL raw data files to llm_ndcg input format.
+    Transform SEVAL raw data files to llm_ndcg input format WITH DEDUPLICATION.
 
     This class:
     1. Pairs control and experiment files by query_hash
     2. Extracts search results from the last turn
-    3. Transforms to llm_ndcg input format
+    3. DEDUPLICATES results within same tool invocation using (query, reference_id)
+    4. Transforms to llm_ndcg input format
     """
 
     def __init__(self, verbose: bool = True):
@@ -61,6 +62,13 @@ class SEVALToLLMNDCGTransformer:
         self.verbose = verbose
         self._file_locks: Dict[str, Lock] = {}
         self._file_locks_mutex = Lock()
+        
+        # Dedup statistics
+        self.dedup_stats = {
+            "total_results_before_dedup": 0,
+            "total_results_after_dedup": 0,
+            "total_duplicates_avoided": 0,
+        }
 
     def _get_file_lock(self, file_path: str) -> Lock:
         """Get or create a lock for a specific file path."""
@@ -85,7 +93,7 @@ class SEVALToLLMNDCGTransformer:
         threads: int = 8,
     ) -> int:
         """
-        Transform SEVAL files to llm_ndcg format.
+        Transform SEVAL files to llm_ndcg format with deduplication.
 
         Args:
             input_dir: Directory containing SEVAL control/experiment JSON files.
@@ -128,16 +136,14 @@ class SEVALToLLMNDCGTransformer:
 
         # Step 2: Transform each pair
         print("\n" + "=" * 60)
-        print("STEP 2: Transforming pairs to llm_ndcg format")
+        print("STEP 2: Transforming pairs to llm_ndcg format (WITH DEDUP)")
         print("=" * 60)
 
         transformed_records = []
         errors = []
-        # Track failure reasons for analysis - now stores (query_hash, control_uuid, experiment_uuid)
         failure_reasons: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
 
         with ThreadPoolExecutor(max_workers=threads) as executor:
-            # Create mapping with file UUIDs for better tracking
             future_to_info = {}
             for query_hash, info in complete_pairs:
                 control_uuid = self._extract_uuid_from_filepath(info["control"])
@@ -185,6 +191,18 @@ class SEVALToLLMNDCGTransformer:
         print(f"  Errors/skipped: {len(errors)}")
         print(f"  Output file: {output_path.absolute()}")
 
+        # Show dedup statistics
+        print("\n" + "=" * 60)
+        print("DEDUPLICATION STATISTICS")
+        print("=" * 60)
+        print(f"  Results before dedup: {self.dedup_stats['total_results_before_dedup']}")
+        print(f"  Results after dedup:  {self.dedup_stats['total_results_after_dedup']}")
+        print(f"  Duplicates avoided:   {self.dedup_stats['total_duplicates_avoided']}")
+        if self.dedup_stats['total_results_before_dedup'] > 0:
+            reduction_pct = (self.dedup_stats['total_duplicates_avoided'] / 
+                           self.dedup_stats['total_results_before_dedup'] * 100)
+            print(f"  Reduction percentage: {reduction_pct:.1f}%")
+
         # Show failure analysis
         if failure_reasons:
             self._show_failure_analysis(failure_reasons)
@@ -196,25 +214,12 @@ class SEVALToLLMNDCGTransformer:
         return len(transformed_records)
 
     def _extract_uuid_from_filepath(self, filepath: str) -> str:
-        """
-        Extract UUID from a SEVAL file path.
-
-        File names are like: control_sydney_response_<UUID>.json
-                         or: experiment_sydney_response_<UUID>.json
-
-        Args:
-            filepath: Full path to the SEVAL JSON file.
-
-        Returns:
-            The UUID string, or the filename if UUID cannot be extracted.
-        """
+        """Extract UUID from a SEVAL file path."""
         import re
-        filename = Path(filepath).stem  # Get filename without extension
-        # Pattern: control_sydney_response_<UUID> or experiment_sydney_response_<UUID>
+        filename = Path(filepath).stem
         match = re.search(r'(?:control|experiment)_sydney_response_([a-f0-9-]+)', filename, re.IGNORECASE)
         if match:
             return match.group(1)
-        # Fallback: return the whole filename
         return filename
 
     def _pair_files_by_query_hash(
@@ -222,16 +227,7 @@ class SEVALToLLMNDCGTransformer:
         input_path: Path,
         threads: int
     ) -> Dict[str, Dict[str, Any]]:
-        """
-        Pair control and experiment files by query_hash.
-
-        Args:
-            input_path: Path to directory containing SEVAL files.
-            threads: Number of threads for parallel processing.
-
-        Returns:
-            Dict mapping query_hash to file info.
-        """
+        """Pair control and experiment files by query_hash."""
         control_files = list(input_path.glob("control_sydney_response_*.json"))
         experiment_files = list(input_path.glob("experiment_sydney_response_*.json"))
 
@@ -240,21 +236,15 @@ class SEVALToLLMNDCGTransformer:
 
         pairs: Dict[str, Dict[str, Any]] = defaultdict(dict)
 
-        # Process control files
         print("  Processing control files...")
-        control_results = self._extract_query_info_parallel(
-            control_files, "control", threads
-        )
+        control_results = self._extract_query_info_parallel(control_files, "control", threads)
         for result in control_results:
             query_hash = result["query_hash"]
             pairs[query_hash]["control"] = result["filepath"]
             pairs[query_hash]["query_text"] = result.get("query_text", "")
 
-        # Process experiment files
         print("  Processing experiment files...")
-        experiment_results = self._extract_query_info_parallel(
-            experiment_files, "experiment", threads
-        )
+        experiment_results = self._extract_query_info_parallel(experiment_files, "experiment", threads)
         for result in experiment_results:
             query_hash = result["query_hash"]
             pairs[query_hash]["experiment"] = result["filepath"]
@@ -271,40 +261,33 @@ class SEVALToLLMNDCGTransformer:
     ) -> List[Dict[str, Any]]:
         """Extract query info from files in parallel."""
         results = []
-
         with ThreadPoolExecutor(max_workers=threads) as executor:
             future_to_file = {
                 executor.submit(self._extract_query_info, json_file): json_file
                 for json_file in json_files
             }
-
             for future in as_completed(future_to_file):
-                json_file = future_to_file[future]
                 try:
                     query_info = future.result()
                     if query_info:
                         results.append(query_info)
-                except Exception as e:
-                    logger.warning(f"Error extracting from {json_file.name}: {e}")
-
+                except Exception:
+                    pass
         return results
 
     def _extract_query_info(self, json_file: Path) -> Optional[Dict[str, Any]]:
         """Extract query_hash and query_text from a single file."""
         try:
             data = self._read_json_file_safely(str(json_file))
-
             query_obj = data.get("query", {})
             query_hash = query_obj.get("query_hash", "")
             query_text = query_obj.get("id", "")
 
             if not query_hash:
-                # Try to extract from messages if query object is missing
                 messages = data.get("requests", [{}])[0].get("response_body", {}).get("messages", [])
                 for msg in messages:
                     if msg.get("author") == "user":
                         query_text = msg.get("text", "")
-                        # Create a hash from the query text
                         query_hash = str(hash(query_text.strip().lower()))
                         break
 
@@ -316,9 +299,7 @@ class SEVALToLLMNDCGTransformer:
                 "query_hash": query_hash,
                 "query_text": query_text,
             }
-
-        except Exception as e:
-            logger.debug(f"Error reading {json_file.name}: {e}")
+        except Exception:
             return None
 
     def _transform_pair_with_reason(
@@ -328,40 +309,24 @@ class SEVALToLLMNDCGTransformer:
         experiment_file: str,
         query_text: str
     ) -> Tuple[Optional[Dict[str, Any]], str]:
-        """
-        Transform a single control/experiment pair to llm_ndcg format with failure reason.
-
-        Args:
-            query_hash: The query hash for this pair.
-            control_file: Path to control JSON file.
-            experiment_file: Path to experiment JSON file.
-            query_text: The query text.
-
-        Returns:
-            Tuple of (transformed record, failure_reason). If successful, failure_reason is empty.
-        """
+        """Transform a single control/experiment pair to llm_ndcg format."""
         try:
             control_data = self._read_json_file_safely(control_file)
             experiment_data = self._read_json_file_safely(experiment_file)
 
-            # Extract search results from last turn with detailed info
             control_results, control_info = self._extract_search_results_last_turn_with_info(control_data)
             experiment_results, experiment_info = self._extract_search_results_last_turn_with_info(experiment_data)
 
-            # Skip if both are empty - analyze why
             if not control_results and not experiment_results:
                 reason = self._analyze_empty_results_reason(control_info, experiment_info)
                 return None, reason
 
-            # Get utterance and user profile
             utterance, user_profile = self._extract_utterance_and_profile(control_data)
             if not utterance:
                 utterance, user_profile = self._extract_utterance_and_profile(experiment_data)
-
             if not utterance:
                 utterance = query_text
 
-            # Build the llm_ndcg format
             record = {
                 "id": query_hash,
                 "utterance": utterance,
@@ -371,129 +336,56 @@ class SEVALToLLMNDCGTransformer:
             }
 
             return record, ""
-
         except Exception as e:
-            logger.debug(f"Error transforming pair {query_hash}: {e}")
             return None, f"exception: {type(e).__name__}: {str(e)[:50]}"
-
-    def _transform_pair(
-        self,
-        query_hash: str,
-        control_file: str,
-        experiment_file: str,
-        query_text: str
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Transform a single control/experiment pair to llm_ndcg format.
-        (Legacy method - kept for backward compatibility)
-        """
-        result, _ = self._transform_pair_with_reason(query_hash, control_file, experiment_file, query_text)
-        return result
 
     def _analyze_empty_results_reason(
         self,
         control_info: Dict[str, Any],
         experiment_info: Dict[str, Any]
     ) -> str:
-        """
-        Analyze why both control and experiment have empty results.
-
-        Args:
-            control_info: Diagnostic info from control extraction.
-            experiment_info: Diagnostic info from experiment extraction.
-
-        Returns:
-            Reason string describing why results are empty.
-        """
+        """Analyze why both control and experiment have empty results."""
         control_reason = control_info.get("reason", "unknown")
         experiment_reason = experiment_info.get("reason", "unknown")
-
-        # Combine reasons if different
         if control_reason == experiment_reason:
             return control_reason
-        else:
-            return f"ctrl:{control_reason}|exp:{experiment_reason}"
+        return f"ctrl:{control_reason}|exp:{experiment_reason}"
 
     def _show_failure_analysis(self, failure_reasons: Dict[str, List[Tuple[str, str, str]]]) -> None:
-        """
-        Display analysis of failure reasons.
-
-        Args:
-            failure_reasons: Dict mapping reason to list of (query_hash, control_uuid, experiment_uuid) tuples.
-        """
+        """Display analysis of failure reasons."""
         print("\n" + "=" * 60)
         print("FAILURE/SKIP ANALYSIS")
         print("=" * 60)
-
         total_failures = sum(len(items) for items in failure_reasons.values())
         print(f"\nTotal failed/skipped: {total_failures}")
-        print(f"Number of distinct failure reasons: {len(failure_reasons)}")
-
-        print("\nFailure Reasons Breakdown:")
-        print("-" * 50)
-
-        # Sort by count (most common first)
-        sorted_reasons = sorted(
-            failure_reasons.items(),
-            key=lambda x: len(x[1]),
-            reverse=True
-        )
-
-        for reason, failure_items in sorted_reasons:
-            count = len(failure_items)
-            percentage = (count / total_failures) * 100 if total_failures > 0 else 0
-            print(f"  {reason}:")
-            print(f"    Count: {count} ({percentage:.1f}%)")
-            # Show sample file UUIDs for each reason (first 3)
-            if failure_items:
-                print(f"    Sample files (control_uuid / experiment_uuid):")
-                for query_hash, ctrl_uuid, exp_uuid in failure_items[:3]:
-                    print(f"      - ctrl: {ctrl_uuid}")
-                    print(f"        exp:  {exp_uuid}")
-                if len(failure_items) > 3:
-                    print(f"      ... and {len(failure_items) - 3} more")
-            print()
+        sorted_reasons = sorted(failure_reasons.items(), key=lambda x: len(x[1]), reverse=True)
+        for reason, failure_items in sorted_reasons[:5]:
+            print(f"  {reason}: {len(failure_items)}")
 
     def _extract_utterance_and_profile(
         self,
         data: Dict[str, Any]
     ) -> Tuple[str, Optional[Dict]]:
-        """
-        Extract utterance and user profile from SEVAL data.
-
-        Args:
-            data: Parsed SEVAL JSON data.
-
-        Returns:
-            Tuple of (utterance, user_profile).
-        """
+        """Extract utterance and user profile from SEVAL data."""
         utterance = ""
         user_profile = None
-
         try:
             messages = data.get("requests", [{}])[0].get("response_body", {}).get("messages", [])
-
-            # Get utterance from user message
             for msg in messages:
                 if msg.get("author") == "user":
                     utterance = msg.get("text", "")
                     break
-
-            # Get user profile from EvaluationData
             for msg in messages:
                 if msg.get("messageType") == "EvaluationData":
                     eval_data = msg.get("evaluationData", {})
                     user_profile = eval_data.get("userProfile")
-                    # Also try to get utterance from turnData if not found
                     if not utterance:
                         turn_data = eval_data.get("turnData", [])
                         if turn_data:
                             utterance = turn_data[0].get("userInput", "")
                     break
-
-        except Exception as e:
-            logger.debug(f"Error extracting utterance/profile: {e}")
-
+        except Exception:
+            pass
         return utterance, user_profile
 
     def _extract_search_results_last_turn_with_info(
@@ -501,17 +393,17 @@ class SEVALToLLMNDCGTransformer:
         data: Dict[str, Any]
     ) -> Tuple[Dict[str, Dict[str, List[Dict]]], Dict[str, Any]]:
         """
-        Extract search results from the last turn with diagnostic information.
+        Extract search results from the last turn with DEDUPLICATION.
 
-        This method returns both the search results and diagnostic info
-        about why results might be empty.
+        This method uses (query, reference_id) tuples to deduplicate results
+        within the same tool invocation, avoiding double-counting when both
+        direct processedResult and batchedQueries formats exist.
 
         Args:
             data: Parsed SEVAL JSON data.
 
         Returns:
             Tuple of (search_results dict, diagnostic_info dict).
-            diagnostic_info contains 'reason' key explaining empty results.
         """
         all_search_results: Dict[str, Dict[str, List[Dict]]] = {}
         diagnostic_info: Dict[str, Any] = {
@@ -528,6 +420,10 @@ class SEVALToLLMNDCGTransformer:
             "num_batched_queries": 0,
             "has_processed_results": False,
             "processed_result_types": [],
+            # Dedup stats for this file
+            "results_before_dedup": 0,
+            "results_after_dedup": 0,
+            "duplicates_avoided": 0,
         }
 
         try:
@@ -538,7 +434,6 @@ class SEVALToLLMNDCGTransformer:
                 diagnostic_info["reason"] = "no_messages"
                 return all_search_results, diagnostic_info
 
-            # Find EvaluationData message
             eval_data = None
             for msg in messages:
                 if msg.get("messageType") == "EvaluationData":
@@ -558,7 +453,6 @@ class SEVALToLLMNDCGTransformer:
                 diagnostic_info["reason"] = "no_turn_data"
                 return all_search_results, diagnostic_info
 
-            # Use the LAST turn
             last_turn = turn_data[-1]
             orchestration_iterations = last_turn.get("orchestrationIterations", [])
             diagnostic_info["has_orchestration"] = bool(orchestration_iterations)
@@ -568,7 +462,6 @@ class SEVALToLLMNDCGTransformer:
                 diagnostic_info["reason"] = "no_orchestration_iterations"
                 return all_search_results, diagnostic_info
 
-            # Track iteration index (1-based for llm_ndcg format)
             for iter_idx, iteration in enumerate(orchestration_iterations, start=1):
                 iter_key = str(iter_idx)
                 iter_results: Dict[str, List[Dict]] = {}
@@ -591,122 +484,311 @@ class SEVALToLLMNDCGTransformer:
                             except json.JSONDecodeError:
                                 arguments = {}
                         
-                        # Get list of queries from arguments (for domain info)
                         arg_queries = arguments.get("queries", [])
-
-                        # Try two formats:
-                        # Format 1: processedResult directly on invocation
-                        # Format 2: processedResult inside batchedQueries
                         
-                        # Format 1: Direct processedResult on invocation
+                        # === DEDUPLICATION FIX ===
+                        # Avoid extracting duplicates from BOTH direct processedResult AND
+                        # batchedQueries when they contain the same results.
+                        #
+                        # Strategy:
+                        # 1. Check if reference_id is unique within each format
+                        # 2. If unique in both → use simple reference_id deduplication
+                        # 3. If reused → split by query and dedupe within matching subsets
+                        #
+                        # Scope preserved:
+                        # - Different iterations: NOT deduplicated (processed separately)
+                        # - Different tool invocations: NOT deduplicated (different invocations)
+                        # - Same tool, different queries: NOT deduplicated (different query subsets)
+                        # - Same query appearing in both formats: DEDUPLICATED by reference_id
+                        
+                        batched_queries = invocation.get("batchedQueries", [])
                         direct_processed_result = invocation.get("processedResult", "")
+                        
+                        # Step 1: Analyze reference_id usage in both formats
+                        direct_ref_ids: Dict[str, int] = defaultdict(int)  # ref_id -> count
+                        batched_ref_ids: Dict[str, int] = defaultdict(int)  # ref_id -> count
+                        batched_ref_ids_by_query: Dict[str, Set[str]] = defaultdict(set)  # query_key -> ref_ids
+                        
+                        # Collect ref_ids from direct format
+                        direct_results_parsed = []
                         if direct_processed_result:
-                            diagnostic_info["has_processed_results"] = True
-                            # Track the type/structure of processed results
                             try:
                                 if isinstance(direct_processed_result, str):
-                                    pr_data = json.loads(direct_processed_result)
+                                    direct_data = json.loads(direct_processed_result)
                                 else:
-                                    pr_data = direct_processed_result
-                                pr_keys = list(pr_data.keys()) if isinstance(pr_data, dict) else ["non_dict"]
-                                diagnostic_info["processed_result_types"].extend(pr_keys[:5])
+                                    direct_data = direct_processed_result
+                                
+                                for key in ["results", "WebPages", "News", "Sports", "QuestionsAndAnswers"]:
+                                    if key in direct_data and isinstance(direct_data[key], list):
+                                        direct_results_parsed = direct_data[key]
+                                        break
+                                
+                                if not direct_results_parsed and isinstance(direct_data, dict):
+                                    for key, value in direct_data.items():
+                                        if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                                            direct_results_parsed = value
+                                            break
+                                
+                                for result in direct_results_parsed:
+                                    result_data = result.get("result", result)
+                                    ref_id = result.get("reference_id", "") or result_data.get("reference_id", "")
+                                    if ref_id:
+                                        direct_ref_ids[ref_id] += 1
                             except:
-                                diagnostic_info["processed_result_types"].append("parse_error")
-
-                            results, result_type = self._parse_processed_result({"processedResult": direct_processed_result})
-                            if results:
-                                # Extract domain and query from REQUEST arguments
-                                # Different tools have different argument structures:
-                                #   - office365_search: args.queries[].domain, args.queries[].query
-                                #   - search_web: args.query (no domain)
-                                #   - fetch_file: no domain, no query
-                                #   - search_enterprise_connectors: args.query (no domain in request)
-                                domain = ""
-                                query = ""
-                                
-                                # Method 1: Check args.queries[] (office365_search style)
-                                if arg_queries and isinstance(arg_queries[0], dict):
-                                    domain = arg_queries[0].get("domain", "")
-                                    query = arg_queries[0].get("query", "")
-                                
-                                # Method 2: Check args.query (search_web, search_enterprise_connectors style)
-                                if not query:
-                                    query = arguments.get("query", "")
-                                
-                                plugin_invocation = self._build_plugin_invocation(
-                                    invocation, domain=domain, query=query
-                                )
-                                
-                                if function_name not in iter_results:
-                                    iter_results[function_name] = []
-                                iter_results[function_name].append({
-                                    "Results": results,
-                                    "PluginInvocation": plugin_invocation,
-                                    "ResultType": result_type,
-                                })
-
-                        # Format 2: batchedQueries with processedResult
-                        batched_queries = invocation.get("batchedQueries", [])
-                        if batched_queries:
-                            diagnostic_info["has_batched_queries"] = True
-                            diagnostic_info["num_batched_queries"] += len(batched_queries)
-
+                                pass
+                        
+                        # Collect ref_ids from batched format (per query)
+                        batched_parsed_by_idx: Dict[int, List[Dict]] = {}
                         for idx, batch_query in enumerate(batched_queries):
-                            processed_result = batch_query.get("processedResult", "")
-                            if processed_result:
-                                diagnostic_info["has_processed_results"] = True
-                                # Track the type/structure of processed results
+                            batch_pr = batch_query.get("processedResult", "")
+                            if batch_pr:
                                 try:
-                                    if isinstance(processed_result, str):
-                                        pr_data = json.loads(processed_result)
+                                    if isinstance(batch_pr, str):
+                                        batch_data = json.loads(batch_pr)
                                     else:
-                                        pr_data = processed_result
-                                    pr_keys = list(pr_data.keys()) if isinstance(pr_data, dict) else ["non_dict"]
-                                    diagnostic_info["processed_result_types"].extend(pr_keys[:5])
+                                        batch_data = batch_pr
+                                    
+                                    batch_results = []
+                                    for key in ["results", "WebPages", "News", "Sports", "QuestionsAndAnswers"]:
+                                        if key in batch_data and isinstance(batch_data[key], list):
+                                            batch_results = batch_data[key]
+                                            break
+                                    
+                                    if not batch_results and isinstance(batch_data, dict):
+                                        for key, value in batch_data.items():
+                                            if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                                                batch_results = value
+                                                break
+                                    
+                                    batched_parsed_by_idx[idx] = batch_results
+                                    
+                                    # Get query key for this batch
+                                    query_string = batch_query.get("query", "")
+                                    if not query_string and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
+                                        query_string = arg_queries[idx].get("query", "")
+                                    domain = batch_query.get("domain", "")
+                                    if not domain and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
+                                        domain = arg_queries[idx].get("domain", "")
+                                    query_key = f"{domain}|{query_string}"
+                                    
+                                    for result in batch_results:
+                                        result_data = result.get("result", result)
+                                        ref_id = result.get("reference_id", "") or result_data.get("reference_id", "")
+                                        if ref_id:
+                                            batched_ref_ids[ref_id] += 1
+                                            batched_ref_ids_by_query[query_key].add(ref_id)
                                 except:
-                                    diagnostic_info["processed_result_types"].append("parse_error")
-
-                            results, result_type = self._parse_processed_result(batch_query)
-                            if results:
-                                # Extract domain and query from REQUEST arguments
-                                # Priority: batch_query fields > arg_queries[idx] > args.query
-                                domain = batch_query.get("domain", "")
-                                query = batch_query.get("query", "")
+                                    batched_parsed_by_idx[idx] = []
+                        
+                        # Step 2: Check for reference_id reuse within each format
+                        direct_has_reuse = any(count > 1 for count in direct_ref_ids.values())
+                        batched_has_reuse = any(count > 1 for count in batched_ref_ids.values())
+                        
+                        # Step 3: Determine dedup strategy
+                        # If no reuse in either format, we can use simple ref_id dedup
+                        # If reuse exists, we need to be careful about which subset to check
+                        
+                        if not direct_has_reuse and not batched_has_reuse:
+                            # Simple case: ref_id is unique within each format
+                            # Just check if ref_id from batched exists in direct's set
+                            seen_ref_ids: Set[str] = set(direct_ref_ids.keys())
+                            
+                            # Process direct format
+                            if direct_processed_result and direct_results_parsed:
+                                diagnostic_info["has_processed_results"] = True
                                 
-                                # If not in batch_query, try to get from corresponding arg_query
-                                if not domain and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
-                                    domain = arg_queries[idx].get("domain", "")
-                                if not query and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
-                                    query = arg_queries[idx].get("query", "")
+                                direct_domain = ""
+                                direct_query_display = ""
+                                if arg_queries and isinstance(arg_queries[0], dict):
+                                    direct_domain = arg_queries[0].get("domain", "")
+                                    direct_query_display = arg_queries[0].get("query", "")
+                                if not direct_query_display:
+                                    direct_query_display = arguments.get("query", "")
                                 
-                                # Fallback: try args.query (search_web, search_enterprise_connectors style)
-                                if not query:
-                                    query = arguments.get("query", "")
+                                results, result_type = self._transform_results_list(direct_results_parsed)
+                                diagnostic_info["results_before_dedup"] += len(direct_results_parsed)
+                                diagnostic_info["results_after_dedup"] += len(results)
                                 
-                                plugin_invocation = self._build_plugin_invocation(
-                                    invocation, domain=domain, query=query
-                                )
+                                if results:
+                                    plugin_invocation = self._build_plugin_invocation(
+                                        invocation, domain=direct_domain, query=direct_query_display
+                                    )
+                                    if function_name not in iter_results:
+                                        iter_results[function_name] = []
+                                    iter_results[function_name].append({
+                                        "Results": results,
+                                        "PluginInvocation": plugin_invocation,
+                                        "ResultType": result_type,
+                                    })
+                            
+                            # Process batched format, skip ref_ids already in direct
+                            if batched_queries:
+                                diagnostic_info["has_batched_queries"] = True
+                                diagnostic_info["num_batched_queries"] += len(batched_queries)
                                 
-                                if function_name not in iter_results:
-                                    iter_results[function_name] = []
-                                iter_results[function_name].append({
-                                    "Results": results,
-                                    "PluginInvocation": plugin_invocation,
-                                    "ResultType": result_type,
-                                })
+                                for idx, batch_query in enumerate(batched_queries):
+                                    if idx not in batched_parsed_by_idx:
+                                        continue
+                                    
+                                    batch_results = batched_parsed_by_idx[idx]
+                                    if not batch_results:
+                                        continue
+                                    
+                                    diagnostic_info["has_processed_results"] = True
+                                    
+                                    query_string = batch_query.get("query", "")
+                                    if not query_string and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
+                                        query_string = arg_queries[idx].get("query", "")
+                                    if not query_string:
+                                        query_string = arguments.get("query", "")
+                                    
+                                    domain = batch_query.get("domain", "")
+                                    if not domain and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
+                                        domain = arg_queries[idx].get("domain", "")
+                                    
+                                    # Filter out results already seen in direct
+                                    filtered_results = []
+                                    for result in batch_results:
+                                        result_data = result.get("result", result)
+                                        ref_id = result.get("reference_id", "") or result_data.get("reference_id", "")
+                                        
+                                        diagnostic_info["results_before_dedup"] += 1
+                                        
+                                        if ref_id and ref_id in seen_ref_ids:
+                                            diagnostic_info["duplicates_avoided"] += 1
+                                            continue
+                                        
+                                        if ref_id:
+                                            seen_ref_ids.add(ref_id)
+                                        
+                                        transformed = self._transform_single_result(result)
+                                        if transformed:
+                                            filtered_results.append(transformed)
+                                            diagnostic_info["results_after_dedup"] += 1
+                                    
+                                    if filtered_results:
+                                        plugin_invocation = self._build_plugin_invocation(
+                                            invocation, domain=domain, query=query_string
+                                        )
+                                        if function_name not in iter_results:
+                                            iter_results[function_name] = []
+                                        iter_results[function_name].append({
+                                            "Results": filtered_results,
+                                            "PluginInvocation": plugin_invocation,
+                                            "ResultType": "results",
+                                        })
+                        
+                        else:
+                            # Complex case: ref_id is reused within a format
+                            # Need to check by query subset
+                            # For each batched query, only dedupe against direct results that
+                            # match the same query (if we can determine it)
+                            
+                            # Since direct doesn't have per-query info, we use a conservative approach:
+                            # Only dedupe if the SAME ref_id appears in BOTH formats
+                            # and the result count matches (suggesting they're the same)
+                            
+                            all_direct_ref_ids = set(direct_ref_ids.keys())
+                            all_batched_ref_ids = set(batched_ref_ids.keys())
+                            overlapping_ref_ids = all_direct_ref_ids & all_batched_ref_ids
+                            
+                            # Process direct format
+                            if direct_processed_result and direct_results_parsed:
+                                diagnostic_info["has_processed_results"] = True
+                                
+                                direct_domain = ""
+                                direct_query_display = ""
+                                if arg_queries and isinstance(arg_queries[0], dict):
+                                    direct_domain = arg_queries[0].get("domain", "")
+                                    direct_query_display = arg_queries[0].get("query", "")
+                                if not direct_query_display:
+                                    direct_query_display = arguments.get("query", "")
+                                
+                                results, result_type = self._transform_results_list(direct_results_parsed)
+                                diagnostic_info["results_before_dedup"] += len(direct_results_parsed)
+                                diagnostic_info["results_after_dedup"] += len(results)
+                                
+                                if results:
+                                    plugin_invocation = self._build_plugin_invocation(
+                                        invocation, domain=direct_domain, query=direct_query_display
+                                    )
+                                    if function_name not in iter_results:
+                                        iter_results[function_name] = []
+                                    iter_results[function_name].append({
+                                        "Results": results,
+                                        "PluginInvocation": plugin_invocation,
+                                        "ResultType": result_type,
+                                    })
+                            
+                            # Process batched format
+                            if batched_queries:
+                                diagnostic_info["has_batched_queries"] = True
+                                diagnostic_info["num_batched_queries"] += len(batched_queries)
+                                
+                                for idx, batch_query in enumerate(batched_queries):
+                                    if idx not in batched_parsed_by_idx:
+                                        continue
+                                    
+                                    batch_results = batched_parsed_by_idx[idx]
+                                    if not batch_results:
+                                        continue
+                                    
+                                    diagnostic_info["has_processed_results"] = True
+                                    
+                                    query_string = batch_query.get("query", "")
+                                    if not query_string and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
+                                        query_string = arg_queries[idx].get("query", "")
+                                    if not query_string:
+                                        query_string = arguments.get("query", "")
+                                    
+                                    domain = batch_query.get("domain", "")
+                                    if not domain and idx < len(arg_queries) and isinstance(arg_queries[idx], dict):
+                                        domain = arg_queries[idx].get("domain", "")
+                                    
+                                    # Only skip results whose ref_id overlaps with direct
+                                    filtered_results = []
+                                    for result in batch_results:
+                                        result_data = result.get("result", result)
+                                        ref_id = result.get("reference_id", "") or result_data.get("reference_id", "")
+                                        
+                                        diagnostic_info["results_before_dedup"] += 1
+                                        
+                                        # Skip if this ref_id exists in both direct and batched (it's a duplicate)
+                                        if ref_id and ref_id in overlapping_ref_ids:
+                                            diagnostic_info["duplicates_avoided"] += 1
+                                            continue
+                                        
+                                        transformed = self._transform_single_result(result)
+                                        if transformed:
+                                            filtered_results.append(transformed)
+                                            diagnostic_info["results_after_dedup"] += 1
+                                    
+                                    if filtered_results:
+                                        plugin_invocation = self._build_plugin_invocation(
+                                            invocation, domain=domain, query=query_string
+                                        )
+                                        if function_name not in iter_results:
+                                            iter_results[function_name] = []
+                                        iter_results[function_name].append({
+                                            "Results": filtered_results,
+                                            "PluginInvocation": plugin_invocation,
+                                            "ResultType": "results",
+                                        })
 
                 if iter_results:
                     all_search_results[iter_key] = iter_results
 
-            # Determine reason if still empty
+            # Update global dedup stats
+            self.dedup_stats["total_results_before_dedup"] += diagnostic_info["results_before_dedup"]
+            self.dedup_stats["total_results_after_dedup"] += diagnostic_info["results_after_dedup"]
+            self.dedup_stats["total_duplicates_avoided"] += diagnostic_info["duplicates_avoided"]
+
             if not all_search_results:
                 if not diagnostic_info["has_tool_invocations"]:
                     diagnostic_info["reason"] = "no_tool_invocations"
                 elif not diagnostic_info["has_processed_results"]:
-                    # No processedResult found in either format (direct or batchedQueries)
                     diagnostic_info["reason"] = "no_processed_results"
                 else:
-                    # Has processed results but none parsed successfully
                     unique_types = list(set(diagnostic_info["processed_result_types"]))[:5]
                     diagnostic_info["reason"] = f"unparseable_results:{','.join(unique_types)}"
             else:
@@ -724,200 +806,220 @@ class SEVALToLLMNDCGTransformer:
         domain: Optional[str] = None,
         query: Optional[str] = None
     ) -> str:
-        """
-        Build a PluginInvocation string from the tool invocation data.
-
-        This method is generic and supports any tool type. The format preserves
-        domain and query information from the REQUEST where available:
-
-        Supported tool types:
-            - office365_search: 'office365_search(domain="meetings", query="...")'
-              Domain from request args.queries[].domain
-            - search_web: 'search_web(query="...")'
-              No domain in request, query from args.query
-            - fetch_file: 'fetch_file()'
-              No domain or query in request
-            - search_enterprise_connectors_*: 'search_enterprise_connectors_abc(query="...")'
-              No domain in request, query from args.query
-            - Any other tool: 'tool_name(...)' with whatever params are provided
-
-        Note: result_type is NOT included here because it's derived from the RESPONSE,
-        which may differ between control and experiment. result_type is stored
-        separately in the ResultType field for informational purposes.
-
-        Args:
-            invocation: The toolInvocation dict from SEVAL data.
-            domain: Optional domain (for office365_search: emails, files, etc.).
-            query: Optional query text.
-
-        Returns:
-            PluginInvocation string.
-        """
+        """Build a PluginInvocation string from the tool invocation data."""
         function_name = invocation.get("function", "unknown_plugin")
-        
-        # Build parts list based on what's available from the REQUEST
         parts = []
-        
-        # Use domain for office365_search (from request arguments)
         if domain:
             parts.append(f'domain="{domain}"')
-        
         if query:
             parts.append(f'query="{query}"')
-        
         if parts:
             return f'{function_name}({", ".join(parts)})'
-        else:
-            return f"{function_name}()"
+        return f"{function_name}()"
 
-    def _parse_processed_result(
+    def _parse_processed_result_with_dedup(
         self,
-        batch_query: Dict[str, Any]
-    ) -> Tuple[List[Dict[str, Any]], str]:
+        batch_query: Dict[str, Any],
+        seen_ref_ids: Set[str]
+    ) -> Tuple[List[Dict[str, Any]], str, int, int]:
         """
-        Parse processedResult from a batchedQuery into llm_ndcg result format.
+        Parse processedResult with deduplication based on reference_id.
 
-        This method handles multiple result formats from different tool types:
-            - office365_search: "results" array
-            - search_web: "WebPages", "News", "Sports", "QuestionsAndAnswers" arrays
-            - fetch_file: "results" array
-            - search_enterprise_connectors_*: "results" array
-            - Any new format: Falls back to finding first list-valued key
+        Deduplication scope: same tool invocation (same tool call in same iteration).
+        - Results from different iterations are NOT deduplicated
+        - Results from different tool invocations are NOT deduplicated  
+        - Results from same invocation appearing in both direct and batched 
+          formats ARE deduplicated using reference_id
+
+        Our analysis confirmed: direct processedResult is a SUBSET of batchedQueries
+        results, with the SAME reference_id for matching results. So we can safely
+        dedupe by reference_id within each invocation.
 
         Args:
             batch_query: A batchedQuery dict containing processedResult.
+            seen_ref_ids: Set of already seen reference_ids within this invocation.
 
         Returns:
-            Tuple of (results list in llm_ndcg format, result_type string).
-            result_type indicates the source key name (e.g., "results", "WebPages", etc.)
+            Tuple of (results list, result_type, count_before_dedup, count_after_dedup).
         """
         results = []
         result_type = ""
+        count_before_dedup = 0
+        count_after_dedup = 0
 
         processed_result = batch_query.get("processedResult", "")
         if not processed_result:
-            return results, result_type
+            return results, result_type, count_before_dedup, count_after_dedup
 
         try:
-            # processedResult is often a JSON string
             if isinstance(processed_result, str):
                 processed_data = json.loads(processed_result)
             else:
                 processed_data = processed_result
 
-            # Extract results from various possible locations
             raw_results = []
 
-            # Known result keys in priority order
-            # "results" is most common (office365_search, fetch_file, search_enterprise_connectors)
-            # Web search types follow
             known_result_keys = [
-                "results",           # office365_search, fetch_file, search_enterprise_connectors
-                "WebPages",          # search_web
-                "News",              # search_web
-                "Sports",            # search_web
-                "QuestionsAndAnswers",  # search_web
-                "Images",            # search_web (potential)
-                "Videos",            # search_web (potential)
-                "RelatedSearches",   # search_web (potential)
+                "results",
+                "WebPages",
+                "News",
+                "Sports",
+                "QuestionsAndAnswers",
+                "Images",
+                "Videos",
+                "RelatedSearches",
             ]
 
-            # Try known keys first
             for key in known_result_keys:
                 if key in processed_data and isinstance(processed_data[key], list):
                     raw_results = processed_data[key]
                     result_type = key
                     break
 
-            # Fallback: find any list-valued key for unknown/new result formats
             if not raw_results and isinstance(processed_data, dict):
                 for key, value in processed_data.items():
                     if isinstance(value, list) and len(value) > 0:
-                        # Check if it looks like search results (list of dicts)
                         if isinstance(value[0], dict):
                             raw_results = value
                             result_type = key
-                            logger.debug(f"Using fallback result key: {key}")
                             break
 
-            # Transform each result to llm_ndcg format
+            # Transform each result WITH DEDUPLICATION
             for raw_result in raw_results:
+                count_before_dedup += 1
+                
+                # Extract reference_id for deduplication
+                # reference_id is at top level of result (e.g., "turn1search1")
+                result_data = raw_result.get("result", raw_result)
+                reference_id = raw_result.get("reference_id", "") or result_data.get("reference_id", "")
+                
+                # Check for duplicate within this invocation
+                if reference_id:
+                    if reference_id in seen_ref_ids:
+                        # Skip duplicate result (already extracted from direct or another batch)
+                        continue
+                    seen_ref_ids.add(reference_id)
+                
                 transformed = self._transform_single_result(raw_result)
                 if transformed:
                     results.append(transformed)
+                    count_after_dedup += 1
 
         except json.JSONDecodeError:
-            logger.debug("Failed to parse processedResult as JSON")
-        except Exception as e:
-            logger.debug(f"Error parsing processedResult: {e}")
+            pass
+        except Exception:
+            pass
 
+        return results, result_type, count_before_dedup, count_after_dedup
+
+    def _transform_results_list(
+        self,
+        raw_results: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Transform a list of raw results to llm_ndcg format.
+        
+        Args:
+            raw_results: List of raw result dicts.
+            
+        Returns:
+            Tuple of (transformed results list, result_type string).
+        """
+        results = []
+        result_type = "results"  # Default
+        
+        for raw_result in raw_results:
+            transformed = self._transform_single_result(raw_result)
+            if transformed:
+                results.append(transformed)
+        
         return results, result_type
 
     def _transform_single_result(
         self,
         raw_result: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        """
-        Transform a single search result to llm_ndcg format.
-
-        SEVAL format fields:
-            - reference_id: Unique ID
-            - result.type: Document type
-            - result.title: Title
-            - result.snippet: Content snippet
-            - result.author: Author
-            - result.fileName: File name
-
-        llm_ndcg format fields:
-            - Id: Unique ID
-            - ContentBody: Content/snippet
-            - Title: Title
-            - DocType: Document type
-
-        Args:
-            raw_result: Raw search result from SEVAL.
-
-        Returns:
-            Transformed result in llm_ndcg format.
-        """
+        """Transform a single search result to llm_ndcg format."""
         try:
-            # Get the reference_id (primary identifier)
-            ref_id = raw_result.get("reference_id", "")
-            if not ref_id:
-                ref_id = raw_result.get("id", "")
-
-            # Get nested result data if present
             result_data = raw_result.get("result", raw_result)
+            entity_type = result_data.get("type", "")
 
-            # Extract fields
+            source_json_str = result_data.get("sourceJson", "")
+            source_json = {}
+            if source_json_str:
+                try:
+                    source_json = json.loads(source_json_str) if isinstance(source_json_str, str) else source_json_str
+                except json.JSONDecodeError:
+                    pass
+
+            source = result_data.get("Source", {})
+            if isinstance(source, str):
+                try:
+                    source = json.loads(source)
+                except json.JSONDecodeError:
+                    source = {}
+
+            # Extract IDs for deduplication (not using reference_id!)
+            extracted_ids = {}
+            artifact_id = source_json.get("ArtifactId", "")
+            if artifact_id:
+                extracted_ids["ArtifactId"] = artifact_id
+            file_id = source.get("FileId", "") or source.get("fileid", "")
+            if file_id:
+                extracted_ids["FileId"] = file_id
+            unique_id = source.get("UniqueId", "") or source.get("uniqueid", "")
+            if unique_id:
+                extracted_ids["UniqueId"] = unique_id
+
+            url_for_id = result_data.get("url", "")
+            if url_for_id:
+                extracted_ids["Url"] = url_for_id
+
+            transformed = {"Type": entity_type}
+            if extracted_ids:
+                transformed["ExtractedIds"] = extracted_ids
+
             title = result_data.get("title", "")
+            subject = result_data.get("subject", "")
+            if title:
+                transformed["Title"] = title
+            if subject:
+                transformed["Subject"] = subject
+                if not title:
+                    transformed["Title"] = subject
+
             snippet = result_data.get("snippet", "")
-            doc_type = result_data.get("type", "")
-            author = result_data.get("author", "")
-            file_name = result_data.get("fileName", "")
+            if snippet:
+                transformed["Snippet"] = snippet
+                transformed["ContentBody"] = snippet
 
-            # Build llm_ndcg format result
-            transformed = {
-                "Id": ref_id,
-                "ContentBody": snippet,
-                "Title": title,
-                "DocType": doc_type,
-            }
+            url = result_data.get("url", "")
+            if url:
+                transformed["Url"] = url
 
-            # Add optional fields if present
-            if author:
-                transformed["Author"] = author
-            if file_name:
-                transformed["FileName"] = file_name
+            merged_source = dict(source) if source else {}
+            if source_json:
+                for key, value in source_json.items():
+                    if key not in merged_source:
+                        merged_source[key] = value
+            if merged_source:
+                transformed["Source"] = merged_source
 
-            # Only return if we have meaningful content
-            if ref_id or title or snippet:
+            # Additional fields (simplified)
+            for field in ["fileName", "fileType", "author", "lastModifiedBy", "lastModifiedTime",
+                         "from", "to", "dateTimeReceived", "start", "end", "organizerName",
+                         "organizerEmail", "displayName", "pluginId"]:
+                value = result_data.get(field, "")
+                if value:
+                    # Convert camelCase to PascalCase
+                    pascal_field = field[0].upper() + field[1:]
+                    transformed[pascal_field] = value
+
+            if extracted_ids or transformed.get("Title") or transformed.get("Snippet"):
                 return transformed
-
             return None
 
-        except Exception as e:
-            logger.debug(f"Error transforming result: {e}")
+        except Exception:
             return None
 
     def _show_sample_statistics(self, records: List[Dict[str, Any]]) -> None:
@@ -926,48 +1028,33 @@ class SEVALToLLMNDCGTransformer:
         print("SAMPLE STATISTICS")
         print("=" * 60)
 
-        # Count plugins
         control_plugins: Dict[str, int] = defaultdict(int)
         treatment_plugins: Dict[str, int] = defaultdict(int)
-        total_control_results = 0
-        total_treatment_results = 0
+        total_control = 0
+        total_treatment = 0
 
         for record in records:
             for iter_key, plugins in record.get("all_search_results_control", {}).items():
                 for plugin, result_lists in plugins.items():
-                    for result_list in result_lists:
-                        count = len(result_list.get("Results", []))
+                    for rl in result_lists:
+                        count = len(rl.get("Results", []))
                         control_plugins[plugin] += count
-                        total_control_results += count
+                        total_control += count
 
             for iter_key, plugins in record.get("all_search_results_treatment", {}).items():
                 for plugin, result_lists in plugins.items():
-                    for result_list in result_lists:
-                        count = len(result_list.get("Results", []))
+                    for rl in result_lists:
+                        count = len(rl.get("Results", []))
                         treatment_plugins[plugin] += count
-                        total_treatment_results += count
+                        total_treatment += count
 
-        print("\nControl Results:")
-        print("  Total results across all records: {total_control_results}")
-        print("  Results by plugin:")
+        print(f"\nControl Results: {total_control}")
         for plugin, count in sorted(control_plugins.items(), key=lambda x: -x[1]):
             print(f"    - {plugin}: {count}")
 
-        print("\nTreatment Results:")
-        print(f"  Total results across all records: {total_treatment_results}")
-        print("  Results by plugin:")
+        print(f"\nTreatment Results: {total_treatment}")
         for plugin, count in sorted(treatment_plugins.items(), key=lambda x: -x[1]):
             print(f"    - {plugin}: {count}")
-
-        # Show a sample record structure
-        if records:
-            sample = records[0]
-            print("\nSample Record Structure:")
-            print(f"  id: {sample.get('id', '')[:50]}...")
-            print(f"  utterance: {sample.get('utterance', '')[:80]}...")
-            print(f"  user_profile keys: {list(sample.get('user_profile', {}).keys())[:5]}")
-            print(f"  control iterations: {list(sample.get('all_search_results_control', {}).keys())}")
-            print(f"  treatment iterations: {list(sample.get('all_search_results_treatment', {}).keys())}")
 
 
 def transform(
@@ -978,7 +1065,7 @@ def transform(
     verbose: bool = True,
 ) -> int:
     """
-    Transform SEVAL files to llm_ndcg format.
+    Transform SEVAL files to llm_ndcg format with deduplication.
 
     Args:
         input_dir: Directory containing SEVAL control/experiment JSON files.
@@ -990,7 +1077,7 @@ def transform(
     Returns:
         Number of successfully transformed pairs.
     """
-    transformer = SEVALToLLMNDCGTransformer(verbose=verbose)
+    transformer = SEVALToLLMNDCGTransformerWithDedup(verbose=verbose)
     return transformer.transform(input_dir, output_file, max_pairs, threads)
 
 

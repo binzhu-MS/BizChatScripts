@@ -2085,11 +2085,11 @@
             "justMyCode": true,
             "args": [
                 "comprehensive_analysis",
-                "seval_data/123665_metrics",
+                "seval_data/144683_metrics", //135056_metrics",
                 "--metrics=citedcg_one_centric",
                 "--segment_column=segment 2",
                 "--paired_test=True",
-                "--output_file=results/123665_citedcg_one_centric_comprehensive_analysis.md"
+                "--output_file=results/144683_citedcg_one_centric_comprehensive_analysis.md"
             ],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
@@ -2296,8 +2296,8 @@
             "justMyCode": true,
             "args": [
                 "transform",
-                "--input_dir=seval_data/135056_scraping_raw_data_output", //144683_scraping_raw_data_output",
-                "--output_file=results/135056_llm_ndcg_input.jsonl",
+                "--input_dir=seval_data/144683_scraping_raw_data_output", //135056_scraping_raw_data_output", //144683_scraping_raw_data_output",
+                "--output_file=results/144683_llm_ndcg_input.jsonl",
                 "--threads=16"
             ],
             "env": {
