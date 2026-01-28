@@ -19,7 +19,15 @@ fire>=0.4.0               # Command-line interface generation
 # =============================================================================
 # INSTALLATION INSTRUCTIONS:
 # For Microsoft internal users only:
-# pip install llm-api-client --index-url https://o365exchange.pkgs.visualstudio.com/_packaging/O365PythonPackagesV2/pypi/simple/
+#
+# Step 1: Install authentication helpers first (required for Azure DevOps feeds)
+#   pip install keyring artifacts-keyring pymsalruntime
+#
+# Step 2: Install the LLM API Client from the internal feed
+#   pip install llm-api-client --index-url https://o365exchange.pkgs.visualstudio.com/_packaging/O365PythonPackagesV2/pypi/simple/
+#
+# NOTE: The keyring and artifacts-keyring packages enable automatic authentication
+# to Azure DevOps artifact feeds. Without them, installation may fail with auth errors.
 # 
 # External users: Skip this package - the framework will fall back to standard OpenAI/Azure APIs
 # llm-api-client            # Official Microsoft LLM API Client library (Microsoft internal only)
