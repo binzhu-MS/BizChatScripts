@@ -27,20 +27,24 @@ JSON_INPUT = """{{text}}"""
 
 def extract_tool_calls_from_deep_leo(metrics):
     """
-    Extract tool calls from DeepLeoImprovedNetworking metrics.
+    Extract tool calls and token usage from DeepLeoImprovedNetworking metrics.
     
     The reasoning LLM's tool call decisions are in:
     - serviceName == "DeepLeoImprovedNetworking"
     - output JSON contains "toolInvocations" array
     - CallTags contains "fluxv3:invokingfunction" for the reasoning phase
     
-    Returns tool calls from the first iteration only.
+    Token usage is extracted from the same output JSON:
+    - completionTokenCount, promptTokenCount, etc.
+    
+    Returns (tool_calls, usage_dict) from the first iteration only.
     """
     tool_calls = []
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     first_iteration_found = False
     
     if not isinstance(metrics, list):
-        return tool_calls
+        return tool_calls, usage
     
     for metric in metrics:
         if not isinstance(metric, dict):
@@ -75,6 +79,16 @@ def extract_tool_calls_from_deep_leo(metrics):
         try:
             output_json = json.loads(json_match.group())
             
+            # Extract token usage from output JSON
+            # Same place where we get toolInvocations
+            prompt_tokens = output_json.get("promptTokenCount", 0)
+            completion_tokens = output_json.get("completionTokenCount", 0)
+            usage = {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens
+            }
+            
             # Extract toolInvocations array
             tool_invocations = output_json.get("toolInvocations", [])
             
@@ -105,7 +119,7 @@ def extract_tool_calls_from_deep_leo(metrics):
         except json.JSONDecodeError:
             continue
     
-    return tool_calls
+    return tool_calls, usage
 
 
 def extract_tool_calls(json_str):
@@ -129,7 +143,7 @@ def extract_tool_calls(json_str):
     telemetry = data.get("telemetry", {})
     metrics = telemetry.get("metrics", [])
     
-    tool_calls = extract_tool_calls_from_deep_leo(metrics)
+    tool_calls, usage = extract_tool_calls_from_deep_leo(metrics)
     
     # Return in Foundry-compatible format
     # This matches the output format when running directly in Foundry
@@ -138,9 +152,9 @@ def extract_tool_calls(json_str):
         "content": None,
         "tool_calls": tool_calls,
         "Usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0)
         }
     }
 
