@@ -1,0 +1,192 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        // ============================================================================
+        // GOOD GAIN METRICS - LLM NDCG Related Configurations
+        // All configurations below are for the good_gain_metrics module
+        // ============================================================================
+        {
+            "name": "[Good Gain] Batch Run LLM NDCG (Retrieved Good Gain)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/batch_run_llm_ndcg.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/sources/dev/MetricDefinition"
+            },
+            "args": [
+                "--input", "tests/135056_top200_new.jsonl", //135056_top200.jsonl",
+                "--output", "tests/135056_top200_llm_ndcg_output_new.jsonl",
+                "--flights", "ndcg-retrieved-good-gain",
+                //"--max_records", "5",
+                "--threads", "5"
+            ]
+        },
+        {
+            "name": "[Good Gain] Batch Run LLM NDCG via CoMet SDK (MetricsAPIClient)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/batch_run_llm_ndcg_sdk.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "args": [
+                "--input", "tests/144683_top2_new.jsonl",
+                "--output", "tests/144683_top2_llm_ndcg_output_sdk.jsonl",
+                "--metric", "llm_ndcg",
+                "--flights", "ndcg-retrieved-good-gain"
+                //"--max_records", "5",
+                //"--threads", "5"
+            ]
+        },
+        {
+            "name": "[Good Gain] Test Single Metric (testing_metric.py)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/scripts/testing_metric.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/sources/dev/MetricDefinition"
+            },
+            "args": [
+                "--metric", "llm_ndcg",
+                "--input", "tests/test_input.json",
+                "--output", "tests/test_output.json",
+                "--flights", "ndcg-retrieved-good-gain"
+            ]
+        },
+        {
+            "name": "[Good Gain] LLM NDCG Toolkit: Compare Good Gain",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/llm_ndcg_toolkit.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "args": [
+                "compare_good_gain",
+                "--input", "tests/144683_top2_llm_ndcg_output_sdk.jsonl", //135056_top200_llm_ndcg_output_new.jsonl", //144683_llm_ndcg_output_new.jsonl", //135056_llm_ndcg_output.jsonl", //144683_llm_ndcg_output.jsonl",
+                "--output", "tests/144683_top2_comparison_report.md",
+                "--max-iterations", "20",
+                "--top-k", "5"
+            ]
+        },
+        {
+            "name": "[Good Gain] LLM NDCG Toolkit: Compare Good Gain + SEVAL",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/llm_ndcg_toolkit.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "args": [
+                "compare_good_gain",
+                "--input", "tests/144683_llm_ndcg_output_new.jsonl", //135056_llm_ndcg_output.jsonl", //144683_llm_ndcg_output.jsonl",
+                "--output", "tests/144683_comparison_report.md",
+                "--seval-path", "seval_data/135056_metrics",
+                "--max-iterations", "20",
+                "--top-k", "5"
+            ]
+        },
+        {
+            "name": "[Good Gain] LLM NDCG Toolkit: Select Top Utterances for Testing Good Gain Metrics",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/llm_ndcg_toolkit.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "args": [
+                "select_top",
+                "--input", "tests/144683_llm_ndcg_input_new.jsonl", //135056_llm_ndcg_input_new.jsonl", // 135056_llm_ndcg_input.jsonl",
+                "--output", "tests/144683_top2_new.jsonl",
+                "--count", "2", //"200",
+                "--show", "2" //"20"
+            ]
+        },
+        {
+            "name": "[Good Gain] LLM NDCG Toolkit: Iteration Distribution",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/llm_ndcg_toolkit.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "args": [
+                "iteration_distribution",
+                "--input", "tests/144683_top200_new.jsonl" //135056_top200.jsonl" //144683_llm_ndcg_input.jsonl" //135056_llm_ndcg_input.jsonl"
+            ]
+        },
+        {
+            "name": "[Good Gain] Extract Debug field from a JSON result file",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/extract_debug.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "args": [
+                "--input", "tests/temp.json",
+                "--single",
+                "--output", "tests/debug.json"
+            ]
+        },
+        {
+            "name": "[Good Gain] Duplicate Analysis: Get Utterances with Most Duplicated Results",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/duplicate_analysis.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/sources/dev/MetricDefinition"
+            },
+            "args": [
+                "top",
+                "--input", "tests/135056_top200_new.jsonl", //144683_top200_new.jsonl",
+                "--topk", "20",
+                "--arm", "both",  // "control", "treatment", or "both"
+                "--min-results", "10"
+            ]
+        },
+        {
+            "name": "[Good Gain] Duplicate Analysis: Analyze Single Utterance",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/duplicate_analysis.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/sources/dev/MetricDefinition"
+            },
+            "args": [
+                "analyze",
+                "--input", "tests/144683_top200_new.jsonl",
+                // Option 1: Match by utterance prefix (preferred)
+                "--utterance", "Generate an engaging social media message about",
+                // Option 2: Match by index
+                //"--index", "2",
+                "--arm", "control",  // "control", "treatment", or "both"
+                "--show-all",
+                "--output", "tests/duplicate_report.md"
+            ]
+        },
+        {
+            "name": "[Good Gain] Duplicate Analysis: Extract Top 200 with New Data",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics/code/duplicate_analysis.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sources/dev/MetricDefinition/local/good_gain_metrics",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/sources/dev/MetricDefinition"
+            },
+            "args": [
+                "extract_top200",
+                "--old_top200", "tests/144683_top200.jsonl",
+                "--new_full", "tests/144683_llm_ndcg_input_new.jsonl",
+                "--output", "tests/144683_top200_new.jsonl"
+            ]
+        }
+
+        // ============================================================================
+        // INVOCATION SCORING - Configurations will be added here
+        // ============================================================================
+    ]
+}
