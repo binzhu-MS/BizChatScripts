@@ -1,25 +1,22 @@
-"""
-Universal Pre-Eval Python Script for Foundry Evaluations
-
-Purpose:
-    Normalize inference output for evaluation. Works with BOTH:
-    1. Sydney/Seval output - extracts tool calls from telemetry and converts to Foundry format
-    2. Foundry native output - passes through unchanged
-    
-Detection Logic:
-    - If input has "telemetry.metrics" -> Sydney format, extract and convert
-    - Otherwise -> assume Foundry format, pass through unchanged
-
-Output Format:
-    {"role":"assistant","content":null,"tool_calls":[...],"Usage":{...}}
-    
-This ensures the same evaluation criteria work for both Foundry and Sydney/Seval modes.
-
-Usage: Copy this script into Foundry's Pre-Eval Python Script editor
-"""
+# Foundry Pre-Eval Script
+#
+# Normalizes inference output before evaluation in Copilot Playground (Foundry).
+# Handles two input formats:
+#   - Sydney/Seval: extracts tool calls from telemetry.metrics (DeepLeoImprovedNetworking)
+#     and converts them to the Foundry output format.
+#   - Foundry native: passes through unchanged.
+#
+# Detection: if the input JSON contains "telemetry.metrics", it is treated as
+# Sydney format; otherwise it is assumed to be Foundry-native.
+#
+# Output format (both paths):
+#   {"role":"assistant","content":null,"tool_calls":[...],"Usage":{...}}
+#
+# Usage: paste the contents of this file into Foundry's Pre-Eval Python Script
+# editor. The {{text}} placeholder is replaced by Foundry at runtime with the
+# raw inference output.
 
 import json
-import re
 
 # {{text}} is replaced by Foundry with the inference output at runtime
 JSON_INPUT = """{{text}}"""
@@ -72,12 +69,25 @@ def extract_tool_calls_from_deep_leo(metrics):
         
         # Extract the JSON part from output (after the metadata prefix)
         # Format: "CallTags: ..., {...json...}"
-        json_match = re.search(r'\{.*\}$', output_str, re.DOTALL)
-        if not json_match:
+        # Scan forward from the first '{' trying each position until
+        # json.loads succeeds.  This avoids two pitfalls:
+        #   - A greedy first-'{' match that captures prefix garbage
+        #     when CallTags itself contains '{'.
+        #   - An rfind('{') match that lands inside a nested object
+        #     within the JSON payload (e.g. toolInvocations strings).
+        output_json = None
+        json_start = output_str.find('{')
+        while json_start != -1:
+            try:
+                output_json = json.loads(output_str[json_start:])
+                break
+            except json.JSONDecodeError:
+                json_start = output_str.find('{', json_start + 1)
+        
+        if output_json is None:
             continue
         
         try:
-            output_json = json.loads(json_match.group())
             
             # Extract token usage from output JSON
             # Same place where we get toolInvocations
@@ -112,8 +122,8 @@ def extract_tool_calls_from_deep_leo(metrics):
                         }
                         
                         tool_calls.append(tool_call)
-                except:
-                    # If parsing fails, store raw
+                except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+                    # If parsing fails due to JSON, type, or attribute errors,
                     tool_calls.append({"raw": inv_str})
                     
         except json.JSONDecodeError:
@@ -124,18 +134,14 @@ def extract_tool_calls_from_deep_leo(metrics):
 
 def extract_tool_calls(json_str):
     """
-    Extract tool calls from Sydney response.
-    Returns the reasoning LLM's tool call decisions from the first iteration.
-    
-    OUTPUT FORMAT: Must match Foundry's native output format:
-    {"role":"assistant","content":null,"tool_calls":[...],"Usage":{...}}
-    
-    This ensures the same evaluation criteria work for both Foundry and Seval.
-    
-    NOTE: Tool names and arguments are passed through AS-IS from Sydney.
-    The evaluation script (meetings_recall_eval.py) already handles various
-    tool naming conventions like office365_search, search_office365, 
-    search_enterprise_meetings, etc.
+    Extract tool calls from a Sydney/Seval response and return them in Foundry format.
+
+    Parses telemetry.metrics from the JSON string, pulls tool call decisions
+    from the first reasoning iteration, and returns them as:
+        {"role":"assistant","content":null,"tool_calls":[...],"Usage":{...}}
+
+    Tool names and arguments are passed through AS-IS; the downstream
+    evaluation script is responsible for handling naming variations.
     """
     data = json.loads(json_str)
     
@@ -162,11 +168,11 @@ def extract_tool_calls(json_str):
 if __name__ == "__main__":
     try:
         data = json.loads(JSON_INPUT)
-        
+
         # Check if this is Sydney format (has telemetry.metrics)
         # If so, extract tool calls and convert to Foundry format
         # Otherwise, assume it's already Foundry format and pass through unchanged
-        
+
         if "telemetry" in data and "metrics" in data.get("telemetry", {}):
             # Sydney format - extract tool calls and convert to Foundry format
             result = extract_tool_calls(JSON_INPUT)
@@ -174,17 +180,10 @@ if __name__ == "__main__":
         else:
             # Assume Foundry format - pass through unchanged
             print(JSON_INPUT.strip())
-            
-    except json.JSONDecodeError as e:
-        # Return empty in Foundry format on error
-        result = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [],
-            "Usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            "_error": f"JSON parse error: {str(e)}"
-        }
-        print(json.dumps(result))
+
+    except json.JSONDecodeError:
+        # On JSON decode error, fall back to printing the raw input
+        print(JSON_INPUT.strip())
     except Exception as e:
         result = {
             "role": "assistant",
