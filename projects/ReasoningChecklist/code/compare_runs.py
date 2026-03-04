@@ -126,10 +126,12 @@ def compare_runs(run1_folder, run2_folder, output_path):
     run1_display = os.path.relpath(run1_folder, SCRIPT_DIR).replace('\\', '/')
     run2_display = os.path.relpath(run2_folder, SCRIPT_DIR).replace('\\', '/')
 
+    out(f"Run 1: {run1_display}")
     print(f"Loading run 1: {run1_display}")
     entries1 = parse_results_md(run1_md)
     print(f"  {len(entries1)} score entries")
 
+    out(f"Run 2: {run2_display}")
     print(f"Loading run 2: {run2_display}")
     entries2 = parse_results_md(run2_md)
     print(f"  {len(entries2)} score entries")
