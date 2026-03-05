@@ -348,9 +348,11 @@ def load_sydney_configs(config_path, exp_prompt_map):
         id, owners, title, configuration (SydneyPostBody), endpointType,
         variants, mockAppId, customHeaders, agentId, runtimeId
 
-    ``configuration`` is a Foundry ``SydneyPostBody``.  We only populate the
-    fields that the scraper config explicitly specifies (optionsSets, plugins,
-    scenario, tone) and leave the rest null so the defaults apply.
+    ``configuration`` is a Foundry ``SydneyPostBody``.  We populate all
+    fields present in the scraper config (optionsSets, plugins, scenario,
+    tone, options) so users can load the session into Playground and
+    re-scrape with identical Sydney settings.  Fields not present in the
+    scraper config are left null so Foundry uses its defaults.
 
     Args:
         config_path:    Path to config.json from the scraper config dataset.
@@ -400,15 +402,21 @@ def load_sydney_configs(config_path, exp_prompt_map):
         chat_override = ec.get("chat_request_override", {})
         tone = chat_override.get("tone")
 
+        # sydney.options → configuration.options
+        # (e.g. IsConfigOptionsListsMergeable, ModelClassificationOverride)
+        options = syd.get("options") or None
+
         # Build the SydneyPostBody (configuration).
-        # Only populate fields present in the scraper config; leave
-        # everything else null so Foundry uses its defaults.
+        # Faithfully copy all fields from the scraper config so users
+        # can load the session into Playground and re-scrape with
+        # identical Sydney settings.
         configuration = {
             "message": None,
             "optionsSets": options_sets or None,
             "plugins": syd.get("plugins") or None,
             "scenario": scenario,
             "tone": tone,
+            "options": options,
             "sliceIds": None,
             "gpts": None,
         }
