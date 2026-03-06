@@ -1,101 +1,55 @@
 """
-build_foundry_eval_sessions.py
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+build_foundry_eval_sessions_promptmode.py
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Build Foundry evaluation session JSON files from Sydney scraper outputs,
-ready for parse-only evaluation runs (runType 4 — ParseInference).
+storing the trimmed scraper results as prompt-based inference so that
+all utterances are visible in Playground and evaluation scores are
+extracted by the standard (unmodified) check script.
 
-Three-step pipeline
-~~~~~~~~~~~~~~~~~~~
-1. **Parse queryset** (single-threaded, in-memory)
+Three-step pipeline:
 
-   Read queryset.tsv to build a per-session validation lookup mapping
-   ``session_file → {utterance → input_data}``.  Queryset queries are
-   a **subset** of each session's dataItems — queries not in the
-   queryset simply have no scraper result.  Also collects the set of
-   needed utterances for filtering in Step 2.
+1. **Parse queryset** — read queryset.tsv to map each utterance to
+   its session file(s) and collect the set of needed utterances.
+2. **Stage scraper outputs** — load scraper JSON files in parallel,
+   trim each response body, and write per-session staging files.
+3. **Pack sessions** — for each base session, match staged results
+   to dataItem indices and store them as prompt-based inference
+   keyed by experiment arm name.  Write packed session JSONs.
 
-2. **Stage scraper outputs** (multi-threaded read, single-threaded write)
+The packed sessions are ready for parse-only evaluation runs
+(runType 4 — ParseInference).
 
-   Load scraper JSON files in a thread pool, trim each response body,
-   then write per-session staging files to a temporary directory on
-   disk.  Each scraper file's ``query.segment`` is split by comma to
-   route the trimmed result to every target session.  Disk staging
-   keeps memory usage constant regardless of dataset size or trim
-   level.
-
-   Staging layout::
-
-       staging_dir/{exp_name}/{session_file}.tsv
-
-3. **Pack sessions** (sequential, one session at a time)
-
-   For each base session JSON that has staging data:
-
-   a. Iterate ``dataItems`` (source of truth for indices and inputs).
-      A single utterance may appear multiple times (duplicated for
-      variance reduction).  All indices per utterance are collected.
-   b. Validate queryset entries against the session's dataItems.
-   c. Read the session's staging file, match utterances to dataItem
-      indices, and populate ``sydneyInference`` entries keyed by
-      ``sydneyId`` (experiment arm name).  Duplicate utterances
-      receive the same scraper response at every copy's index.
-   d. Remove original GPT prompts (Sydney-only output).
-   e. Inject ``sydneyDetails`` from config.json.
-   f. Write the packed session JSON to the output directory.
-
-Mapping chain
-~~~~~~~~~~~~~
-queryset.tsv
-  inputs[].file  ─── session file
-  inputs[].input.utterance ─── utterance text
-
-scraper output
-  query.segment  ─── comma-separated session filenames
-  query.id       ─── utterance text
-  exp_name       ─── experiment arm
-
-base session JSON
-  sessionInputs[0].dataItems[i].input  →  {"utterance": "..."} → match
-  sessionInputs[0].dataItems[i].index  →  key for dataItemsOutputs
+Differences from build_foundry_eval_sessions.py
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1. Scraper results are stored in the **prompt** inference slot
+   (``inference[]`` with ``promptId``) instead of the Sydney slot
+   (``sydneyInference[]`` with ``sydneyId``).
+2. Empty prompts are created for each experiment arm so Foundry
+   recognises the prompt-based structure.
+3. No ``sydneyDetails`` or ``--config`` injection — not needed
+   in prompt mode.
+4. All utterances are visible in Playground (Sydney mode caps at 100).
+5. Evaluation scores land in ``evaluation`` (not ``sydneyEvaluation``),
+   so the standard check script works without modification.
 
 Arguments
 ~~~~~~~~~
 Required:
-    --queryset      Path to queryset.tsv — maps queries to session files.
-                    Queryset queries are a subset of each session's
-                    dataItems.  Columns: query, segment, inputs.
-    --sessions-dir  Directory containing base session JSON files (Foundry
-                    session templates with prompts, dataItems, and
-                    evaluationStrategy).
-    --scraper-dir   Directory containing Sydney scraper output JSON files.
-                    Each file has query.segment, query.id (utterance),
-                    exp_name, and requests[0].response_body.
-    --output-dir    Directory where packed session JSON files will be
-                    written (created automatically if it doesn't exist).
+    --queryset       Path to queryset.tsv.
+    --sessions-dir   Directory containing base session JSON files.
+    --scraper-dir    Directory containing Sydney scraper output JSON files.
+    --output-dir     Output directory for packed session JSON files.
 
 Optional:
-    --config        Path to config.json from the scraper config dataset.
-                    When provided, Sydney settings from each exp_config
-                    are injected into packed sessions as ``sydneyDetails``.
-                    Default: not set (no injection).
-    --exp-prompt-map Comma-separated exp_name:index pairs.  Only the
-                    exp_name part is used (indices are ignored — kept
-                    for backward compatibility).
-                    Default: "control:0,experiment:1".
-    --trim-level    2 = keep relevant metrics only (~274 KB/item).
-                    3 = also trim output JSON fields (~2.4 KB/item).
-                    Default: 3.
-    --dry-run       Show stats without writing output files.
-    --workers       Threads for loading scraper files (default: 8).
-    --staging-dir   Fixed directory for staging files.  When set and
-                    the directory already has data, Step 2 is skipped
-                    (reuse previous staging) — useful for debugging.
-                    When not set, a unique temp directory is created
-                    and cleaned up after use.
+    --exp-prompt-map  Comma-separated exp_name:index pairs.
+                      Default: "control:0,experiment:1".
+    --trim-level      2 or 3 (default: 3).
+    --dry-run         Show stats without writing files.
+    --workers         Threads for loading scraper files (default: 8).
+    --staging-dir     Fixed staging directory (reuse if non-empty).
 """
 
 import argparse
-import copy
 import csv
 import glob
 import json
@@ -112,27 +66,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ---------------------------------------------------------------------------
 
 def parse_queryset(queryset_path):
-    """
-    Parse queryset.tsv into a per-session validation lookup.
-
-    The queryset records which queries (utterances) were scraped and for
-    which session files.  It is a **subset** of the dataItems in each
-    base session JSON — queries not in the queryset simply have no
-    scraper result.
+    """Parse queryset.tsv into a per-session validation lookup.
 
     Returns:
         queryset_check : dict
             ``session_file → {utterance → input_data}``
-            Used in Step 3 to validate that queryset entries actually
-            appear in the base session's dataItems.
-
         needed_utterances : set
-            All unique utterance strings.  Passed to Step 2 so the
-            scraper loader can skip files for queries outside the
-            queryset.
-
+            All unique utterance strings.
         query_count : int
-            Total number of (session_file, utterance) entries parsed.
+            Total (session_file, utterance) entries.
     """
     queryset_check = defaultdict(dict)
     needed_utterances = set()
@@ -167,11 +109,10 @@ def parse_queryset(queryset_path):
 # ---------------------------------------------------------------------------
 
 def _load_one_scraper_file(filepath, needed_utterances, trim_level):
-    """Load, trim, and pre-serialize a single scraper JSON file.
+    """Load, trim, and pre-serialise a single scraper JSON file.
 
-    Returns a dict with session routing info and the trimmed response,
-    the string ``"skipped"`` if the utterance is not in
-    *needed_utterances*, or ``None`` on error.
+    Returns a dict with routing info and the trimmed response,
+    ``"skipped"`` if not needed, or ``None`` on error.
     """
     try:
         with open(filepath, "r", encoding="utf-8") as fh:
@@ -199,7 +140,6 @@ def _load_one_scraper_file(filepath, needed_utterances, trim_level):
     if trim_level is not None:
         response_body = trim_sydney_response(response_body, trim_level)
 
-    # Split segment to get individual session filenames
     session_files = [s.strip() for s in segment.split(",") if s.strip()]
 
     return {
@@ -212,35 +152,14 @@ def _load_one_scraper_file(filepath, needed_utterances, trim_level):
 
 def stage_scraper_outputs(scraper_dir, staging_dir, needed_utterances=None,
                           trim_level=None, num_workers=8):
-    """
-    Load scraper files in parallel, trim, and stage to per-session files.
-
-    Thread pool reads and trims scraper files concurrently (I/O-bound).
-    The main thread writes trimmed results to per-session staging files
-    on disk, keeping memory usage constant regardless of dataset size.
+    """Load scraper files in parallel, trim, and stage per-session.
 
     Staging layout::
 
-        staging_dir/
-            {exp_name}/
-                {session_file}.tsv   # tab-separated: utterance\\tresponse_json
-
-    Args:
-        scraper_dir:       Directory containing scraper output JSON files.
-        staging_dir:       Directory where staging files will be written.
-        needed_utterances: Optional set of utterance strings.  When
-                           provided, scraper files whose utterance is not
-                           in this set are skipped.
-        trim_level:        When set (2 or 3), trim each response_body
-                           immediately after loading.
-        num_workers:       Number of threads in the pool (default 8).
+        staging_dir/{exp_name}/{session_file}.tsv
 
     Returns:
         (sessions_with_data, stats)
-
-        sessions_with_data: set of session filenames that received at
-                            least one staging entry.
-        stats: dict with ``loaded``, ``skipped``, ``errors`` counts.
     """
     pattern = os.path.join(scraper_dir, "*.json")
     files = sorted(glob.glob(pattern))
@@ -249,12 +168,9 @@ def stage_scraper_outputs(scraper_dir, staging_dir, needed_utterances=None,
         print(f"WARNING: No JSON files found in {scraper_dir}")
         return set(), {"loaded": 0, "skipped": 0, "errors": 0}
 
-    staging_handles = {}      # (exp_name, session_file) → file handle
+    staging_handles = {}
     sessions_with_data = set()
-    skipped = 0
-    loaded = 0
-    errors = 0
-    done = 0
+    skipped = loaded = errors = done = 0
 
     print(f"  Staging {len(files)} scraper files "
           f"with {num_workers} threads...")
@@ -281,11 +197,8 @@ def stage_scraper_outputs(scraper_dir, staging_dir, needed_utterances=None,
                     skipped += 1
                 else:
                     exp_name = result["exp_name"]
-                    utterance = result["utterance"]
-                    resp_json = result["response_body_json"]
-
-                    # Append to each target session's staging file
-                    line = utterance + "\t" + resp_json + "\n"
+                    line = (result["utterance"] + "\t"
+                            + result["response_body_json"] + "\n")
                     for sf in result["session_files"]:
                         key = (exp_name, sf)
                         if key not in staging_handles:
@@ -315,150 +228,11 @@ def stage_scraper_outputs(scraper_dir, staging_dir, needed_utterances=None,
 
 
 # ---------------------------------------------------------------------------
-# config.json → sydneyDetails mapping
-# ---------------------------------------------------------------------------
-
-# Map known Sydney endpoint URLs to Foundry SydneyEndpointType enum values.
-# The backend resolves these to appsettings config section names matching
-# SYDNEY_AVALON_CAFE, SYDNEY_FRONTIER_SDF_WESTUS, etc.
-_URL_TO_ENDPOINT_TYPE = {
-    "https://substrate.office.com/m365copilot":
-        "SydneyAvalonCafe",
-    "https://substrate-sdf.office.com/m365copilot":
-        "SydneyAvalonSdfCafe",
-}
-
-
-def _resolve_endpoint_type(url):
-    """Map a Sydney URL from config.json to a Foundry SydneyEndpointType.
-
-    Falls back to ``"SydneyAvalonCafe"`` for unknown URLs.
-    """
-    normalised = url.rstrip("/").lower()
-    return _URL_TO_ENDPOINT_TYPE.get(normalised, "SydneyAvalonCafe")
-
-
-def load_sydney_configs(config_path, exp_prompt_map):
-    """Load config.json and build a list of SydneyDetail dicts.
-
-    Only the exp_configs whose ``exp_name`` appears in *exp_prompt_map* are
-    included.  The returned list is ordered identically to ``sydneyDetails``
-    in the Foundry session schema and matches the ``SydneyDetail`` C# class:
-
-        id, owners, title, configuration (SydneyPostBody), endpointType,
-        variants, mockAppId, customHeaders, agentId, runtimeId
-
-    ``configuration`` is a Foundry ``SydneyPostBody``.  We populate all
-    fields present in the scraper config (optionsSets, plugins, scenario,
-    tone, options) so users can load the session into Playground and
-    re-scrape with identical Sydney settings.  Fields not present in the
-    scraper config are left null so Foundry uses its defaults.
-
-    Args:
-        config_path:    Path to config.json from the scraper config dataset.
-        exp_prompt_map: dict mapping exp_name → prompt_index (only these
-                        exp_configs are included).
-
-    Returns:
-        List of ``SydneyDetail``-shaped dicts (one per matched exp_config),
-        or an empty list if loading fails.
-    """
-    try:
-        with open(config_path, "r", encoding="utf-8") as fh:
-            config = json.load(fh)
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"WARNING: Could not load config {config_path}: {e}")
-        return []
-
-    conversations = config.get("conversations", {})
-    exp_configs = conversations.get("exp_configs", [])
-    if not exp_configs:
-        print("WARNING: No exp_configs found in config.json")
-        return []
-
-    sydney_details = []
-    for ec in exp_configs:
-        ename = ec.get("exp_name", "")
-        if ename not in exp_prompt_map:
-            continue
-
-        syd = ec.get("sydney", {})
-        if not syd:
-            print(f"WARNING: No sydney settings for exp_name='{ename}'")
-            continue
-
-        # Build option_sets → optionsSets list
-        options_sets_str = syd.get("option_sets", "")
-        options_sets = [
-            s.strip() for s in options_sets_str.split(",") if s.strip()
-        ] if options_sets_str else []
-
-        # Extra params
-        extra_params = syd.get("extra_params", {})
-        scenario = extra_params.get("scenario")
-        mock_app_id = extra_params.get("mockAppId", "")
-
-        # chat_request_override (tone, etc.)
-        chat_override = ec.get("chat_request_override", {})
-        tone = chat_override.get("tone")
-
-        # sydney.options → configuration.options
-        # (e.g. IsConfigOptionsListsMergeable, ModelClassificationOverride)
-        options = syd.get("options") or None
-
-        # Build the SydneyPostBody (configuration).
-        # Faithfully copy all fields from the scraper config so users
-        # can load the session into Playground and re-scrape with
-        # identical Sydney settings.
-        configuration = {
-            "message": None,
-            "optionsSets": options_sets or None,
-            "plugins": syd.get("plugins") or None,
-            "scenario": scenario,
-            "tone": tone,
-            "options": options,
-            "sliceIds": None,
-            "gpts": None,
-        }
-
-        # Resolve endpoint type from URL
-        url = syd.get("url", "")
-        endpoint_type = _resolve_endpoint_type(url)
-
-        # Variants string
-        variants = syd.get("variants", "") or None
-
-        # Build SydneyDetail
-        sydney_detail = {
-            "id": ename,
-            "owners": [],
-            "title": ename,
-            "configuration": configuration,
-            "endpointType": endpoint_type,
-            "variants": variants,
-            "mockAppId": mock_app_id,
-        }
-        sydney_details.append(sydney_detail)
-        print(f"  Loaded Sydney config for exp_name='{ename}' "
-              f"(endpoint={endpoint_type}, "
-              f"optionsSets={len(options_sets)}, "
-              f"variants={'yes' if variants else 'none'})")
-
-    return sydney_details
-
-
-# ---------------------------------------------------------------------------
 # Sydney response trimming
 # ---------------------------------------------------------------------------
 
 def trim_sydney_response(response_body, trim_level=3):
-    """
-    Trim a Sydney response_body to the minimum needed by the pre-eval script.
-
-    The pre-eval script needs ``telemetry.metrics`` entries where
-    ``serviceName == "DeepLeoImprovedNetworking"`` and ``output`` contains
-    ``"fluxv3:invokingfunction"``.  From those entries' output JSON it reads
-    ``promptTokenCount``, ``completionTokenCount``, and ``toolInvocations``.
+    """Trim a Sydney response_body to the minimum needed by pre-eval.
 
     Args:
         response_body: dict with telemetry.metrics
@@ -482,19 +256,17 @@ def trim_sydney_response(response_body, trim_level=3):
     if trim_level == 2:
         return {"telemetry": {"metrics": relevant}}
 
-    # Level 3: also trim the output JSON within each metric entry
     trimmed_metrics = []
     for m in relevant:
         output_str = m.get("output", "")
-
-        # Parse JSON part after the "CallTags: ..., " prefix
         json_start = output_str.find("{")
         output_json = None
         prefix = ""
 
         while json_start != -1:
             try:
-                output_json = json.loads(output_str[json_start:])
+                parsed = json.loads(output_str[json_start:])
+                output_json = parsed
                 prefix = output_str[:json_start]
                 break
             except json.JSONDecodeError:
@@ -520,45 +292,39 @@ def trim_sydney_response(response_body, trim_level=3):
 
 
 # ---------------------------------------------------------------------------
-# Session processing
+# Session processing — prompt-based output
 # ---------------------------------------------------------------------------
 
 def _process_one_session(session_file, queryset_utterances, sessions_dir,
-                         exp_prompt_map, staging_dir, sydney_details,
-                         output_dir, dry_run):
-    """Load a base session, validate, pack scraper results, and write output.
+                         exp_prompt_map, staging_dir, output_dir, dry_run):
+    """Pack scraper results as prompt-based inference into a session.
+
+    Creates empty prompts for each experiment arm and stores scraper
+    responses in ``resultsv2[].inference`` (prompt mode) so that *all*
+    utterances are visible in the Playground data browser.
 
     Iterates through dataItems sequentially.  For each item, looks up
     its utterance in the staged scraper results and assigns the next
     available result via a per-utterance round-robin counter.  This
     naturally handles duplicate utterances (for variance reduction)
-    without a separate grouping step.  DataItems not in the queryset
-    are expected to have no scraper result and are silently skipped.
-    Original GPT prompts are removed — the output contains only
-    Sydney arms.
+    without a separate grouping step.
 
     Args:
         session_file:        Base session filename.
-        queryset_utterances: ``{utterance → input_data}`` from queryset
-                             for this session, or ``None``.
-        sessions_dir:        Directory containing base session JSON files.
+        queryset_utterances: ``{utterance → input_data}`` for this
+                             session, or ``None``.
+        sessions_dir:        Directory containing base session JSONs.
         exp_prompt_map:      ``{exp_name → prompt_index}``.
-        staging_dir:         Directory with staging TSV files from Step 2.
-        sydney_details:      List of SydneyDetail dicts, or ``[]``.
+        staging_dir:         Staging directory from Step 2.
         output_dir:          Where to write the packed session JSON.
         dry_run:             If ``True``, skip writing files.
 
     Returns:
         ``(session_file, stats_or_None, log_lines)``
 
-        *stats* (when not ``None``) is a dict with keys:
-            ``matched``           — dataItem×arm slots that received data
-            ``total``             — total dataItem copies × arms
-            ``no_scraper``        — in queryset but scraper file missing
-            ``empty_response``    — scraper returned empty/trivial JSON
-            ``unique_utterances`` — distinct utterance strings
-            ``data_items``        — total dataItem copies (across dups)
-            ``packed_size_kb``    — approximate packed output size in KB
+        *stats* keys: ``matched``, ``total``, ``no_scraper``,
+        ``empty_response``, ``unique_utterances``, ``data_items``,
+        ``packed_size_kb``.
     """
     log = []
 
@@ -590,11 +356,8 @@ def _process_one_session(session_file, queryset_utterances, sessions_dir,
         idx = di.get("index")
         if idx is None:
             continue
-        input_str = di.get("input", "")
-        if not input_str:
-            continue
         try:
-            input_json = json.loads(input_str)
+            input_json = json.loads(di.get("input", ""))
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(input_json, dict):
@@ -603,7 +366,7 @@ def _process_one_session(session_file, queryset_utterances, sessions_dir,
                 item_utts.append((idx, utt))
                 all_utts.add(utt)
 
-    # Validate: queryset utterances should appear in session dataItems
+    # Validate queryset utterances against session dataItems
     qs_utts = queryset_utterances or {}
     mismatches = 0
     for utt in qs_utts:
@@ -616,15 +379,14 @@ def _process_one_session(session_file, queryset_utterances, sessions_dir,
         log.append(f"  WARNING: ... and {mismatches - 3} more queryset "
                    f"mismatches in {session_file}")
 
-    # Build sydneyInference results per experiment arm
-    sydney_inference_list = []
+    # Build prompt-based inference results per experiment arm
+    inference_list = []
     total_matched = 0
     total_no_scraper = 0
     total_empty_response = 0
     total_size_kb = 0.0
 
     for exp_name in sorted(exp_prompt_map.keys()):
-        # Read staging file for this arm + session
         staging_path = os.path.join(
             staging_dir, exp_name, session_file + ".tsv")
         staged = defaultdict(list)   # utterance → [resp_json, …]
@@ -656,9 +418,7 @@ def _process_one_session(session_file, queryset_utterances, sessions_dir,
 
         # Iterate dataItems sequentially with per-utterance round-robin.
         data_items_outputs = {}
-        matched = 0
-        no_scraper = 0
-        empty_response = 0
+        matched = no_scraper = empty_response = 0
         utt_counter = defaultdict(int)   # utterance → next index
 
         for idx, utt in item_utts:
@@ -671,15 +431,13 @@ def _process_one_session(session_file, queryset_utterances, sessions_dir,
             elif utt in staged:
                 empty_response += 1
             elif utt in qs_utts:
-                # In queryset but scraper result missing
                 no_scraper += 1
-            # else: not in queryset — not scraped, expected
 
-        sydney_inference_list.append({
-            "sydneyId": exp_name,
+        # Prompt-based inference result (not Sydney)
+        inference_list.append({
+            "promptId": exp_name,
             "dataItemsOutputs": data_items_outputs,
-            "conversationIds": {},
-            "fileLocations": {},
+            "dataItemsUsage": {},
         })
         total_matched += matched
         total_no_scraper += no_scraper
@@ -687,12 +445,11 @@ def _process_one_session(session_file, queryset_utterances, sessions_dir,
         total_size_kb += sum(
             len(v) for v in data_items_outputs.values()) / 1024
 
-    if not sydney_inference_list:
+    if not inference_list:
         log.append(f"  SKIP {session_file}: no valid inference arms")
         return session_file, None, log
 
-    # total_data_items across arms = total dataItem copies × arms
-    num_arms = len(sydney_inference_list) if sydney_inference_list else 1
+    num_arms = len(inference_list)
 
     if total_matched == 0:
         log.append(
@@ -701,20 +458,29 @@ def _process_one_session(session_file, queryset_utterances, sessions_dir,
             f" empty_response={total_empty_response})")
         return session_file, None, log
 
-    # Build packed session — Sydney-only (remove GPT prompts)
+    # Build packed session — prompt-based (not Sydney)
     packed = dict(session)      # shallow copy
-    packed["prompts"] = []
+
+    # Create empty prompts for each experiment arm
+    packed["prompts"] = [
+        {
+            "id": exp_name,
+            "title": exp_name,
+            "prompt": "",
+            "promptTemplate": "",
+        }
+        for exp_name in sorted(exp_prompt_map.keys())
+        if any(ir["promptId"] == exp_name for ir in inference_list)
+    ]
 
     packed["resultsv2"] = [{
         "sessionInputIndex": 0,
-        "inference": [],
+        "inference": inference_list,
         "evaluation": [],
-        "sydneyInference": sydney_inference_list,
-        "sydneyEvaluation": None,
     }]
 
-    if sydney_details:
-        packed["sydneyDetails"] = copy.deepcopy(sydney_details)
+    # Remove Sydney-specific fields (not needed in prompt mode)
+    packed.pop("sydneyDetails", None)
 
     stats = {
         "matched": total_matched,
@@ -753,14 +519,15 @@ def _process_one_session(session_file, queryset_utterances, sessions_dir,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pack trimmed Sydney scraper results into Foundry "
-                    "session JSONs for runType 4 (ParseInference).",
+        description="Pack Sydney scraper results as prompt-based "
+                    "inference into Foundry session JSONs for "
+                    "runType 4 (ParseInference).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument(
         "--queryset", required=True,
-        help="Path to queryset.tsv (query->session mapping for validation)",
+        help="Path to queryset.tsv (query->session mapping)",
     )
     parser.add_argument(
         "--sessions-dir", required=True,
@@ -775,17 +542,10 @@ def main():
         help="Output directory for packed session JSON files",
     )
     parser.add_argument(
-        "--config", default=None,
-        help="Path to config.json from the scraper config dataset.  "
-             "When provided, Sydney settings from each exp_config are "
-             "injected into packed sessions as sydneyDetails.",
-    )
-    parser.add_argument(
         "--exp-prompt-map", default="control:0,experiment:1",
-        help="Comma-separated exp_name:index pairs.  Only the exp_name "
-             "part is used to identify experiment arms (indices are "
-             "ignored — kept for backward compat).  "
-             "Default: 'control:0,experiment:1'.",
+        help="Comma-separated exp_name:index pairs.  Only exp_name is "
+             "used to identify experiment arms (indices are kept for "
+             "backward compat).  Default: 'control:0,experiment:1'.",
     )
     parser.add_argument(
         "--trim-level", type=int, default=3, choices=[2, 3],
@@ -803,11 +563,8 @@ def main():
     )
     parser.add_argument(
         "--staging-dir", default=None,
-        help="Fixed directory for scraper staging files.  When set "
-             "and the directory already contains data, Step 2 is "
-             "skipped (reuse previous staging).  Useful for "
-             "debugging.  When not set, a unique temp directory is "
-             "created and cleaned up automatically.",
+        help="Fixed staging directory.  Reused if non-empty.  "
+             "When not set, a temp directory is created and cleaned up.",
     )
 
     args = parser.parse_args()
@@ -827,7 +584,7 @@ def main():
     if not args.dry_run:
         os.makedirs(args.output_dir, exist_ok=True)
 
-    # Parse exp-prompt-map early (needed by config loading)
+    # Parse exp-prompt-map
     exp_prompt_map = {}
     for pair in args.exp_prompt_map.split(","):
         pair = pair.strip()
@@ -838,6 +595,7 @@ def main():
         ename, pidx = pair.split(":", 1)
         exp_prompt_map[ename.strip()] = int(pidx.strip())
     print(f"Exp-prompt map: {exp_prompt_map}")
+    print("Output mode: prompt-based inference (not Sydney)")
 
     # ---- Step 1. Parse queryset ----
     print("\n--- Step 1: Parse queryset ---")
@@ -847,22 +605,9 @@ def main():
           f"{len(queryset_check)} session files, "
           f"{len(needed_utterances)} unique utterances")
 
-    # Load Sydney config (optional)
-    sydney_details = []
-    if args.config:
-        if not os.path.isfile(args.config):
-            print(f"ERROR: Config file not found: {args.config}")
-            sys.exit(1)
-        sydney_details = load_sydney_configs(args.config, exp_prompt_map)
-        if sydney_details:
-            print(f"Sydney configs loaded: {len(sydney_details)} arm(s)")
-        else:
-            print("WARNING: --config provided but no Sydney configs matched")
-
     # ---- Step 2. Stage scraper outputs to disk ----
     print("\n--- Step 2: Stage scraper outputs ---")
 
-    # Determine staging directory
     cleanup_staging = False
     reuse_staging = False
     if args.staging_dir:
@@ -882,7 +627,6 @@ def main():
     # directory is cleaned up even if an error occurs mid-pipeline.
     try:
         if reuse_staging:
-            # Discover sessions from existing staging files
             sessions_with_data = set()
             for exp_name in exp_prompt_map:
                 exp_dir = os.path.join(staging_dir, exp_name)
@@ -894,7 +638,8 @@ def main():
                             sf = sf[:-4]
                         sessions_with_data.add(sf)
             scraper_stats = {
-                "loaded": "reused", "skipped": "\u2013", "errors": "\u2013",
+                "loaded": "reused", "skipped": "\u2013",
+                "errors": "\u2013",
             }
             print(f"  Found staging data for "
                   f"{len(sessions_with_data)} sessions")
@@ -912,14 +657,15 @@ def main():
             sys.exit(1)
 
         # ---- Step 3. Pack each session ----
-        print(f"\n--- Step 3: Pack {len(sessions_with_data)} sessions ---")
+        print(f"\n--- Step 3: Pack {len(sessions_with_data)} sessions "
+              f"(prompt mode) ---")
 
         results = []
         for sf in sorted(sessions_with_data):
             qs_utts = queryset_check.get(sf)
             result = _process_one_session(
                 sf, qs_utts, args.sessions_dir, exp_prompt_map,
-                staging_dir, sydney_details, args.output_dir, args.dry_run,
+                staging_dir, args.output_dir, args.dry_run,
             )
             results.append(result)
 
@@ -945,6 +691,7 @@ def main():
 
         # ---- Summary ----
         print(f"\n{'=== DRY RUN ===' if args.dry_run else '=== Summary ==='}")
+        print(f"Output mode: prompt-based inference")
         print(f"Experiment arms: {list(exp_prompt_map.keys())}")
         print(f"Sessions packed: {total_sessions}/{len(sessions_with_data)}")
         print(f"Scraper files: loaded={scraper_stats['loaded']}, "
@@ -957,11 +704,6 @@ def main():
             print(f"Scraper result empty/no-data: {total_empty_response}")
         print(f"Total packed size: {total_size_kb:.1f} KB")
         print(f"Trim level: {args.trim_level}")
-        if sydney_details:
-            print(f"Sydney details injected: {len(sydney_details)} arm(s) "
-                  f"({', '.join(d['id'] for d in sydney_details)})")
-        else:
-            print("Sydney details: not injected (no --config)")
         if not args.dry_run:
             print(f"Output directory: {args.output_dir}")
 
