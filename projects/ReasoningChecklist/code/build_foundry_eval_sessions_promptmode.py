@@ -120,7 +120,6 @@ def _load_one_scraper_file(filepath, needed_utterances, trim_level):
     except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return None
 
-    exp_name = data.get("exp_name", "")
     query = data.get("query", {})
     segment = query.get("segment", "")
     utterance = query.get("id", "").strip()
@@ -134,6 +133,9 @@ def _load_one_scraper_file(filepath, needed_utterances, trim_level):
     requests = data.get("requests", [])
     if not requests:
         return None
+
+    # exp_name may live at top level (old Seval) or in requests[0] (new Seval)
+    exp_name = data.get("exp_name") or requests[0].get("exp_name", "")
 
     response_body = requests[0].get("response_body", {})
 
