@@ -124,6 +124,18 @@ def _load_one_scraper_file(filepath, needed_utterances, trim_level):
     segment = query.get("segment", "")
     utterance = query.get("id", "").strip()
 
+    # query.id may be a JSON array like [{"text": "...", "author": "user"}]
+    # (CWC scraper format) — extract plain text for matching.
+    # Try JSON-parsing unconditionally; only accept if it yields a non-empty
+    # list of dicts whose first element has a "text" key.
+    try:
+        parsed = json.loads(utterance)
+        if (isinstance(parsed, list) and parsed
+                and isinstance(parsed[0], dict) and "text" in parsed[0]):
+            utterance = parsed[0]["text"].strip()
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass  # not JSON — keep original utterance as-is
+
     if not segment or not utterance:
         return None
 
