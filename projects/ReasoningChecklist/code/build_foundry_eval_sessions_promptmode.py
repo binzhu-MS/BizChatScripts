@@ -175,6 +175,13 @@ def stage_scraper_outputs(scraper_dir, staging_dir, needed_utterances=None,
     Returns:
         (sessions_with_data, stats)
     """
+    # Resolve the actual directory containing scraper JSON files.
+    # CWC scraper nests responses under sydney_raw_responses/.
+    sydney_sub = os.path.join(scraper_dir, "sydney_raw_responses")
+    if os.path.isdir(sydney_sub):
+        scraper_dir = sydney_sub
+        print(f"  Using subdirectory: sydney_raw_responses/")
+
     pattern = os.path.join(scraper_dir, "*.json")
     files = sorted(glob.glob(pattern))
 
