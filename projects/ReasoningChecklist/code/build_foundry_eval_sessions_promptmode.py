@@ -36,7 +36,10 @@ Arguments
 ~~~~~~~~~
 Required:
     --queryset       Path to queryset.tsv.
-    --sessions-dir   Directory containing base session JSON files.
+    --sessions-dir   Root directory containing base session JSON files.
+                     Session files may be in subdirectories; paths in
+                     the queryset and scraper segment fields are relative
+                     to this directory.
     --scraper-dir    Directory containing Sydney scraper output JSON files.
     --output-dir     Output directory for packed session JSON files.
 
@@ -93,7 +96,7 @@ def parse_queryset(queryset_path):
                 continue
 
             for inp in inputs_list:
-                session_file = inp.get("file", "")
+                session_file = inp.get("file", "").replace("\\", "/")
                 input_data = inp.get("input", {})
                 utterance = input_data.get("utterance", query_text).strip()
 
@@ -154,7 +157,9 @@ def _load_one_scraper_file(filepath, needed_utterances, trim_level):
     if trim_level is not None:
         response_body = trim_sydney_response(response_body, trim_level)
 
-    session_files = [s.strip() for s in segment.split(",") if s.strip()]
+    session_files = [
+        s.strip().replace("\\", "/") for s in segment.split(",") if s.strip()
+    ]
 
     return {
         "exp_name": exp_name,
@@ -170,7 +175,10 @@ def stage_scraper_outputs(scraper_dir, staging_dir, needed_utterances=None,
 
     Staging layout::
 
-        staging_dir/{exp_name}/{session_file}.tsv
+        staging_dir/{exp_name}/{session_path}.tsv
+
+    where session_path may include subdirectories (e.g.
+    ``subdir/session-file.json``).
 
     Returns:
         (sessions_with_data, stats)
@@ -223,9 +231,10 @@ def stage_scraper_outputs(scraper_dir, staging_dir, needed_utterances=None,
                     for sf in result["session_files"]:
                         key = (exp_name, sf)
                         if key not in staging_handles:
-                            exp_dir = os.path.join(staging_dir, exp_name)
-                            os.makedirs(exp_dir, exist_ok=True)
-                            path = os.path.join(exp_dir, sf + ".tsv")
+                            path = os.path.join(
+                                staging_dir, exp_name, sf + ".tsv")
+                            os.makedirs(
+                                os.path.dirname(path), exist_ok=True)
                             staging_handles[key] = open(
                                 path, "w", encoding="utf-8")
                         staging_handles[key].write(line)
@@ -528,6 +537,7 @@ def _process_one_session(session_file, queryset_utterances, sessions_dir,
 
     if not dry_run:
         output_path = os.path.join(output_dir, session_file)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as fh:
             json.dump(packed, fh, indent=2, ensure_ascii=False)
 
@@ -653,8 +663,10 @@ def main():
                 exp_dir = os.path.join(staging_dir, exp_name)
                 if os.path.isdir(exp_dir):
                     for tsv_file in glob.glob(
-                            os.path.join(exp_dir, "*.tsv")):
-                        sf = os.path.basename(tsv_file)
+                            os.path.join(exp_dir, "**", "*.tsv"),
+                            recursive=True):
+                        sf = os.path.relpath(
+                            tsv_file, exp_dir).replace("\\", "/")
                         if sf.endswith(".tsv"):
                             sf = sf[:-4]
                         sessions_with_data.add(sf)
